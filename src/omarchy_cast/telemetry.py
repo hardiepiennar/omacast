@@ -8,12 +8,13 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import tempfile
 import threading
 import time
 from typing import Any, Mapping
 
+from .bounds import BoundError, MAX_TELEMETRY_BYTES, read_bounded_regular_file, validate_json_budget
+from .command import run_command
 from .state import runtime_directory
 
 
@@ -58,10 +59,10 @@ def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
 def read_telemetry(session_id: str, environ: Mapping[str, str] | None = None) -> dict[str, object] | None:
     try:
         path = telemetry_paths(session_id, environ)["current"]
-        if not path.is_file() or path.stat().st_size > 262_144:
-            return None
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
+        encoded = read_bounded_regular_file(path, limit=MAX_TELEMETRY_BYTES, require_owner=True, require_private=True)
+        payload = json.loads(encoded.decode("utf-8"))
+        validate_json_budget(payload, max_nodes=4_096)
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, BoundError):
         return None
     if not isinstance(payload, dict) or payload.get("schemaVersion") != 1 or payload.get("sessionId") != session_id:
         return None
@@ -286,17 +287,11 @@ class TelemetrySampler:
     def _sample_radio(self, interface: str, now: float) -> dict[str, int | float]:
         if now - self._radio_sampled_at >= 1.0:
             self._radio_sampled_at = now
-            try:
-                sample = subprocess.run(
-                    ("iw", "dev", interface, "station", "dump"), capture_output=True,
-                    text=True, timeout=0.8, check=False, env=self.environ,
-                )
-                if sample.returncode == 0:
-                    self._radio = parse_iw_station(sample.stdout)
-                    if self._baseline_radio is None and self._radio:
-                        self._baseline_radio = dict(self._radio)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            sample = run_command(("iw", "dev", interface, "station", "dump"), timeout=0.8, env=self.environ)
+            if sample.returncode == 0:
+                self._radio = parse_iw_station(sample.stdout)
+                if self._baseline_radio is None and self._radio:
+                    self._baseline_radio = dict(self._radio)
         baseline = self._baseline_radio or {}
         result = dict(self._radio)
         for source, target in (("txRetries", "retryDelta"), ("txFailed", "failureDelta"), ("beaconLoss", "beaconLossDelta")):

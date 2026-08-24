@@ -1,6 +1,6 @@
 # Omacast architecture and roadmap
 
-Status: canonical plan, updated 2026-08-24
+Status: canonical plan, updated 2026-08-25
 
 This document turns the Phase 1 Miracast research into a path to a dependable
 Omarchy plugin. It is the starting point for implementation and handoff. The
@@ -131,6 +131,20 @@ smoothness, continuous internet access, and audio/video sync all matter.
   `hardie.omarchy-cast` plugin ID for in-place upgrades. Super+Alt+C is the
   intended optional summon gesture and leaves Omarchy's stock Super+C Universal
   Copy binding intact. The earlier Super+C choice is superseded.
+- Marketplace review at public commit `965f94d` found that the privileged
+  command surface was carefully hardened but identified missing runtime data
+  ceilings between discovery, the controller, runtime JSON, and QML. The
+  incremental remediation retains the architecture and media path: discovery
+  subprocesses keep at most 65,536 bytes per stream, controller UI documents
+  are capped at 262,144 bytes, and QML replaces its complete-output collector
+  with a streaming 262,144-character ceiling. State is capped at 65,536 bytes
+  before parsing, telemetry is descriptor-read under its existing
+  262,144-byte ceiling, and QML allowlists bounded receiver/readiness/warning/
+  session models. Every controller- or radio-derived label is rendered as
+  plain text. Adversarial
+  fixtures cover excess output, deep/oversized JSON, links, receiver floods,
+  control characters, and markup-like labels without running P2P or changing
+  networking.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the

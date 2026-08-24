@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from contextlib import redirect_stdout
-import io
+import os
 import re
 from typing import Callable, Iterable, Mapping, Protocol
+
+from .bounds import bounded_text
 
 
 _RECEIVER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _ALLOWED_CAPABILITIES = frozenset({"miracast", "audio", "video"})
+MAX_RECEIVERS = 64
+MAX_DISCOVERY_PEERS = 256
 
 
 class ReceiverError(ValueError):
@@ -44,6 +48,8 @@ def _receiver_from_record(record: Mapping[str, object]) -> Receiver:
         raise ReceiverError("receiver id must be a stable identifier")
     if not isinstance(name, str) or not name.strip() or len(name.strip()) > 120:
         raise ReceiverError("receiver name must be a non-empty display label")
+    if any(ord(character) < 32 or ord(character) == 127 for character in name):
+        raise ReceiverError("receiver name contains control characters")
     if not isinstance(kind, str) or kind not in {"fire-tv", "wfd-display"}:
         raise ReceiverError("receiver kind is unsupported")
     if not isinstance(capabilities, list) or not capabilities or any(not isinstance(item, str) for item in capabilities):
@@ -55,9 +61,11 @@ def _receiver_from_record(record: Mapping[str, object]) -> Receiver:
 
 
 def normalize_receivers(records: Iterable[Mapping[str, object]]) -> list[Receiver]:
-    receivers = [_receiver_from_record(record) for record in records]
-    if len(receivers) > 64:
-        raise ReceiverError("receiver discovery returned too many records")
+    receivers: list[Receiver] = []
+    for record in records:
+        if len(receivers) >= MAX_RECEIVERS:
+            raise ReceiverError("receiver discovery returned too many records")
+        receivers.append(_receiver_from_record(record))
     ids = [receiver.id for receiver in receivers]
     if len(ids) != len(set(ids)):
         raise ReceiverError("receiver discovery returned duplicate receiver ids")
@@ -96,12 +104,18 @@ class FluxCastReceiverDiscovery:
         try:
             # FluxCast's human diagnostics belong in its terminal UI. Keep this
             # controller command strict JSON for the QML consumer.
-            with redirect_stdout(io.StringIO()):
+            with open(os.devnull, "w", encoding="utf-8") as discarded, redirect_stdout(discarded):
                 peers = scanner(interface=self.interface, timeout=int(timeout_seconds))
         except Exception as exc:
-            raise ReceiverDiscoveryUnavailable(str(exc) or "Wi-Fi Direct scan failed") from exc
+            raise ReceiverDiscoveryUnavailable(bounded_text(str(exc), limit=240, fallback="Wi-Fi Direct scan failed") or "Wi-Fi Direct scan failed") from exc
         records: list[dict[str, object]] = []
+        peer_count = 0
         for peer in peers:  # type: ignore[union-attr]
+            peer_count += 1
+            if peer_count > MAX_DISCOVERY_PEERS:
+                raise ReceiverDiscoveryUnavailable("receiver discovery returned too many peer records")
+            if len(records) >= MAX_RECEIVERS:
+                raise ReceiverDiscoveryUnavailable("receiver discovery returned too many records")
             details = str(getattr(peer, "details", ""))
             # NetworkManager exposes every nearby Wi-Fi Direct peer, including
             # printers. An explicitly empty WFD IE array proves that the peer

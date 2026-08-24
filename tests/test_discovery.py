@@ -37,6 +37,16 @@ class DiscoveryTest(unittest.TestCase):
         devices = parse_nmcli_devices("wlan42:wifi:connected\np2p-dev-wlan42:wifi-p2p:disconnected\nlo:loopback:connected\n")
         self.assertEqual([(device.name, device.type) for device in devices], [("wlan42", "wifi"), ("p2p-dev-wlan42", "wifi-p2p")])
 
+    def test_device_and_monitor_models_have_hard_count_and_string_limits(self) -> None:
+        devices = parse_nmcli_devices("".join(f"wlan{index}:wifi:connected\n" for index in range(100)))
+        monitors = parse_hyprland_monitors(json.dumps([
+            {"name": f"DP-{index}", "description": "x" * 500, "width": 1920, "height": 1080}
+            for index in range(100)
+        ]))
+        self.assertEqual(len(devices), 32)
+        self.assertEqual(len(monitors), 16)
+        self.assertEqual(len(monitors[0].description), 240)
+
     def test_parses_valid_hyprland_outputs(self) -> None:
         monitors = parse_hyprland_monitors('[{"name":"DP-2","description":"TV","width":1920,"height":1080,"refreshRate":60,"focused":true}]')
         self.assertEqual(monitors[0].name, "DP-2")

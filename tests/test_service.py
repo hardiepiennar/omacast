@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from pathlib import Path
 import unittest
 
+from omarchy_cast.command import CommandResult
 from omarchy_cast.service import INHIBIT_REASON, ServiceError, UNIT_NAME, session_service_command, start_session_service, stop_pending_session_service
 
 
@@ -33,10 +33,11 @@ class ServiceTest(unittest.TestCase):
     def test_start_reports_only_after_systemd_accepts_the_unit(self) -> None:
         calls: list[tuple[str, ...]] = []
 
-        def runner(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def runner(command: tuple[str, ...], **kwargs: object) -> CommandResult:
             calls.append(command)
             self.assertEqual(kwargs["timeout"], 10)
-            return subprocess.CompletedProcess(command, 0, "", "")
+            self.assertEqual(set(kwargs), {"timeout"})
+            return CommandResult(command, 0, "", "")
 
         with tempfile.TemporaryDirectory() as temp:
             launcher = Path(temp) / "omacast"
@@ -54,8 +55,8 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(payload["unit"], UNIT_NAME)
 
     def test_start_surfaces_a_bounded_systemd_failure(self) -> None:
-        def runner(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(command, 1, "", "unit already exists")
+        def runner(command: tuple[str, ...], **kwargs: object) -> CommandResult:
+            return CommandResult(command, 1, "", "unit already exists")
 
         with tempfile.TemporaryDirectory() as temp:
             launcher = Path(temp) / "omacast"
@@ -73,10 +74,11 @@ class ServiceTest(unittest.TestCase):
     def test_pending_launch_can_be_cancelled_before_session_state_exists(self) -> None:
         calls: list[tuple[str, ...]] = []
 
-        def runner(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def runner(command: tuple[str, ...], **kwargs: object) -> CommandResult:
             calls.append(command)
             self.assertEqual(kwargs["timeout"], 25)
-            return subprocess.CompletedProcess(command, 0, "", "")
+            self.assertEqual(set(kwargs), {"timeout"})
+            return CommandResult(command, 0, "", "")
 
         payload = stop_pending_session_service(runner=runner)
         self.assertEqual(calls, [("systemctl", "--user", "stop", UNIT_NAME)])
@@ -84,8 +86,8 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(payload["reason"], "launch-cancelled")
 
     def test_cancel_is_idempotent_after_transient_unit_is_collected(self) -> None:
-        def runner(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(command, 5, "", f"Unit {UNIT_NAME} not loaded.")
+        def runner(command: tuple[str, ...], **kwargs: object) -> CommandResult:
+            return CommandResult(command, 5, "", f"Unit {UNIT_NAME} not loaded.")
 
         self.assertTrue(stop_pending_session_service(runner=runner)["ok"])
 

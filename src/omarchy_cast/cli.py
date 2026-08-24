@@ -8,6 +8,7 @@ import os
 import sys
 from uuid import uuid4
 
+from .bounds import MAX_UI_RESPONSE_BYTES, bounded_text
 from .discovery import discover_host
 from .engine import LaunchPlanError, build_launch_plan
 from .guard import GuardRequest
@@ -22,7 +23,18 @@ from .wfd_fixture import INCOMPATIBLE_VIDEO_FIXTURE, SUCCESS_FIXTURE, TIMEOUT_FI
 
 
 def _emit(value: object) -> None:
-    print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    if len(payload.encode("utf-8")) > MAX_UI_RESPONSE_BYTES:
+        payload = json.dumps({
+            "schemaVersion": 1,
+            "ok": False,
+            "error": {"code": "response-too-large", "message": "Controller response exceeded its bounded UI contract."},
+        }, sort_keys=True, separators=(",", ":")) + "\n"
+    sys.stdout.write(payload)
+
+
+def _error_message(exc: BaseException) -> str:
+    return bounded_text(str(exc), limit=512, fallback="The controller operation failed.")
 
 
 def _not_ready(action: str) -> dict[str, object]:
@@ -116,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
                     state["telemetry"] = telemetry
             _emit(state)
         except StateError as exc:
-            _emit({"schemaVersion": 1, "phase": "error", "error": {"code": "runtime-state-invalid", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "phase": "error", "error": {"code": "runtime-state-invalid", "message": _error_message(exc)}})
             return 1
         return 0
     if args.command in {"scan", "receivers"}:
@@ -132,14 +144,14 @@ def main(argv: list[str] | None = None) -> int:
             discovery = FixtureReceiverDiscovery(DEMO_FIRE_TV) if fixture else FluxCastReceiverDiscovery(interface=interface)
             _emit(discovery_payload(discovery, timeout_seconds=args.timeout))
         except (ReceiverError, ReceiverDiscoveryUnavailable, StateError) as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "receiver-scan-failed", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "receiver-scan-failed", "message": _error_message(exc)}})
             return 2
         return 0
     if args.command == "plan":
         try:
             _emit(build_launch_plan(discover_host(), peer=args.peer, mode=args.mode, profile=args.profile, monitor=args.monitor))
         except LaunchPlanError as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "launch-plan-invalid", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "launch-plan-invalid", "message": _error_message(exc)}})
             return 1
         return 0
     if args.command == "dry-run":
@@ -147,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             plan = build_launch_plan(discover_host(), peer=args.peer, mode=args.mode, profile=args.profile, monitor=args.monitor)
             _emit(DryRunSupervisor().run(peer=args.peer, mode=args.mode, profile=args.profile, plan=plan))
         except (LaunchPlanError, SessionError, StateError) as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "dry-run-failed", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "dry-run-failed", "message": _error_message(exc)}})
             return 1
         return 0
     if args.command == "transport-test":
@@ -157,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
             _emit(result)
             return 0 if result["ok"] else 1
         except (LaunchPlanError, SessionError, StateError) as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "transport-test-failed", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "transport-test-failed", "message": _error_message(exc)}})
             return 1
     if args.command == "protocol-test":
         fixture = {"success": SUCCESS_FIXTURE, "incompatible": INCOMPATIBLE_VIDEO_FIXTURE, "timeout": TIMEOUT_FIXTURE}[args.scenario]
@@ -169,13 +181,13 @@ def main(argv: list[str] | None = None) -> int:
             _emit(result)
             return 0 if result["ok"] else 1
         except MediaProbeError as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "media-probe-failed", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "media-probe-failed", "message": _error_message(exc)}})
             return 1
     if args.command == "logs":
         try:
             _emit(read_session_events(args.session) if args.session else session_history(limit=args.limit))
         except SessionError as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "log-read-failed", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "log-read-failed", "message": _error_message(exc)}})
             return 1
         return 0
     if args.command == "start":
@@ -199,20 +211,20 @@ def main(argv: list[str] | None = None) -> int:
             ))
             return 0
         except (ServiceError, SessionError, StateError, ValueError) as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "session-start-failed", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "session-start-failed", "message": _error_message(exc)}})
             return 1
     if args.command == "recover":
         try:
             _emit(recover_stale_session())
         except (SessionError, StateError) as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "recovery-unavailable", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "recovery-unavailable", "message": _error_message(exc)}})
             return 1
         return 0
     if args.command == "connect" and args.simulate:
         try:
             _emit(SimulatedSupervisor().run(peer=args.peer, mode=args.mode, profile=args.profile, duration=args.duration or 1))
         except (SessionError, StateError) as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "simulation-failed", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "simulation-failed", "message": _error_message(exc)}})
             return 1
         return 0
     if args.command == "connect":
@@ -231,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
             _emit(result)
             return 0 if result["ok"] else 1
         except (LaunchPlanError, SessionError, StateError, ValueError) as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "guarded-session-failed", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "guarded-session-failed", "message": _error_message(exc)}})
             return 1
     if args.command == "stop":
         try:
@@ -246,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 _emit(request_stop())
         except (ServiceError, SessionError, StateError) as exc:
-            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "stop-unavailable", "message": str(exc)}})
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "stop-unavailable", "message": _error_message(exc)}})
             return 1
         return 0
     _emit(_not_ready(args.command))

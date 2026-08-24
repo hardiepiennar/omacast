@@ -13,7 +13,7 @@ import time
 from typing import Any, Callable, Mapping, Protocol
 
 from .guard import GuardRequest, prepare_command, validate_helper_result
-from .telemetry import TelemetrySampler, cleanup_live_telemetry, telemetry_paths
+from .telemetry import TelemetrySampler, _bounded_read, cleanup_live_telemetry, telemetry_paths
 
 
 CONNECT_TIMEOUT_SECONDS = 75
@@ -139,9 +139,11 @@ class GuardedTransportAdapter:
                 return None
             readable, _, _ = select.select((process.stdout,), (), (), min(0.2, deadline - time.monotonic()))
             if readable:
-                line = process.stdout.readline()
+                line = process.stdout.readline(65_537)
+                if len(line) > 65_536:
+                    raise TransportError("The networking helper returned an oversized readiness status.", code="guard-setup-failed")
                 if not line:
-                    error = process.stderr.read().strip() if process.stderr is not None else ""
+                    error = process.stderr.read(65_537).strip()[:65_536] if process.stderr is not None else ""
                     returncode = process.poll()
                     if returncode in {126, 127}:
                         raise TransportError("Administrator approval was cancelled. Nothing was changed.", code="authorization-cancelled")
@@ -160,7 +162,7 @@ class GuardedTransportAdapter:
                     return expected
                 raise TransportError(str(payload.get("error") or "The networking helper refused session preparation."), code="guard-setup-failed")
             if process.poll() is not None:
-                error = process.stderr.read().strip() if process.stderr is not None else ""
+                error = process.stderr.read(65_537).strip()[:65_536] if process.stderr is not None else ""
                 if process.returncode in {126, 127}:
                     raise TransportError("Administrator approval was cancelled. Nothing was changed.", code="authorization-cancelled")
                 raise TransportError(error or "The networking helper exited before it was ready.", code="guard-setup-failed")
@@ -203,11 +205,9 @@ class GuardedTransportAdapter:
     def _media_started(progress_path: Path) -> bool:
         """Require a completed FFmpeg progress record with an encoded video frame."""
         try:
-            if not progress_path.is_file() or progress_path.stat().st_size > 262_144:
-                return False
             record: dict[str, str] = {}
             completed: dict[str, str] = {}
-            for line in progress_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            for line in _bounded_read(progress_path).splitlines():
                 key, separator, value = line.partition("=")
                 if not separator:
                     continue
@@ -358,7 +358,7 @@ class GuardedTransportAdapter:
                     return TransportResult("failed", "Desktop capture produced no video frames.", True, "capture-failed")
                 return TransportResult("timeout", "guarded stream duration elapsed", True)
             engine_log.flush()
-            engine_output = paths["engineLog"].read_text(encoding="utf-8", errors="replace")
+            engine_output = _bounded_read(paths["engineLog"])
             detail = self._bounded_detail(engine_output, "FluxCast exited" if engine.returncode == 0 else f"FluxCast exited with status {engine.returncode}")
             return TransportResult("completed", detail, True) if engine.returncode == 0 else TransportResult("failed", detail, True, self._failure_code(engine_output))
         finally:

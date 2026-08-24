@@ -7,9 +7,15 @@ import json
 import os
 from pathlib import Path
 import shutil
-from typing import Callable, Iterable
+from typing import Callable
 
+from .bounds import bounded_text
 from .command import CommandResult, Runner, run_command
+
+
+MAX_WIFI_DEVICES = 32
+MAX_MONITORS = 16
+MAX_DIAGNOSTICS = 16
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,10 @@ def parse_nmcli_devices(text: str) -> list[WifiDevice]:
             continue
         name, device_type, state = fields
         if device_type in {"wifi", "wifi-p2p"}:
+            if len(devices) >= MAX_WIFI_DEVICES:
+                break
+            if len(name) > 64 or any(ord(character) < 32 or ord(character) == 127 for character in name):
+                continue
             devices.append(WifiDevice(name=name, type=device_type, state=state))
     return devices
 
@@ -61,6 +71,8 @@ def parse_hyprland_monitors(text: str) -> list[Monitor]:
 
     monitors: list[Monitor] = []
     for entry in entries:
+        if len(monitors) >= MAX_MONITORS:
+            break
         if not isinstance(entry, dict):
             continue
         name = entry.get("name")
@@ -69,12 +81,14 @@ def parse_hyprland_monitors(text: str) -> list[Monitor]:
         refresh = entry.get("refreshRate", 0)
         if not isinstance(name, str) or not isinstance(width, int) or not isinstance(height, int):
             continue
+        if not name or len(name) > 128 or any(ord(character) < 32 or ord(character) == 127 for character in name):
+            continue
         if width <= 0 or height <= 0:
             continue
         monitors.append(
             Monitor(
                 name=name,
-                description=str(entry.get("description") or name),
+                description=bounded_text(entry.get("description") if isinstance(entry.get("description"), str) else name, limit=240, fallback=name),
                 width=width,
                 height=height,
                 refresh_rate=float(refresh) if isinstance(refresh, (int, float)) else 0.0,
@@ -94,7 +108,7 @@ def parse_iw_link(interface: str, text: str) -> WifiLink:
         line = raw_line.strip()
         if line.startswith("SSID:"):
             candidate = line.removeprefix("SSID:").strip()
-            ssid = candidate or None
+            ssid = bounded_text(candidate, limit=128) or None
         elif line.startswith("freq:"):
             candidate = line.removeprefix("freq:").strip()
             try:
@@ -140,7 +154,7 @@ def _check_helpers(guard_root: Path, runner: Runner) -> list[dict[str, object]]:
 
 def _result_error(result: CommandResult) -> str:
     message = result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
-    return message.splitlines()[0]
+    return bounded_text(message.splitlines()[0], limit=240, fallback="command failed")
 
 
 def _engine_capabilities(runner: Runner) -> dict[str, object]:
@@ -262,13 +276,14 @@ def discover_host(
     monitors = parse_hyprland_monitors(monitor_result.stdout) if monitor_result.returncode == 0 else []
 
     sink_result = runner(("pactl", "get-default-sink"))
-    default_sink = sink_result.stdout.strip() if sink_result.returncode == 0 else ""
+    default_sink = bounded_text(sink_result.stdout.strip(), limit=240) if sink_result.returncode == 0 else ""
 
     render_nodes = sorted(str(path) for path in render_root.glob("renderD*") if path.is_char_device())
     diagnostics: list[dict[str, str]] = list(link_diagnostics)
     for source, result in (("NetworkManager", nm_result), ("Hyprland", monitor_result), ("PipeWire", sink_result)):
         if result.returncode != 0:
-            diagnostics.append({"source": source, "message": _result_error(result)})
+            if len(diagnostics) < MAX_DIAGNOSTICS:
+                diagnostics.append({"source": source, "message": _result_error(result)})
 
     readiness = _readiness(
         checks=checks,

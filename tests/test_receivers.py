@@ -25,6 +25,25 @@ class ReceiverDiscoveryTest(unittest.TestCase):
             normalize_receivers(duplicate)
         with self.assertRaisesRegex(ReceiverError, "stable"):
             normalize_receivers([{"id": "Fire TV", "name": "TV", "kind": "fire-tv", "capabilities": ["miracast"]}])
+        with self.assertRaisesRegex(ReceiverError, "control"):
+            normalize_receivers([{"id": "fire-tv", "name": "Fire TV\nInjected", "kind": "fire-tv", "capabilities": ["miracast"]}])
+
+    def test_receiver_limit_stops_consuming_an_unbounded_iterable(self) -> None:
+        consumed = 0
+
+        def records():
+            nonlocal consumed
+            for index in range(1_000):
+                consumed += 1
+                yield {"id": f"fire-tv-{index}", "name": f"Fire TV {index}", "kind": "fire-tv", "capabilities": ["miracast"]}
+
+        with self.assertRaisesRegex(ReceiverError, "too many"):
+            normalize_receivers(records())
+        self.assertEqual(consumed, 65)
+
+    def test_markup_like_name_remains_data_for_plain_text_ui(self) -> None:
+        receiver = normalize_receivers([{"id": "fire-tv", "name": "<b>Fire TV</b>", "kind": "fire-tv", "capabilities": ["miracast"]}])[0]
+        self.assertEqual(receiver.name, "<b>Fire TV</b>")
 
     def test_validated_fire_tv_sinks_sort_before_generic_wfd_labels(self) -> None:
         receivers = normalize_receivers([
@@ -55,3 +74,11 @@ class ReceiverDiscoveryTest(unittest.TestCase):
         self.assertEqual(len(payload["receivers"]), 1)
         self.assertNotIn("02:00:00:00:00:02", [receiver["id"] for receiver in payload["receivers"]])
         self.assertNotIn("00:11:22:33:44:55", [receiver["id"] for receiver in payload["receivers"]])
+
+    def test_fluxcast_diagnostics_are_discarded_instead_of_collected(self) -> None:
+        def scanner(*, interface: str | None, timeout: int):
+            print("diagnostic" * 100_000)
+            return []
+
+        payload = discovery_payload(FluxCastReceiverDiscovery(scanner=scanner))
+        self.assertEqual(payload["receivers"], [])

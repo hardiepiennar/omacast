@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Bound controller subprocess output, streaming QML collection, UI JSON
+  responses, receiver/readiness/warning models, and runtime state/telemetry
+  reads at their trust boundaries.
+- Render wireless and controller-derived labels as plain text and normalize the
+  small QML models before they enter the shell UI.
+- Promote the healthy-cast Nerd Mode view to a 16:9 marketplace preview while
+  preserving the original receiver-backed panel capture as `nerd-mode.png`.
+
 ## 0.1.0 — 2026-08-22
 
 - Companion revision 37 replaces the recurring cast password prompt with a

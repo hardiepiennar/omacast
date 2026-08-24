@@ -1258,3 +1258,42 @@ diagnostic `prepare` call occurred between those observations, so this run does
 not prove whether ordinary delayed supplicant teardown alone would have removed
 the interface. Preserve this ambiguity and repeat the bounded post-Stop
 observation before making a stronger immediate-cleanup claim.
+
+### Marketplace runtime-boundary review (2026-08-25)
+
+The marketplace maintainer reviewed exact public commit `965f94d` and found no
+new problem in the fixed privileged command surface, caller/UID binding, or
+ownership checks. The blocking findings were instead at the unprivileged data
+boundaries: complete subprocess and QML collector output, uncapped shell model
+arrays/strings, automatic rich-text interpretation of receiver/controller
+labels, and an unrestricted pre-validation read of `state.json`.
+
+The focused remediation does not change FluxCast, guarded networking, package
+installation, media settings, or session ownership. Discovery now drains both
+subprocess pipes while retaining at most 65,536 bytes from each and discards
+FluxCast's human scan diagnostics directly to `/dev/null`. Receiver iteration,
+host models, messages, and controller responses have explicit limits. The
+controller emits at most 262,144 bytes to QML. The panel replaces Quickshell's
+complete-output `StdioCollector` with an empty-marker streaming `SplitParser`,
+retains no more than 262,144 characters across its chunks, checks the received
+string before parsing, projects responses into small allowlisted models, and
+uses `Text.PlainText` for every radio- or controller-derived label. The former
+unbounded stderr collector was replaced with a streaming zero-retention discard
+parser so Qt also cannot accumulate an unread stderr channel.
+
+Runtime state is opened with no-follow semantics, checked as a private regular
+file owned by the session user, limited to 65,536 bytes, and JSON-budgeted
+before schema validation. Current telemetry receives the same descriptor-based
+checks under its existing 262,144-byte ceiling, closing the earlier stat/read
+race. Offline adversarial tests cover oversized stdout and stderr without
+newlines, timeouts, excessive/deep state, symlinks, receiver floods, discarded
+scan diagnostics, control characters, and markup-like receiver names. No live
+receiver or network test is required because the accepted streaming and guard
+paths are unchanged.
+
+The root marketplace preview was also changed from the compact idle panel to a
+16:9 presentation of the genuine receiver-backed Nerd Mode capture. Marketplace
+desktop cards use a fixed landscape area with `object-fit: cover`, so the prior
+portrait image would have lost most of its telemetry. The new composition keeps
+the original panel pixels and privacy redactions intact over a non-identifying
+violet/cyan desktop backdrop; `nerd-mode.png` remains the source capture.

@@ -200,11 +200,10 @@
       observations, and recognizable credential signatures. Publication uses
       a parentless sanitized history and a non-personal noreply identity.
 - [x] Changelog, installation, privacy, DRM, limitations, and license documented.
-- [x] Root marketplace preview refreshed from the real contextual Omarchy panel
-      using its deterministic demo receiver. The tight panel-only crop contains
-      no desktop or personal receiver data, shows the keyboard destination
-      cursor, the release 720p60 source, and current Rescan/keyboard guidance;
-      it correctly exposes no Cast action before explicit selection.
+- [x] Root marketplace preview uses the genuine healthy receiver-backed Nerd
+      Mode panel in a 16:9 privacy-safe composition matched to the marketplace's
+      desktop card geometry. The original panel pixels remain unchanged and
+      contain no receiver, radio, network, notification, or desktop identity.
 - [x] README Nerd Mode preview captured from a genuine healthy receiver-backed
       720p60 session. The panel-only crop shows live health-colored telemetry
       while excluding the receiver name, radio address, network name, and
@@ -215,6 +214,12 @@
       want to erase both.
 - [x] Root security policy documents privilege, cleanup, data exposure, and
       private vulnerability reporting.
+- [x] Marketplace review at exact public commit `965f94d` is addressed with
+      bounded subprocess/controller output, a genuinely streaming capped QML
+      collector, bounded receiver/readiness/warning and session models,
+      plain-text rendering, and pre-parse state size/shape checks. The adjacent
+      telemetry stat/read race and FluxCast diagnostic sink were hardened
+      without changing the guard, network, or media path.
 - [x] Proposed marketplace metadata: category `Hardware`; tags `bar`, `media`,
       and `quickshell`. These match the closest current Hardware/media peers and
       describe the user-facing plugin more precisely than duplicating Hardware

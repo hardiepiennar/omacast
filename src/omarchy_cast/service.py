@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
-from typing import Callable, Sequence
+
+from .bounds import bounded_text
+from .command import Runner, run_command
 
 
 class ServiceError(RuntimeError):
     pass
 
 
-Runner = Callable[..., subprocess.CompletedProcess[str]]
 UNIT_NAME = "omacast-session.service"
 INHIBIT_REASON = "Desktop casting is active"
 
@@ -67,7 +67,7 @@ def start_session_service(
     profile: str,
     duration: int,
     simulate: bool = False,
-    runner: Runner = subprocess.run,
+    runner: Runner = run_command,
 ) -> dict[str, object]:
     command = session_service_command(
         executable=executable,
@@ -78,17 +78,9 @@ def start_session_service(
         simulate=simulate,
     )
     try:
-        result = runner(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ServiceError(f"could not start the Omacast session service: {exc}") from exc
+        result = runner(command, timeout=10)
+    except OSError as exc:
+        raise ServiceError("could not start the Omacast session service: " + bounded_text(str(exc), limit=512)) from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "systemd refused the session").strip()
         raise ServiceError(detail[-1024:])
@@ -100,21 +92,13 @@ def start_session_service(
     }
 
 
-def stop_pending_session_service(*, runner: Runner = subprocess.run) -> dict[str, object]:
+def stop_pending_session_service(*, runner: Runner = run_command) -> dict[str, object]:
     """Cancel a service launch before its supervised session owns runtime state."""
     command = ("systemctl", "--user", "stop", UNIT_NAME)
     try:
-        result = runner(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-            timeout=25,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ServiceError(f"could not cancel the Omacast session service: {exc}") from exc
+        result = runner(command, timeout=25)
+    except OSError as exc:
+        raise ServiceError("could not cancel the Omacast session service: " + bounded_text(str(exc), limit=512)) from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "systemd refused the cancellation").strip()
         # Collected transient units disappear immediately after exit. In that

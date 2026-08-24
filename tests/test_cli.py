@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from omarchy_cast.cli import build_parser, main
+from omarchy_cast.cli import _emit, build_parser, main
 from omarchy_cast.receivers import FixtureReceiverDiscovery
 
 
@@ -24,6 +24,13 @@ class CliTest(unittest.TestCase):
                 code, payload = self.invoke(["status"])
         self.assertEqual(code, 0)
         self.assertEqual(payload["phase"], "idle")
+
+    def test_ui_response_has_a_global_byte_ceiling(self) -> None:
+        output = io.StringIO()
+        with patch("omarchy_cast.cli.MAX_UI_RESPONSE_BYTES", 128), redirect_stdout(output):
+            _emit({"schemaVersion": 1, "items": ["x" * 1_000]})
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["error"]["code"], "response-too-large")
 
     def test_hardware_cast_defaults_to_until_stopped(self) -> None:
         self.assertEqual(build_parser().parse_args(["start", "--peer", "tv-01"]).duration, 0)
@@ -55,6 +62,7 @@ class CliTest(unittest.TestCase):
             write_state(transition(idle_state(), "checking", sessionId=session_id))
             paths = telemetry_paths(session_id)
             paths["current"].write_text(json.dumps({"schemaVersion": 1, "sessionId": session_id, "health": {"status": "warming"}}))
+            paths["current"].chmod(0o600)
             code, payload = self.invoke(["status"])
         self.assertEqual(code, 0)
         self.assertEqual(payload["telemetry"]["health"]["status"], "warming")

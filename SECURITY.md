@@ -28,6 +28,25 @@ and the bar widget holds the matching Wayland idle inhibitor. Both are
 process-owned rather than persistent settings and disappear on normal Stop or
 forced owner death.
 
+## Runtime data boundaries
+
+Host discovery drains stdout and stderr concurrently but retains at most
+65,536 bytes from either stream. The controller emits at most 262,144 bytes in
+one UI response. The panel uses a streaming parser instead of Quickshell's
+complete-output collector, retains at most 262,144 characters, and rejects an
+oversized response before `JSON.parse`. A streaming discard parser drains each
+controller stderr channel without retaining or displaying its contents.
+Receiver, monitor, readiness, warning, diagnostic, and telemetry collections
+are normalized to small allowlisted models with explicit count and string
+limits before QML displays them.
+
+The runtime `state.json` file is limited to 65,536 bytes and the current
+telemetry snapshot to 262,144 bytes. Both are opened without following symlinks,
+checked through the same descriptor for regular-file ownership and private
+permissions, read only to their limit plus one byte, and checked for bounded
+JSON depth, fan-out, node count, and string length before use. Receiver and
+controller-derived strings use plain-text rendering in the panel.
+
 ## Data and display exposure
 
 Mirroring sends the selected desktop output and its audio to the chosen local

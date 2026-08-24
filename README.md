@@ -1,6 +1,6 @@
 # Omacast
 
-![Omacast Nerd Mode during a healthy cast](nerd-mode.png)
+![Omacast Nerd Mode during a healthy cast](preview.png)
 
 Omacast mirrors an Omarchy/Hyprland desktop and its audio to a Miracast
 display. It is keyboard-first, runs from the Omarchy bar, and has been validated
@@ -22,10 +22,6 @@ Super+Alt+C  →  choose a TV  →  Enter
 - Casting continues until stopped and inhibits idle/sleep while active.
 - Passwordless per-cast setup after the companion package installs its narrow,
   `prepare`-only Polkit action.
-
-The normal panel stays compact:
-
-![Omacast ready to cast](preview.png)
 
 ## Requirements
 

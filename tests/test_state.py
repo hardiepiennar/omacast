@@ -5,7 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from omarchy_cast.state import SessionLock, StateError, idle_state, read_state, session_lock_is_held, transition, write_state
+from omarchy_cast.bounds import MAX_STATE_BYTES
+from omarchy_cast.state import SessionLock, StateError, idle_state, read_state, session_lock_is_held, state_path, transition, write_state
 
 
 class StateTest(unittest.TestCase):
@@ -46,6 +47,32 @@ class StateTest(unittest.TestCase):
     def test_no_runtime_state_is_idle(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             self.assertEqual(read_state({"XDG_RUNTIME_DIR": temp}), idle_state())
+
+    def test_oversized_runtime_state_is_rejected_before_json_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            path = state_path(environment)
+            path.parent.mkdir(mode=0o700)
+            path.write_bytes(b"{" + b" " * MAX_STATE_BYTES + b"}")
+            path.chmod(0o600)
+            with self.assertRaisesRegex(StateError, "exceeds"):
+                read_state(environment)
+
+    def test_runtime_state_refuses_symlinks_and_excessive_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            path = state_path(environment)
+            path.parent.mkdir(mode=0o700)
+            target = Path(temp) / "target.json"
+            target.write_text(json.dumps(idle_state()), encoding="utf-8")
+            path.symlink_to(target)
+            with self.assertRaisesRegex(StateError, "cannot read"):
+                read_state(environment)
+        nested: object = "value"
+        for _ in range(14):
+            nested = {"next": nested}
+        with self.assertRaisesRegex(StateError, "nested too deeply"):
+            transition(idle_state(), "checking", sessionId="session-1", request=nested)
 
     def test_session_lock_allows_exactly_one_owner(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

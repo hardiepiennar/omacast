@@ -10,6 +10,8 @@ from pathlib import Path
 import tempfile
 from typing import Any, Mapping
 
+from .bounds import BoundError, MAX_STATE_BYTES, bounded_text, read_bounded_regular_file, validate_json_budget
+
 
 SCHEMA_VERSION = 1
 IDLE_PHASE = "idle"
@@ -110,6 +112,10 @@ def idle_state() -> dict[str, object]:
 
 
 def validate_state(state: Mapping[str, Any]) -> dict[str, object]:
+    try:
+        validate_json_budget(state)
+    except BoundError as exc:
+        raise StateError(str(exc)) from exc
     if state.get("schemaVersion") != SCHEMA_VERSION:
         raise StateError("unsupported state schema")
     phase = state.get("phase")
@@ -151,12 +157,21 @@ def state_path(environ: Mapping[str, str] | None = None) -> Path:
 
 def read_state(environ: Mapping[str, str] | None = None) -> dict[str, object]:
     path = state_path(environ)
-    if not path.exists():
-        return idle_state()
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise StateError(f"cannot read runtime state: {exc}") from exc
+        encoded = read_bounded_regular_file(
+            path,
+            limit=MAX_STATE_BYTES,
+            require_owner=True,
+            require_private=True,
+        )
+    except FileNotFoundError:
+        return idle_state()
+    except (OSError, BoundError) as exc:
+        raise StateError("cannot read runtime state: " + bounded_text(str(exc), limit=240)) from exc
+    try:
+        loaded = json.loads(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StateError("cannot read runtime state: invalid JSON") from exc
     if not isinstance(loaded, dict):
         raise StateError("runtime state must be an object")
     return validate_state(loaded)

@@ -20,6 +20,10 @@ Panel {
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color muted: Qt.darker(foreground, 1.5)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+  readonly property int maxControllerResponseChars: 262144
+  readonly property int maxReceivers: 64
+  readonly property int maxIssues: 16
+  readonly property int maxWarnings: 8
 
   property var doctor: ({})
   property var launchPlan: ({})
@@ -28,7 +32,6 @@ Panel {
   property string receiverId: ""
   property string receiverName: ""
   property string pendingReceiverId: ""
-  property string connectError: ""
   property int receiverCursor: -1
   property bool keyboardCursor: false
   property string message: "Put your TV in Display Mirroring, then choose it below."
@@ -59,7 +62,147 @@ Panel {
   readonly property string icon: needsRecovery ? "󰀦" : streaming ? "󰄙" : "󰄘"
 
   function parseJson(text, fallback) {
+    if (typeof text !== "string" || text.length > maxControllerResponseChars) return fallback
     try { return JSON.parse(text) } catch (error) { return fallback }
+  }
+
+  function parseJsonObject(text, fallback) {
+    var value = parseJson(text, fallback)
+    return value && typeof value === "object" && !Array.isArray(value) ? value : fallback
+  }
+
+  function boundedText(value, fallback, limit) {
+    var result = typeof value === "string" ? value : fallback
+    result = result.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "�")
+    return result.length <= limit ? result : result.slice(0, Math.max(0, limit - 1)) + "…"
+  }
+
+  function boundedStrings(items, maximum, limit) {
+    if (!Array.isArray(items)) return []
+    var result = []
+    for (var i = 0; i < items.length && result.length < maximum; i++)
+      if (typeof items[i] === "string") result.push(boundedText(items[i], "", limit))
+    return result
+  }
+
+  function normalizeIssues(items) {
+    if (!Array.isArray(items)) return []
+    var result = []
+    for (var i = 0; i < items.length && result.length < maxIssues; i++) {
+      var issue = items[i]
+      if (!issue || typeof issue !== "object") continue
+      result.push({
+        code: boundedText(issue.code, "unknown", 80),
+        name: boundedText(issue.name, "Casting requirement", 120),
+        scope: boundedText(issue.scope, "host", 32),
+        message: boundedText(issue.message, "Casting requirement unavailable", 240)
+      })
+    }
+    return result
+  }
+
+  function normalizeReceivers(items) {
+    if (!Array.isArray(items)) return []
+    var result = []
+    var ids = ({})
+    for (var i = 0; i < items.length && result.length < maxReceivers; i++) {
+      var item = items[i]
+      if (!item || typeof item !== "object" || typeof item.id !== "string" || typeof item.name !== "string") continue
+      var id = boundedText(item.id, "", 128)
+      var name = boundedText(item.name, "", 120)
+      var kind = item.kind === "fire-tv" ? "fire-tv" : item.kind === "wfd-display" ? "wfd-display" : ""
+      if (!id || !name || !kind || ids[id]) continue
+      ids[id] = true
+      result.push({ id: id, name: name, kind: kind })
+    }
+    return result
+  }
+
+  function normalizeDoctor(value) {
+    if (!value || typeof value !== "object" || value.schemaVersion !== 1) return ({})
+    var sourceMonitors = Array.isArray(value.monitors) ? value.monitors : []
+    var monitors = []
+    for (var i = 0; i < sourceMonitors.length && monitors.length < 16; i++) {
+      var output = sourceMonitors[i]
+      if (!output || typeof output !== "object" || typeof output.name !== "string") continue
+      monitors.push({ name: boundedText(output.name, "Display", 128), focused: output.focused === true })
+    }
+    var readiness = value.readiness && typeof value.readiness === "object" ? value.readiness : {}
+    return {
+      schemaVersion: 1,
+      monitors: monitors,
+      readiness: {
+        ready: readiness.ready === true,
+        setupRequired: readiness.setupRequired === true,
+        summary: boundedText(readiness.summary, "Casting support check failed", 240),
+        issues: normalizeIssues(readiness.issues)
+      }
+    }
+  }
+
+  function finiteNumber(value) {
+    var number = Number(value)
+    return isFinite(number) ? number : 0
+  }
+
+  function normalizeProcess(value) {
+    value = value && typeof value === "object" ? value : {}
+    return { pid: finiteNumber(value.pid), cpuPercent: finiteNumber(value.cpuPercent), cpuDelayMsPerSec: finiteNumber(value.cpuDelayMsPerSec) }
+  }
+
+  function normalizePacket(value) {
+    value = value && typeof value === "object" ? value : {}
+    return { packets: finiteNumber(value.packets), p95GapMs: finiteNumber(value.p95GapMs) }
+  }
+
+  function normalizeTelemetry(value) {
+    value = value && typeof value === "object" ? value : {}
+    var negotiated = value.negotiated && typeof value.negotiated === "object" ? value.negotiated : {}
+    var output = value.output && typeof value.output === "object" ? value.output : {}
+    var processes = value.processes && typeof value.processes === "object" ? value.processes : {}
+    var transport = value.transport && typeof value.transport === "object" ? value.transport : {}
+    var radio = value.radio && typeof value.radio === "object" ? value.radio : {}
+    var timing = value.packetTiming && typeof value.packetTiming === "object" ? value.packetTiming : {}
+    var maxima = value.maxima && typeof value.maxima === "object" ? value.maxima : {}
+    var health = value.health && typeof value.health === "object" ? value.health : {}
+    return {
+      sampledAt: boundedText(value.sampledAt, "", 64),
+      negotiated: { mode: boundedText(negotiated.mode, "", 64), fps: finiteNumber(negotiated.fps) },
+      output: {
+        measuredFps: finiteNumber(output.measuredFps), reportedFps: finiteNumber(output.reportedFps),
+        realtimeRatio: finiteNumber(output.realtimeRatio), dropFrames: finiteNumber(output.dropFrames),
+        dupFrames: finiteNumber(output.dupFrames)
+      },
+      processes: { capture: normalizeProcess(processes.capture), mux: normalizeProcess(processes.mux) },
+      transport: {
+        interface: boundedText(transport.interface, "", 64), txMbps: finiteNumber(transport.txMbps),
+        sendQueueBytes: finiteNumber(transport.sendQueueBytes), txErrors: finiteNumber(transport.txErrors),
+        txDropped: finiteNumber(transport.txDropped)
+      },
+      radio: {
+        signalDbm: radio.signalDbm === undefined ? undefined : finiteNumber(radio.signalDbm),
+        txBitrateMbps: finiteNumber(radio.txBitrateMbps), retryDelta: finiteNumber(radio.retryDelta),
+        failureDelta: finiteNumber(radio.failureDelta), beaconLossDelta: finiteNumber(radio.beaconLossDelta)
+      },
+      packetTiming: { video: normalizePacket(timing.video), audio: normalizePacket(timing.audio), avSkewMs: finiteNumber(timing.avSkewMs) },
+      maxima: { sendQueueBytes: finiteNumber(maxima.sendQueueBytes), cpuDelayMsPerSec: finiteNumber(maxima.cpuDelayMsPerSec) },
+      health: { status: boundedText(health.status, "", 32), issues: boundedStrings(health.issues, maxIssues, 240) }
+    }
+  }
+
+  function normalizeSession(value) {
+    value = value && typeof value === "object" ? value : {}
+    var allowed = ["idle", "checking", "discovering", "preparing", "connecting", "streaming", "stopping", "error", "recovering"]
+    var valuePhase = typeof value.phase === "string" && allowed.indexOf(value.phase) >= 0 ? value.phase : "error"
+    var error = value.error && typeof value.error === "object" ? value.error : {}
+    return {
+      schemaVersion: value.schemaVersion === 1 ? 1 : 0,
+      phase: valuePhase,
+      sessionId: boundedText(value.sessionId, "", 64),
+      startedAt: boundedText(value.startedAt, "", 64),
+      error: { code: boundedText(error.code, "runtime-state-invalid", 80), message: boundedText(error.message, "Casting state could not be read", 512) },
+      telemetry: normalizeTelemetry(value.telemetry)
+    }
   }
 
   function sessionLabel() {
@@ -68,10 +211,10 @@ Panel {
 
   function iconTooltip() {
     if (needsRecovery) return "Omacast · Recovery required"
-    if (streaming) return "Omacast · Casting" + (receiverName ? " to " + receiverName : "")
+    if (streaming) return "Omacast · Casting to display"
     if (scanRunning) return "Omacast · Looking for displays"
     if (phase === "preparing") return "Omacast · Preparing network"
-    if (phase === "connecting") return "Omacast · Connecting" + (receiverName ? " to " + receiverName : "")
+    if (phase === "connecting") return "Omacast · Connecting to display"
     if (phase === "stopping" || phase === "recovering") return "Omacast · Restoring network"
     if (sessionBusy) return "Omacast · " + sessionLabel()
     if (!doctorComplete) return "Omacast · Checking system"
@@ -107,7 +250,7 @@ Panel {
 
   function readinessSummary() {
     if (!doctorComplete) return "Checking casting support…"
-    return String((doctor.readiness || {}).summary || "Casting support check failed")
+    return boundedText((doctor.readiness || {}).summary, "Casting support check failed", 240)
   }
 
   function systemReady() {
@@ -159,7 +302,7 @@ Panel {
   }
 
   function applyDoctor(text) {
-    var result = parseJson(text, {})
+    var result = normalizeDoctor(parseJsonObject(text, {}))
     doctor = result
     doctorComplete = result.schemaVersion === 1 && result.readiness !== undefined
     if (!doctorComplete) message = "Casting support check failed"
@@ -200,16 +343,16 @@ Panel {
   }
 
   function applyScan(text) {
-    var result = parseJson(text, {})
+    var result = parseJsonObject(text, {})
     if (result.ok === false) {
       receivers = []
       receiverId = ""
       receiverName = ""
       receiverCursor = -1
-      message = String(result.error && result.error.message || "Could not scan for displays")
+      message = boundedText(result.error && result.error.message, "Could not scan for displays", 512)
       return
     }
-    var items = result.receivers || []
+    var items = normalizeReceivers(result.receivers)
     receivers = items
     if (!selectedReceiverStillExists(items)) {
       receiverId = ""
@@ -270,7 +413,6 @@ Panel {
     }
     if (!connectProc.running) {
       pendingReceiverId = receiverId
-      connectError = ""
       message = "Connecting to " + receiverName + "…"
       cancelRequested = false
       stopAwaitingIdle = false
@@ -298,7 +440,7 @@ Panel {
   }
 
   function updateSession(value) {
-    session = value
+    session = normalizeSession(value)
     if (phase !== "idle") {
       startPending = false
       startDeadline.stop()
@@ -313,7 +455,7 @@ Panel {
       stopAwaitingIdle = false
       cancelRequested = false
       var problem = session.error && session.error.message
-      message = String(problem || "The cast did not start cleanly")
+      message = boundedText(problem, "The cast did not start cleanly", 512)
     }
     maybeAutoScan()
   }
@@ -524,9 +666,13 @@ Panel {
   Process {
     id: doctorProc
     command: [root.controllerPath, "doctor"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyDoctor(text) }
+    stdout: BoundedCollector { id: doctorOutput }
+    stderr: DiscardCollector {}
+    onRunningChanged: if (running) doctorOutput.reset()
     onExited: function(exitCode) {
-      if (exitCode !== 0) {
+      if (exitCode === 0 && !doctorOutput.overflow) {
+        root.applyDoctor(doctorOutput.output)
+      } else {
         root.doctorComplete = false
         root.message = "Casting support check failed"
       }
@@ -535,46 +681,60 @@ Panel {
   Process {
     id: statusProc
     command: [root.controllerPath, "status"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateSession(root.parseJson(text, { phase: "error" })) }
+    stdout: BoundedCollector { id: statusOutput }
+    stderr: DiscardCollector {}
+    onRunningChanged: if (running) statusOutput.reset()
+    onExited: root.updateSession(root.parseJsonObject(statusOutput.output, { phase: "error", error: { code: "runtime-state-invalid", message: "Casting state could not be read" } }))
   }
   Process {
     id: planProc
     command: [root.controllerPath, "plan", "--peer", root.receiverId || "omacast-preview", "--mode", "mirror", "--profile", "safe"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.launchPlan = root.parseJson(text, {}) }
+    stdout: BoundedCollector { id: planOutput }
+    stderr: DiscardCollector {}
+    onRunningChanged: if (running) planOutput.reset()
+    onExited: {
+      var result = root.parseJsonObject(planOutput.output, {})
+      root.launchPlan = { warnings: root.boundedStrings(result.warnings, root.maxWarnings, 240) }
+    }
   }
   Process {
     id: scanProc
     command: [root.controllerPath, "scan", "--timeout", "8"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyScan(text) }
-    onRunningChanged: root.scanRunning = running
+    stdout: BoundedCollector { id: scanOutput }
+    stderr: DiscardCollector {}
+    onRunningChanged: {
+      root.scanRunning = running
+      if (running) scanOutput.reset()
+    }
+    onExited: root.applyScan(scanOutput.output)
   }
   Process {
     id: connectProc
     command: [root.controllerPath, "start", "--peer", root.pendingReceiverId, "--mode", "mirror", "--profile", "safe"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var result = root.parseJson(text, {})
-        if (result.ok === true) {
-          if (root.cancelRequested) {
-            root.message = "Cancelling the connection…"
-          } else {
-            root.message = "Starting the guarded cast session…"
-            startDeadline.restart()
-          }
-        } else {
-          root.startPending = false
-          root.message = String(result.error && result.error.message || "Cast failed")
-        }
-      }
+    stdout: BoundedCollector { id: connectOutput }
+    stderr: DiscardCollector {}
+    onRunningChanged: {
+      root.connectRunning = running
+      if (running) connectOutput.reset()
     }
-    stderr: StdioCollector { waitForEnd: true; onStreamFinished: root.connectError = text.trim() }
-    onRunningChanged: root.connectRunning = running
     onExited: function(exitCode) {
-      if (exitCode !== 0 && !root.cancelRequested) {
+      var result = root.parseJsonObject(connectOutput.output, {})
+      if (result.ok === true) {
+        if (root.cancelRequested) {
+          root.message = "Cancelling the connection…"
+        } else {
+          root.message = "Starting the guarded cast session…"
+          startDeadline.restart()
+        }
+      } else {
         root.startPending = false
-        var firstLine = root.connectError.split("\n")[0]
-        root.message = firstLine || "The cast launcher did not start. Try again."
+        root.message = root.boundedText(result.error && result.error.message, "Cast failed", 512)
+      }
+      if (exitCode !== 0 && !root.cancelRequested) {
+        if (root.startPending) {
+          root.startPending = false
+          root.message = "The cast launcher did not start. Try again."
+        }
       }
       if (root.cancelRequested && !stopProc.running) stopProc.running = true
       root.refresh()
@@ -583,39 +743,39 @@ Panel {
   Process {
     id: stopProc
     command: [root.controllerPath, "stop"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var result = root.parseJson(text, {})
-        if (result.ok === true && result.phase === "idle") {
-          root.stopAwaitingIdle = false
-          root.cancelRequested = false
-          root.message = "Connection cancelled"
-        } else if (result.ok === true) {
-          root.message = "Stopping the cast safely…"
-        } else {
-          root.stopAwaitingIdle = false
-          root.cancelRequested = false
-          root.message = String(result.error && result.error.message || "Could not stop the cast")
-        }
-      }
-    }
+    stdout: BoundedCollector { id: stopOutput }
+    stderr: DiscardCollector {}
+    onRunningChanged: if (running) stopOutput.reset()
     onExited: function(exitCode) {
+      var result = root.parseJsonObject(stopOutput.output, {})
+      if (result.ok === true && result.phase === "idle") {
+        root.stopAwaitingIdle = false
+        root.cancelRequested = false
+        root.message = "Connection cancelled"
+      } else if (result.ok === true) {
+        root.message = "Stopping the cast safely…"
+      } else {
+        root.stopAwaitingIdle = false
+        root.cancelRequested = false
+        root.message = root.boundedText(result.error && result.error.message, "Could not stop the cast", 512)
+      }
       root.refresh()
     }
   }
   Process {
     id: recoverProc
     command: [root.controllerPath, "recover"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var result = root.parseJson(text, {})
-        root.message = result.ok === true ? "Casting state restored" : String(result.error && result.error.message || "Recovery failed")
-      }
+    stdout: BoundedCollector { id: recoverOutput }
+    stderr: DiscardCollector {}
+    onRunningChanged: {
+      root.recoverRunning = running
+      if (running) recoverOutput.reset()
     }
-    onRunningChanged: root.recoverRunning = running
-    onExited: function(exitCode) { root.refresh() }
+    onExited: function(exitCode) {
+      var result = root.parseJsonObject(recoverOutput.output, {})
+      root.message = result.ok === true ? "Casting state restored" : root.boundedText(result.error && result.error.message, "Recovery failed", 512)
+      root.refresh()
+    }
   }
 
   // Keep the bar icon truthful even while the panel is closed. The fast timer
@@ -710,6 +870,7 @@ Panel {
             iconComponent: Component {
               Text {
                 text: root.icon
+                textFormat: Text.PlainText
                 color: root.iconColor
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
@@ -720,6 +881,7 @@ Panel {
           Text {
             width: parent.width
             text: root.message
+            textFormat: Text.PlainText
             color: root.muted
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -761,6 +923,7 @@ Panel {
               visible: root.receivers.length > 0
               width: parent.width
               text: "Click a TV, or use ↑/↓ and Enter · Esc close"
+              textFormat: Text.PlainText
               color: root.muted
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -769,11 +932,11 @@ Panel {
 
             Repeater {
               model: root.receivers
-              delegate: Button {
+              delegate: ReceiverButton {
                 required property var modelData
                 required property int index
                 width: parent.width
-                text: String(modelData.name || "Miracast display")
+                labelText: root.boundedText(modelData.name, "Miracast display", 120)
                 tooltipText: String(modelData.kind) === "fire-tv"
                   ? "Fire TV · Miracast audio and video"
                   : "Miracast display · audio and video"
@@ -791,6 +954,7 @@ Panel {
               visible: !root.scanRunning && root.receivers.length === 0
               width: parent.width
               text: "Open Display Mirroring on the TV, then rescan."
+              textFormat: Text.PlainText
               color: root.muted
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -809,6 +973,7 @@ Panel {
                 anchors.fill: parent
                 anchors.margins: Style.space(8)
                 text: root.launchPlan.warnings ? root.launchPlan.warnings.join("\n") : ""
+                textFormat: Text.PlainText
                 color: root.muted
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -838,6 +1003,7 @@ Panel {
             Text {
               width: parent.width
               text: root.readinessDetail()
+              textFormat: Text.PlainText
               color: root.muted
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -863,6 +1029,7 @@ Panel {
             Text {
               width: parent.width
               text: root.recoveryGuidance()
+              textFormat: Text.PlainText
               color: root.muted
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -946,9 +1113,57 @@ Panel {
     property string value: ""
     width: parent.width
     spacing: Style.space(8)
-    Text { text: parent.label; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall }
+    Text { text: parent.label; textFormat: Text.PlainText; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall }
     Item { width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[2].implicitWidth - parent.spacing * 2); height: 1 }
-    Text { text: parent.value; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight; width: Math.min(implicitWidth, Style.space(245)) }
+    Text { text: parent.value; textFormat: Text.PlainText; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight; width: Math.min(implicitWidth, Style.space(245)) }
+  }
+
+  // StdioCollector has no size ceiling and buffers the complete stream. An
+  // empty-marker SplitParser emits each available chunk without retaining it;
+  // this component keeps only the controller contract's bounded response.
+  component BoundedCollector: SplitParser {
+    property string output: ""
+    property bool overflow: false
+    splitMarker: ""
+
+    function reset() {
+      output = ""
+      overflow = false
+    }
+
+    onRead: function(data) {
+      if (overflow) return
+      var remaining = root.maxControllerResponseChars - output.length
+      if (data.length > remaining) {
+        output = ""
+        overflow = true
+      } else {
+        output += data
+      }
+    }
+  }
+
+  component DiscardCollector: SplitParser {
+    splitMarker: ""
+    onRead: function(data) {}
+  }
+
+  component ReceiverButton: Button {
+    property string labelText: ""
+    implicitHeight: receiverLabel.implicitHeight + verticalPadding * 2 + Style.normalBorderWidth * 2
+    Text {
+      id: receiverLabel
+      anchors.centerIn: parent
+      width: Math.max(0, parent.width - parent.horizontalPadding * 2)
+      text: parent.labelText
+      textFormat: Text.PlainText
+      color: parent.foreground
+      font.family: parent.fontFamily
+      font.pixelSize: parent.fontSize
+      font.bold: parent.selected
+      horizontalAlignment: Text.AlignHCenter
+      elide: Text.ElideRight
+    }
   }
 
   component NerdMetric: BorderSurface {
@@ -964,8 +1179,8 @@ Panel {
       anchors.fill: parent
       anchors.margins: Style.space(8)
       spacing: Style.space(3)
-      Text { text: parent.parent.label; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-      Text { width: parent.width; text: parent.parent.value; color: parent.parent.valueColor; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight }
+      Text { text: parent.parent.label; textFormat: Text.PlainText; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+      Text { width: parent.width; text: parent.parent.value; textFormat: Text.PlainText; color: parent.parent.valueColor; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight }
     }
   }
 }

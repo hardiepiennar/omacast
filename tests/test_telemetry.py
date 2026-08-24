@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from omarchy_cast.bounds import MAX_TELEMETRY_BYTES
 from omarchy_cast.telemetry import TelemetrySampler, cleanup_live_telemetry, parse_ffmpeg_progress, parse_iw_station, read_telemetry, telemetry_paths
 
 
@@ -39,6 +40,20 @@ class TelemetryTest(unittest.TestCase):
             self.assertEqual(read_telemetry(session_id, environment), payload)
             with self.assertRaisesRegex(ValueError, "controller-issued"):
                 telemetry_paths("unsafe", environment)
+
+    def test_oversized_or_linked_live_snapshot_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            session_id = "c" * 32
+            paths = telemetry_paths(session_id, environment)
+            paths["current"].write_bytes(b"{" + b" " * MAX_TELEMETRY_BYTES + b"}")
+            paths["current"].chmod(0o600)
+            self.assertIsNone(read_telemetry(session_id, environment))
+            paths["current"].unlink()
+            target = Path(temp) / "telemetry.json"
+            target.write_text(json.dumps({"schemaVersion": 1, "sessionId": session_id}), encoding="utf-8")
+            paths["current"].symlink_to(target)
+            self.assertIsNone(read_telemetry(session_id, environment))
 
     def test_packet_timing_reports_audio_video_gaps_and_skew(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
