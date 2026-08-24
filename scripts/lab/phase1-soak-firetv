@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# One-approval 10-minute end-to-end Fire TV test-pattern soak. The 660-second
+# process window leaves discovery/negotiation time before the 10-minute stream.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+guard="$repo_root/scripts/lab/phase1-direct-network-guard"
+stream="$repo_root/scripts/lab/phase1-direct-firetv"
+token_file="/run/omarchy-cast-network-guard.token"
+ready_file="/run/omarchy-cast-network-guard.ready"
+stop_file="/run/user/$(id -u)/omarchy-cast-network-guard.stop"
+process_seconds="${OMARCHY_CAST_PROCESS_SECONDS:-660}"
+if [[ ! "$process_seconds" =~ ^[0-9]+$ ]] || \
+   (( process_seconds < 60 || process_seconds > 1680 )); then
+  echo "OMARCHY_CAST_PROCESS_SECONDS must be between 60 and 1680."
+  exit 2
+fi
+guard_seconds=$((process_seconds + 120))
+
+if [[ -e "$token_file" ]]; then
+  echo "A guarded P2P session is already active."
+  exit 1
+fi
+
+pkexec "$guard" "$guard_seconds" &
+guard_pid=$!
+
+stop_guard() {
+  if [[ -e "$token_file" && ! -e "$stop_file" ]]; then
+    install -m600 /dev/null "$stop_file"
+  fi
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    [[ -e "$token_file" ]] || break
+    sleep 0.1
+  done
+  wait "$guard_pid" 2>/dev/null || true
+}
+trap stop_guard EXIT
+trap 'exit 130' HUP INT TERM
+
+echo "Approve the administrator prompt; the soak will start automatically."
+deadline=$((SECONDS + 90))
+while [[ ! -e "$ready_file" ]]; do
+  if (( SECONDS >= deadline )); then
+    echo "Administrator approval did not complete within 90 seconds."
+    exit 1
+  fi
+  sleep 0.2
+done
+
+set +e
+timeout --signal=INT --kill-after=20s "$process_seconds" "$stream" connect
+stream_status=$?
+set -e
+
+if (( stream_status != 0 && stream_status != 124 )); then
+  echo "The Fire TV soak failed with status $stream_status."
+  exit "$stream_status"
+fi
+echo "The timed Fire TV soak completed."

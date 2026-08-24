@@ -1,0 +1,74 @@
+From e9184ad09d966bfab45420bd11f8bc5825469340 Mon Sep 17 00:00:00 2001
+From: Omarchy Cast package build <packaging@localhost>
+Date: Sat, 22 Aug 2026 20:06:47 +1200
+Subject: [PATCH] Give WFD receivers a bounded presentation window
+
+---
+ src/wfd/media/pipeline.py | 9 +++++++--
+ src/wfd/media/wlroots.py  | 1 +
+ tests/test_wfd.py         | 6 ++++++
+ 3 files changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+index 349eef9..d90391e 100644
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -160,7 +160,13 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+             aosp_args = ["-tables_version", "1", "-sdt_period", "1000000"]
+ 
+         return [
+-            "-muxdelay", "0",
++            # Keep access-unit timestamps ahead of PCR so the sink can absorb
++            # capture and scheduler jitter before presentation.  Zero delay
++            # leaves PTS at (and occasionally behind) PCR, forcing audio and
++            # video decoders to present independently as soon as they finish.
++            # 250 ms is the smallest measured window that leaves the video
++            # path a full decode budget while remaining interactive.
++            "-muxdelay", "0.25",
+             "-muxpreload", "0",
+             # WFD receivers (notably Samsung) are sensitive to MPEG-TS layout.
+             # Keep PMT/video/audio PID values aligned with the working gst path!!!
+@@ -224,4 +230,3 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+ 
+ 
+ 
+-
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 06d445b..45805ca 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -58,6 +58,7 @@ class WlrootsMixin:
+             "-k", "h264",
+             "-bm", "cbr",
+             "-q", str(effective_kbits),
++            "-tune", "performance",
+             "-keyint", str(keyint_seconds),
+             "-ffmpeg-video-opts", f"profile={profile};level={level};aud=1",
+             "-ffmpeg-opts",
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index 5a8822c..0f1812e 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -169,6 +169,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         self.assertEqual(capture_cmd[capture_cmd.index("-s") + 1], "1280x720")
+         self.assertEqual(capture_cmd[capture_cmd.index("-f") + 1], "60")
+         self.assertEqual(capture_cmd[capture_cmd.index("-q") + 1], "7000")
++        self.assertEqual(capture_cmd[capture_cmd.index("-tune") + 1], "performance")
+         self.assertIn("profile=constrained_baseline;level=32;aud=1", capture_cmd)
+         self.assertIn(
+             "cluster_time_limit=20;cluster_size_limit=16384;live=1;flush_packets=1",
+@@ -321,6 +322,11 @@ class AospTablesVersionTest(unittest.TestCase):
+         # muxer to flush every packet defeats that buffering and creates jitter.
+         self.assertNotIn("-flush_packets", self._args(False))
+ 
++    def test_transport_keeps_pts_safely_ahead_of_pcr(self):
++        args = self._args(False)
++        self.assertEqual(args[args.index("-muxdelay") + 1], "0.25")
++        self.assertEqual(args[args.index("-muxpreload") + 1], "0")
++
+     def test_flag_stamps_version_1_like_aosp(self):
+         # AOSP writes 0xc3 (version_number=1) in PAT and PMT; both muxers
+         # default to 0, which a sink seeded at 0 can treat as already seen.
+-- 
+2.55.0
+

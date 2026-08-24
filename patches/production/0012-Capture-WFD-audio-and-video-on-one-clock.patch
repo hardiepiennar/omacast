@@ -1,0 +1,103 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Sat, 22 Aug 2026 12:30:00 +1200
+Subject: [PATCH] Capture WFD audio and video on one clock
+
+Feeding video from wf-recorder and audio from a separate Pulse input gives
+FFmpeg independent timestamp domains. Capture both streams in wf-recorder's
+NUT output so their timestamps share one origin and cadence.
+---
+ src/wfd/media/wlroots.py | 17 ++++++++++++-----
+ tests/test_wfd.py         | 43 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 55 insertions(+), 5 deletions(-)
+
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -48,8 +48,18 @@ class WlrootsMixin:
+             "-c", "rawvideo",
+             "-m", "nut",
+             "-p", "pix_fmt=yuv420p",
+-            "-f", "/dev/stdout",
+         ]
++        if not self.config.no_audio:
++            # Capture audio and video in one process and one NUT timeline.
++            # A separate Pulse input gives ffmpeg two independent clocks and
++            # periodically makes the receiver repeat or drop audio samples.
++            wf_cmd += [
++                f"-a{audio_monitor}",
++                "--audio-backend=pulseaudio",
++                "-C", "pcm_s16le",
++                "-R", "48000",
++            ]
++        wf_cmd += ["-f", "/dev/stdout"]
+ 
+         requested_encoder = self.config.video_encoder
+         vaapi_device = next(
+@@ -74,11 +84,8 @@ class WlrootsMixin:
+ 
+         if not self.config.no_audio:
+             ffmpeg_cmd += [
+-                "-thread_queue_size", "1024",
+-                "-f", "pulse",
+-                "-i", audio_monitor,
+                 "-map", "0:v:0",
+-                "-map", "1:a:0",
++                "-map", "0:a:0",
+             ]
+         else:
+             ffmpeg_cmd += ["-map", "0:v:0"]
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -121,6 +121,49 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+ 
+         self.assertIn("-stats", args)
+ 
++    def test_wf_recorder_owns_one_audio_video_clock(self):
++        class Mon:
++            name, width, height = "eDP-1", 1920, 1080
++
++        class Proc:
++            def __init__(self):
++                self.stdout = io.BytesIO()
++
++            def poll(self):
++                return None
++
++            def terminate(self):
++                pass
++
++        commands = []
++
++        def popen(command, *args, **kwargs):
++            commands.append(list(command))
++            return Proc()
++
++        config = wfd.WFDMediaConfig(
++            monitor=Mon(), output_resolution="1280x720", fps=30,
++            bitrate="4M", audio_device="sink.monitor",
++        )
++        pipeline = wfd.WFDMediaPipeline(
++            config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
++            sink_rtp_port=35034,
++        )
++        with (
++            mock.patch("wfd.media.wlroots.subprocess.Popen", side_effect=popen),
++            mock.patch("wfd.media.wlroots.time.sleep"),
++            contextlib.redirect_stdout(io.StringIO()),
++        ):
++            pipeline._start_desktop_wf_recorder()
++
++        wf_cmd, ffmpeg_cmd = commands
++        self.assertIn("-asink.monitor", wf_cmd)
++        self.assertIn("--audio-backend=pulseaudio", wf_cmd)
++        self.assertEqual(ffmpeg_cmd.count("-i"), 1)
++        self.assertIn("0:a:0", ffmpeg_cmd)
++        self.assertNotIn("1:a:0", ffmpeg_cmd)
++        self.assertNotIn("pulse", ffmpeg_cmd)
++
+ 
+ class FirewallPortTest(unittest.TestCase):
+     def test_existing_port_skips_privileged_add(self):
+-- 
+2.53.0

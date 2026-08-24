@@ -1,0 +1,129 @@
+From 0b4205ce77ae354f48727665f24346abc0f93388 Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Mon, 24 Aug 2026 19:18:09 +1200
+Subject: [PATCH] Add low-burst MPEG-TS GSR handoff
+
+---
+ src/main.py              |  4 ++--
+ src/wfd/media/wlroots.py | 22 +++++++++++++-----
+ tests/test_wfd.py        | 48 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 66 insertions(+), 8 deletions(-)
+
+diff --git a/src/main.py b/src/main.py
+index 2b5683d..da76b31 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -152,10 +152,10 @@ def parse_args() -> argparse.Namespace:
+                      help="Desktop capture backend for --protocol wfd: auto (default), portal, "
+                           "wf-recorder, x11grab, or gst-x11 (X11 capture through the GStreamer "
+                           "MPEG-TS pipeline, for sinks that black-screen on the ffmpeg path)")
+-    wfd.add_argument("--wfd-gsr-handoff", default="mkv", choices=["mkv", "flv"],
++    wfd.add_argument("--wfd-gsr-handoff", default="mkv", choices=["mkv", "flv", "mpegts"],
+                      dest="wfd_gsr_handoff",
+                      help="GPU Screen Recorder pipe container: mkv (receiver-proven default) "
+-                          "or flv (lower-burst experimental handoff)")
++                          "or the experimental flv/mpegts cadence handoffs")
+     wfd.add_argument("--wfd-video-encoder", default="auto",
+                      choices=["auto", "software", "vaapi"],
+                      dest="wfd_video_encoder",
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index efce811..e606724 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -41,12 +41,18 @@ class WlrootsMixin:
+         level = _h264_level_for_mode(self.config).replace(".", "")
+         keyint_seconds = max(1, round(gop / self.config.fps))
+         capture_container = self.config.gsr_handoff
+-        input_format = "matroska" if capture_container == "mkv" else "flv"
+-        capture_muxer_options = (
+-            "cluster_time_limit=20;cluster_size_limit=16384;live=1;flush_packets=1"
+-            if capture_container == "mkv"
+-            else "live=1;flush_packets=1"
+-        )
++        input_format = {
++            "mkv": "matroska",
++            "flv": "flv",
++            "mpegts": "mpegts",
++        }[capture_container]
++        capture_muxer_options = {
++            "mkv": "cluster_time_limit=20;cluster_size_limit=16384;live=1;flush_packets=1",
++            "flv": "live=1;flush_packets=1",
++            # Keep the handoff variable-rate and let the existing receiver-facing
++            # mux remain the sole PCR, CBR and pacing authority.
++            "mpegts": "mpegts_flags=resend_headers;flush_packets=1",
++        }[capture_container]
+ 
+         # GPU Screen Recorder owns capture, scaling, H.264, AAC and their
+         # common clock. Unlike wf-recorder 0.6, it emits silent AAC packets
+@@ -75,6 +81,10 @@ class WlrootsMixin:
+         ffmpeg_cmd = [
+             *_ffmpeg_sender_args(self.config.ffmpeg_stats, self.config.progress_log_path),
+             "-fflags", "+genpts",
++            *(
++                ["-probesize", "1048576", "-analyzeduration", "500000"]
++                if capture_container == "mpegts" else []
++            ),
+             "-f", input_format,
+             "-i", "pipe:0",
+             "-map", "0:v:0",
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index d2ee6d0..937dd9c 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -232,6 +232,54 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-f") + 1], "flv")
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-f", ffmpeg_cmd.index("-f") + 1) + 1], "rtp_mpegts")
+ 
++    def test_gsr_mpegts_handoff_keeps_timing_in_the_receiver_mux(self):
++        class Mon:
++            name = "eDP-1"
++            width = 1920
++            height = 1080
++
++        class Proc:
++            stdout = io.BytesIO()
++            def poll(self):
++                return None
++            def kill(self):
++                pass
++
++        commands = []
++        def fake_popen(command, **kwargs):
++            commands.append(list(command))
++            return Proc()
++
++        config = wfd.WFDMediaConfig(
++            monitor=Mon(), output_resolution="1280x720", fps=30,
++            bitrate="7M", audio_device="sink.monitor", gsr_handoff="mpegts",
++        )
++        pipeline = wfd.WFDMediaPipeline(
++            config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
++            sink_rtp_port=35034,
++        )
++
++        with (
++            mock.patch.object(wfd.shutil, "which", return_value="/usr/bin/tool"),
++            mock.patch.object(wfd.subprocess, "Popen", side_effect=fake_popen),
++            mock.patch.object(wfd.time, "sleep"),
++            contextlib.redirect_stdout(io.StringIO()),
++        ):
++            pipeline._start_desktop_wf_recorder()
++
++        capture_cmd, ffmpeg_cmd = commands
++        self.assertEqual(capture_cmd[capture_cmd.index("-c") + 1], "mpegts")
++        capture_options = capture_cmd[capture_cmd.index("-ffmpeg-opts") + 1]
++        self.assertEqual(capture_options, "mpegts_flags=resend_headers;flush_packets=1")
++        self.assertNotIn("muxrate", capture_options)
++        self.assertNotIn("pcr_period", capture_options)
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-f") + 1], "mpegts")
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-probesize") + 1], "1048576")
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-analyzeduration") + 1], "500000")
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-muxrate") + 1], "10500000")
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-pcr_period") + 1], "20")
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-f", ffmpeg_cmd.index("-f") + 1) + 1], "rtp_mpegts")
++
+ 
+ class FirewallPortTest(unittest.TestCase):
+     def test_existing_port_skips_privileged_add(self):
+-- 
+2.55.0

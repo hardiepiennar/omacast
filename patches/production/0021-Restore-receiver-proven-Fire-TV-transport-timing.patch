@@ -1,0 +1,77 @@
+From dbcf7340b8792f5c83ef0ca228357749193b508d Mon Sep 17 00:00:00 2001
+From: Omarchy Cast package build <packaging@localhost>
+Date: Sat, 22 Aug 2026 20:26:06 +1200
+Subject: [PATCH] Restore receiver-proven Fire TV transport timing
+
+---
+ src/wfd/media/pipeline.py | 17 +++++------------
+ tests/test_wfd.py         |  6 +++---
+ 2 files changed, 8 insertions(+), 15 deletions(-)
+
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+index 6185a9c..c9ac238 100644
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -123,10 +123,10 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+ 
+     def _rtp_output(self) -> str:
+         transport_rate = self._transport_rate_bps()
+-        # The UDP pacer counts the 12-byte RTP header as well as each 1316-byte
+-        # (7 * 188) TS payload. Pace at that exact clock instead of draining
+-        # queued batches 20% fast and then starving the sink between bursts.
+-        wire_rate = transport_rate * 101 // 100
++        # The wire pacer needs headroom to drain each muxer batch before the
++        # next capture wake-up. This is the receiver-proven Fire TV behavior;
++        # sink buffering, not URL pacing, owns presentation timing.
++        wire_rate = transport_rate * 120 // 100
+         return _rtp_url(
+             self.tv_ip,
+             self.sink_rtp_port,
+@@ -158,13 +158,7 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+             aosp_args = ["-tables_version", "1", "-sdt_period", "1000000"]
+ 
+         return [
+-            # Keep access-unit timestamps ahead of PCR so the sink can absorb
+-            # capture and scheduler jitter before presentation.  Zero delay
+-            # leaves PTS at (and occasionally behind) PCR, forcing audio and
+-            # video decoders to present independently as soon as they finish.
+-            # 250 ms is the smallest measured window that leaves the video
+-            # path a full decode budget while remaining interactive.
+-            "-muxdelay", "0.25",
++            "-muxdelay", "0",
+             "-muxpreload", "0",
+             # WFD receivers (notably Samsung) are sensitive to MPEG-TS layout.
+             # Keep PMT/video/audio PID values aligned with the working gst path!!!
+@@ -226,4 +220,3 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+ 
+ 
+ 
+-
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index 720ffd6..a2687b3 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -314,7 +314,7 @@ class AospTablesVersionTest(unittest.TestCase):
+ 
+         self.assertEqual(args[args.index("-muxrate") + 1], "6000000")
+         output = args[-1]
+-        self.assertIn("bitrate=6060000", output)
++        self.assertIn("bitrate=7200000", output)
+         self.assertIn("burst_bits=42496", output)
+ 
+     def test_transport_does_not_force_per_packet_flushes(self):
+@@ -322,9 +322,9 @@ class AospTablesVersionTest(unittest.TestCase):
+         # muxer to flush every packet defeats that buffering and creates jitter.
+         self.assertNotIn("-flush_packets", self._args(False))
+ 
+-    def test_transport_keeps_pts_safely_ahead_of_pcr(self):
++    def test_transport_uses_receiver_proven_zero_mux_delay(self):
+         args = self._args(False)
+-        self.assertEqual(args[args.index("-muxdelay") + 1], "0.25")
++        self.assertEqual(args[args.index("-muxdelay") + 1], "0")
+         self.assertEqual(args[args.index("-muxpreload") + 1], "0")
+ 
+     def test_flag_stamps_version_1_like_aosp(self):
+-- 
+2.55.0
+

@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Recreate the known FluxCast engine from the upstream base and tracked patches.
+# This creates a new checkout only; it never rewrites or deletes an existing one.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source_url="https://github.com/IlyaP358/fluxcast.git"
+base_revision="9d27c39670940ada3a0e520a1d70574910646083"
+target="$repo_root/work/fluxcast"
+series_file="$repo_root/patches/production/series"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/bootstrap-fluxcast [--source <git-url-or-path>] [--revision <commit>] [--target <new-directory>]
+
+Creates a new FluxCast checkout at the requested upstream commit, then applies
+the complete tracked Omacast patch series. The target must not exist.
+
+The defaults reproduce the Phase 1 engine:
+  source:   https://github.com/IlyaP358/fluxcast.git
+  revision: 9d27c39670940ada3a0e520a1d70574910646083
+  target:   work/fluxcast
+EOF
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --source)
+      source_url="${2:-}"
+      shift 2
+      ;;
+    --revision)
+      base_revision="${2:-}"
+      shift 2
+      ;;
+    --target)
+      target="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'Unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ -n "$source_url" && -n "$base_revision" && -n "$target" ]] || {
+  printf '%s\n' 'Source, revision, and target must not be empty.' >&2
+  exit 2
+}
+[[ ! -e "$target" ]] || {
+  printf 'Refusing to overwrite existing target: %s\n' "$target" >&2
+  exit 1
+}
+
+[[ -f "$series_file" ]] || {
+  printf 'Patch series is missing: %s\n' "$series_file" >&2
+  exit 1
+}
+mapfile -t patch_names < "$series_file"
+(( ${#patch_names[@]} > 0 )) || {
+  printf '%s\n' 'Patch series is empty.' >&2
+  exit 1
+}
+patches=()
+for patch_name in "${patch_names[@]}"; do
+  [[ "$patch_name" =~ ^[0-9]{4}-[A-Za-z0-9.-]+\.patch$ ]] || {
+    printf 'Invalid patch series entry: %s\n' "$patch_name" >&2
+    exit 1
+  }
+  patch="$repo_root/patches/production/$patch_name"
+  [[ -f "$patch" ]] || {
+    printf 'Required patch is missing: %s\n' "$patch" >&2
+    exit 1
+  }
+  patches+=("$patch")
+done
+
+git clone --no-checkout "$source_url" "$target"
+git -C "$target" checkout --detach "$base_revision"
+resolved_base="$(git -C "$target" rev-parse HEAD)"
+for patch in "${patches[@]}"; do
+  git -C "$target" am --3way "$patch"
+done
+
+git -C "$target" diff --check "$resolved_base" HEAD
+printf 'FluxCast engine recreated at %s from %s plus %d Omacast patches.\n' \
+  "$target" "$resolved_base" "${#patches[@]}"

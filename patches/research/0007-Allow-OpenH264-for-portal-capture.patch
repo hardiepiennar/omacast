@@ -1,0 +1,198 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Sat, 22 Aug 2026 07:50:00 +1200
+Subject: [PATCH] Allow OpenH264 for portal capture
+
+Use the installed OpenH264 encoder when x264enc is unavailable so the
+single-clock PipeWire, PulseAudio, MPEG-TS and RTP pipeline can run without an
+extra plugin package.
+---
+ src/wfd/media/portal.py | 90 +++++++++++++++++++----------------------
+ tests/test_wfd.py       | 14 +++++--
+ 2 files changed, 53 insertions(+), 51 deletions(-)
+
+diff --git a/src/wfd/media/portal.py b/src/wfd/media/portal.py
+index 9071718..f6f352f 100644
+--- a/src/wfd/media/portal.py
++++ b/src/wfd/media/portal.py
+@@ -237,12 +237,19 @@ class PortalMixin:
+             raise WFDNotReady("Portal backend requires gst-launch-1.0 (pipewiresrc pipeline).")
+         required = (
+             "pipewiresrc", "videoconvert", "videoscale",
+-            "x264enc", "mpegtsmux", "rtpmp2tpay", "udpsink",
++            "mpegtsmux", "rtpmp2tpay", "udpsink",
+         )
+         if not self.config.no_audio:
+             required += ("pulsesrc", "audioconvert", "audioresample", "aacparse")
+         missing = [name for name in required
+                    if not _gst_has_element(name)]
++        video_encoder = (
++            "x264enc" if _gst_has_element("x264enc")
++            else "openh264enc" if _gst_has_element("openh264enc")
++            else None
++        )
++        if video_encoder is None:
++            missing.append("x264enc or openh264enc")
+         if missing:
+             raise WFDNotReady(
+                 "Portal backend is missing required GStreamer elements: "
+@@ -304,68 +311,39 @@ class PortalMixin:
+ 
+             is_lg = "LG" in self.config.peer_name.upper()
+ 
+-            # x264enc configuration
+-            encoder_args = [
+-                "tune=zerolatency",
+-                f"speed-preset={'ultrafast' if parsed_out[1] > 1080 else 'veryfast'}",
+-                f"bitrate={bitrate_kbits}",
+-                f"key-int-max={gop}",
+-                #"intra-refresh=true",
+-                "threads=0",
+-                "bframes=0",
+-                "byte-stream=true",
+-                "aud=true",
+-                "sliced-threads=true",
+-            ]
+-
+-            # Check x264enc properties once; same gst-plugins-ugly version
+-            # either has all VBV params or none of them.
+-            x264_props = _gst_x264enc_properties()
+-
+-            if "repeat-headers" in x264_props:
+-                encoder_args.append("repeat-headers=true")
+-
+-            opt_parts: list[str] = []
+-            if "option-string" in x264_props:
+-                opt_parts += ["scenecut=0", f"min-keyint={gop}"]
++            if video_encoder == "openh264enc":
++                encoder_args = [
++                    f"bitrate={bitrate_kbits * 1000}",
++                    f"max-bitrate={bitrate_kbits * 1000}",
++                    "rate-control=bitrate",
++                    "complexity=low",
++                    "usage-type=screen",
++                    "enable-frame-skip=false",
++                    f"gop-size={gop}",
++                    "multi-thread=0",
++                ]
++                output_profile = "constrained-baseline"
+             else:
+-                print(
+-                    "[FluxCast WFD Media] Portal: scenecut cannot be disabled "
+-                    "(option-string unavailable); update gst-plugins-ugly to fix periodic artifacts."
+-                )
+-
+-            if is_lg:
+-                # Limit VBV rate via GObject/fallback to prevent IDR spikes overflowing LG's buffer.
+-                lg_vbv: list[str] = []
+-
+-                if "rc-lookahead" in x264_props:
+-                    lg_vbv.append("rc-lookahead=0")
+-
+-                if "vbv-maxrate" in x264_props:
+-                    lg_vbv.insert(0, f"vbv-maxrate={bitrate_kbits}")
+-                elif "option-string" in x264_props:
+-                    opt_parts.append(f"vbv-maxrate={bitrate_kbits}")
+-
+-                if "vbv-buf-capacity" in x264_props:
+-                    lg_vbv.append("vbv-buf-capacity=100")
+-                elif "option-string" in x264_props:
+-                    opt_parts.append(f"vbv-bufsize={bitrate_kbits // 10}")
+-
+-                encoder_args += lg_vbv
+-                if "vbv-maxrate" not in x264_props and "option-string" not in x264_props:
+-                    print(
+-                        "[FluxCast WFD Media] LG profile: VBV rate cap unavailable; "
+-                        "update gst-plugins-ugly for better LG compatibility."
+-                    )
+-            else:
++                encoder_args = [
++                    "tune=zerolatency",
++                    f"speed-preset={'ultrafast' if parsed_out[1] > 1080 else 'veryfast'}",
++                    f"bitrate={bitrate_kbits}",
++                    f"key-int-max={gop}",
++                    "threads=0", "bframes=0", "byte-stream=true", "aud=true",
++                    "sliced-threads=true",
++                ]
++                x264_props = _gst_x264enc_properties()
++                if "repeat-headers" in x264_props:
++                    encoder_args.append("repeat-headers=true")
++                opt_parts: list[str] = []
++                if "option-string" in x264_props:
++                    opt_parts += ["scenecut=0", f"min-keyint={gop}",
++                                  f"vbv-maxrate={bitrate_kbits}"]
+                 if "vbv-buf-capacity" in x264_props:
+-                    encoder_args.append("vbv-buf-capacity=200")
+-                # vbv-maxrate not exposed as GObject property; mirrors ffmpeg's -maxrate.
+-                if "option-string" in x264_props:
+-                    opt_parts.append(f"vbv-maxrate={bitrate_kbits}")
+-
+-            if opt_parts:
+-                encoder_args.append("option-string=" + ":".join(opt_parts))
++                    encoder_args.append(f"vbv-buf-capacity={100 if is_lg else 200}")
++                if opt_parts:
++                    encoder_args.append("option-string=" + ":".join(opt_parts))
++                output_profile = self.config.h264_profile
+ 
+             # Inject in-band SPS/PPS before every IDR (mirrors ffmpeg repeat-headers=1).
+             h264_parse_chain = ["!", "h264parse", "config-interval=-1"] if has_h264parse else []
+@@ -385,10 +363,10 @@ class PortalMixin:
+                 "!", video_caps,
+                 "!", "videoconvert",
+                 "!", "video/x-raw,format=I420",
+-                "!", "x264enc",
++                "!", video_encoder,
+                 *encoder_args,
+                 *h264_parse_chain,
+-                "!", f"video/x-h264,stream-format=byte-stream,alignment=au,profile={self.config.h264_profile}",
++                "!", f"video/x-h264,stream-format=byte-stream,alignment=au,profile={output_profile}",
+                 "!", "queue",
+                 "!", "mux.sink_4113",
+             ]
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index 79a6ec3..3e7421b 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -292,7 +292,7 @@ class AspectRatioTest(unittest.TestCase):
+         self.assertIn("pad=1280:720:(ow-iw)/2:(oh-ih)/2", vf)
+         self.assertIn("setsar=1", vf)
+ 
+-    def _gst_commands(self):
++    def _gst_commands(self, has_element=lambda _name: True):
+         """Generated gst argv for every WFD pipeline that scales."""
+         class Mon:
+             name, width, height, x, y, display = "eDP-1", 1080, 1920, 0, 0, ":0"
+@@ -336,7 +336,7 @@ class AspectRatioTest(unittest.TestCase):
+         pipeline.tx_interface = "lo"
+         with (
+             mock.patch.object(wfd.shutil, "which", side_effect=lambda n: "/usr/bin/" + n),
+-            patch_all("_gst_has_element", return_value=True),
++            patch_all("_gst_has_element", side_effect=has_element),
+             patch_all("_detect_audio_monitor", return_value="m"),
+             patch_all("_gst_pipewiresrc_properties", return_value=set()),
+             patch_all("_gst_x264enc_properties", return_value=set()),
+@@ -351,7 +351,8 @@ class AspectRatioTest(unittest.TestCase):
+             mock.patch.object(wfd.time, "sleep"),
+             contextlib.redirect_stdout(io.StringIO()),
+         ):
+-            pipeline._start_desktop_gst_x11()
++            if has_element("x264enc"):
++                pipeline._start_desktop_gst_x11()
+             pipeline._start_desktop_portal()
+             config.aosp_pmt_pid = True
+             pipeline._start_desktop_portal_ffmpeg()
+@@ -365,6 +366,13 @@ class AspectRatioTest(unittest.TestCase):
+             caps = next(a for a in cmd[index:] if a.startswith("video/x-raw") and "width=" in a)
+             self.assertIn("pixel-aspect-ratio=1/1", caps)
+ 
++    def test_portal_uses_installed_openh264_when_x264_is_missing(self):
++        commands = self._gst_commands(lambda name: name != "x264enc")
++        portal = next(cmd for cmd in commands if "pipewiresrc" in cmd)
++        self.assertIn("openh264enc", portal)
++        self.assertIn("rate-control=bitrate", portal)
++        self.assertIn("usage-type=screen", portal)
++
+ def _sequence(values):
+     """Yield the given values, then repeat the last one forever."""
+     state = list(values)
+-- 
+2.53.0

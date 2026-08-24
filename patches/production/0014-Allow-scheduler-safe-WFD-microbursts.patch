@@ -1,0 +1,56 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Sat, 22 Aug 2026 13:30:00 +1200
+Subject: [PATCH] Allow scheduler-safe WFD microbursts
+
+One RTP datagram per UDP pacer burst requires a wake-up roughly every 1.7 ms.
+Live measurement showed the socket repeatedly backing up by 34 KiB. Permit
+four-datagram microbursts and give the wire pacer 20 percent headroom so each
+muxer batch drains without exposing frame-sized bursts to the receiver.
+---
+ src/wfd/media/pipeline.py | 10 +++++-----
+ tests/test_wfd.py         |  4 ++--
+ 2 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -124,17 +124,18 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+     def _rtp_output(self) -> str:
+         transport_rate = self._transport_rate_bps()
+         # The MPEG-TS muxrate counts only 188-byte TS packets, while the UDP
+-        # pacer sees RTP framing too.  Equal ceilings slowly back up the socket
+-        # and release it in periodic bursts.  Leave wire headroom and allow
+-        # only one seven-TS-packet RTP datagram per burst.
+-        wire_rate = transport_rate * 105 // 100
++        # pacer sees RTP framing too. Scheduler latency makes single-datagram
++        # bursts miss their ~1.7 ms wake-up deadline and back up the socket.
++        # Four datagrams every ~6 ms remain smooth while giving the wire pacer
++        # enough headroom to drain each muxer batch promptly.
++        wire_rate = transport_rate * 120 // 100
+         return _rtp_url(
+             self.tv_ip,
+             self.sink_rtp_port,
+             self.config.source_port,
+             self.local_ip,
+             bitrate=wire_rate,
+-            burst_bits=1328 * 8,
++            burst_bits=4 * 1328 * 8,
+         )
+ 
+     def _common_output_args(self) -> list[str]:
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -286,8 +286,8 @@ class AospTablesVersionTest(unittest.TestCase):
+ 
+         self.assertEqual(args[args.index("-muxrate") + 1], "6000000")
+         output = args[-1]
+-        self.assertIn("bitrate=6300000", output)
+-        self.assertIn("burst_bits=10624", output)
++        self.assertIn("bitrate=7200000", output)
++        self.assertIn("burst_bits=42496", output)
+ 
+     def test_transport_does_not_force_per_packet_flushes(self):
+         # The constant-rate muxer and UDP pacer own packet timing. Forcing the
+-- 
+2.53.0

@@ -1,0 +1,43 @@
+From 703f5ff69d7680adb4326fb1594ff0b0a8a144b8 Mon Sep 17 00:00:00 2001
+From: Omarchy Cast package build <packaging@localhost>
+Date: Sat, 22 Aug 2026 20:31:11 +1200
+Subject: [PATCH] Correct measured GSR audio capture latency
+
+---
+ src/wfd/media/wlroots.py | 4 ++++
+ tests/test_wfd.py        | 4 ++++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 45805ca..f119de1 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -79,6 +79,10 @@ class WlrootsMixin:
+             ffmpeg_cmd += [
+                 "-map", "0:a:0",
+                 "-c:a", "copy",
++                # An isolated flash/beep capture measures the GSR AAC content
++                # three 48 kHz AAC frames (64 ms) behind the KMS video. Correct
++                # packet timestamps here without resampling or re-encoding.
++                "-bsf:a", "setts=pts=PTS-0.064/TB:dts=DTS-0.064/TB",
+                 "-streamid", "1:4352",
+             ]
+ 
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index a2687b3..bda8051 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -185,6 +185,10 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         self.assertIn("0:a:0", ffmpeg_cmd)
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:v") + 1], "copy")
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:a") + 1], "copy")
++        self.assertEqual(
++            ffmpeg_cmd[ffmpeg_cmd.index("-bsf:a") + 1],
++            "setts=pts=PTS-0.064/TB:dts=DTS-0.064/TB",
++        )
+ 
+ 
+ class FirewallPortTest(unittest.TestCase):
+-- 
+2.55.0
+

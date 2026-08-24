@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Exercise install, optional upgrade, integrity, and removal in a disposable pacman root.
+
+set -euo pipefail
+
+die() {
+  echo "test-package-lifecycle: $*" >&2
+  exit 1
+}
+
+[[ $# -eq 1 || $# -eq 2 ]] || die "usage: $0 [BASELINE.pkg.tar.zst] CANDIDATE.pkg.tar.zst"
+for command in bsdtar fakeroot find pacman realpath stat vercmp; do
+  command -v "$command" >/dev/null || die "$command is required"
+done
+
+baseline=""
+if [[ $# -eq 2 ]]; then
+  baseline="$1"
+  candidate="$2"
+else
+  candidate="$1"
+fi
+archives=("$candidate")
+[[ -n "$baseline" ]] && archives=("$baseline" "$candidate")
+for archive in "${archives[@]}"; do
+  [[ -f "$archive" && ! -L "$archive" ]] || die "package must be a regular, non-symlink file: $archive"
+done
+[[ -z "$baseline" ]] || baseline="$(realpath "$baseline")"
+candidate="$(realpath "$candidate")"
+
+package_field() {
+  local archive="$1"
+  local field="$2"
+  bsdtar -xOf "$archive" .PKGINFO | awk -F ' = ' -v field="$field" '$1 == field { print $2; exit }'
+}
+
+candidate_name="$(package_field "$candidate" pkgname)"
+candidate_version="$(package_field "$candidate" pkgver)"
+[[ "$candidate_name" == fluxcast-omarchy-cast && -n "$candidate_version" ]] || die "candidate package metadata is invalid"
+if [[ -n "$baseline" ]]; then
+  baseline_name="$(package_field "$baseline" pkgname)"
+  baseline_version="$(package_field "$baseline" pkgver)"
+  [[ "$baseline_name" == "$candidate_name" && -n "$baseline_version" ]] || die "archives are not the same companion package"
+  (( $(vercmp "$candidate_version" "$baseline_version") > 0 )) || die "candidate must be newer than baseline"
+fi
+
+lifecycle_root="$(mktemp -d "${TMPDIR:-/tmp}/omacast-package-lifecycle.XXXXXX")"
+cleanup() {
+  case "$lifecycle_root" in
+    "${TMPDIR:-/tmp}"/omacast-package-lifecycle.*)
+      [[ -d "$lifecycle_root" && ! -L "$lifecycle_root" && "$(stat -c %u "$lifecycle_root")" == "$UID" ]] && rm -rf -- "$lifecycle_root"
+      ;;
+  esac
+}
+trap cleanup EXIT HUP INT TERM
+
+install -d "$lifecycle_root/var/lib/pacman" "$lifecycle_root/var/cache/pacman/pkg" "$lifecycle_root/var/log"
+config="$lifecycle_root/pacman.conf"
+printf '%s\n' '[options]' 'Architecture = auto' 'SigLevel = Never' > "$config"
+pacman_args=(
+  --config "$config"
+  --root "$lifecycle_root"
+  --dbpath "$lifecycle_root/var/lib/pacman"
+  --cachedir "$lifecycle_root/var/cache/pacman/pkg"
+  --logfile "$lifecycle_root/var/log/pacman.log"
+  --noconfirm
+)
+
+if [[ -n "$baseline" ]]; then
+  fakeroot pacman "${pacman_args[@]}" -dd -U "$baseline"
+  [[ "$(fakeroot pacman "${pacman_args[@]}" -Q "$baseline_name")" == "$baseline_name $baseline_version" ]] || die "baseline did not install at its declared version"
+  fakeroot pacman "${pacman_args[@]}" -Qkk "$baseline_name" | grep -Fq '0 altered files' || die "baseline integrity check failed"
+fi
+
+fakeroot pacman "${pacman_args[@]}" -dd -U "$candidate"
+[[ "$(fakeroot pacman "${pacman_args[@]}" -Q "$candidate_name")" == "$candidate_name $candidate_version" ]] || die "candidate did not replace the baseline"
+fakeroot pacman "${pacman_args[@]}" -Qkk "$candidate_name" | grep -Fq '0 altered files' || die "candidate integrity check failed"
+
+guard="$lifecycle_root/usr/lib/omarchy-cast/omarchy-cast-guard"
+[[ "$($guard --version)" == '{"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":4}' ]] || die "upgraded helper contract is incompatible"
+policy="$lifecycle_root/usr/share/polkit-1/actions/com.omacast.guard.policy"
+[[ -f "$policy" && ! -L "$policy" && "$(stat -c %a "$policy")" == 644 ]] || die "installed Polkit action is missing or unsafe"
+
+fakeroot pacman "${pacman_args[@]}" -Rdd "$candidate_name"
+if find "$lifecycle_root/usr" \( -type f -o -type l \) -print -quit 2>/dev/null | grep -q .; then
+  die "package removal left files or symlinks behind"
+fi
+
+if [[ -n "$baseline" ]]; then
+  printf 'Package lifecycle passed: %s -> %s -> removed\n' "$baseline_version" "$candidate_version"
+else
+  printf 'Package lifecycle passed: %s -> removed\n' "$candidate_version"
+fi

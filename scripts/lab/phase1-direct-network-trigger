@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+trigger_file="/run/user/$(id -u)/omarchy-cast-network-guard.trigger"
+if [[ -e "$trigger_file" ]]; then
+  echo "The direct-network trigger is already armed."
+  exit 1
+fi
+install -m600 /dev/null "$trigger_file"
+echo "Direct-network guard triggered."

@@ -1,0 +1,124 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Sat, 22 Aug 2026 07:35:00 +1200
+Subject: [PATCH] Pace WFD MPEG-TS output
+
+Generate a constant-rate transport stream and use FFmpeg's UDP pacing controls
+to bound per-frame bursts. This prevents a low-loss link from alternating
+between a backed-up sender queue and receiver starvation.
+---
+ src/wfd/media/pipeline.py | 23 +++++++++++++++++++++--
+ src/wfd/net.py            | 16 +++++++++++++++-
+ tests/test_wfd.py         | 15 +++++++++++++++
+ 3 files changed, 51 insertions(+), 3 deletions(-)
+
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+index 7a9b4ab..a157b9b 100644
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -4,6 +4,7 @@ from typing import Optional
+ 
+ from capture.portal_capture import PortalCaptureSession, close_portal_capture
+ from ..config import WFDMediaConfig, WFDNotReady
++from ..encoding import _bitrate_to_kbits
+ from ..env import _is_hyprland_session, _is_wayland_session, _wfd_capture_backend_order
+ from ..gst import _gst_wfd_sender_available
+ from ..net import _interface_for_ip, _netdev_tx_bytes, _rtp_url
+@@ -114,8 +115,22 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+         self.processes = [new_proc]
+         print("[FluxCast WFD Media] Pipeline restarted for IDR request.")
+ 
++    def _transport_rate_bps(self) -> int:
++        # Leave enough TS overhead for audio, PSI tables and null packets while
++        # keeping a stable clock.  A 50% envelope also covers the desktop
++        # quality floor when the configured 720p rate is raised from 4 to 5M.
++        return _bitrate_to_kbits(self.config.bitrate) * 1500
++
+     def _rtp_output(self) -> str:
+-        return _rtp_url(self.tv_ip, self.sink_rtp_port, self.config.source_port, self.local_ip)
++        transport_rate = self._transport_rate_bps()
++        return _rtp_url(
++            self.tv_ip,
++            self.sink_rtp_port,
++            self.config.source_port,
++            self.local_ip,
++            bitrate=transport_rate,
++            burst_bits=max(1328 * 8, transport_rate // 60),
++        )
+ 
+     def _common_output_args(self) -> list[str]:
+         """
+@@ -151,6 +166,9 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+             "-mpegts_flags", "resend_headers+pat_pmt_at_frames",
+             "-pat_period", "0.1",
+             "-pcr_period", "20",
++            # A constant-rate TS plus UDP pacing prevents whole encoded frames
++            # from being emitted as bursts and starving the sink between them.
++            "-muxrate", str(self._transport_rate_bps()),
+             *aosp_args,
+             "-f", "rtp_mpegts",
+             self._rtp_output(),
+diff --git a/src/wfd/net.py b/src/wfd/net.py
+index 0ce8337..b99c5e8 100644
+--- a/src/wfd/net.py
++++ b/src/wfd/net.py
+@@ -19,17 +19,31 @@ def _safe_source_port(requested: int, sink_port: int, sink_rtcp_port: int = 0) -
+         port += 2
+     return port
+ 
+-def _rtp_url(tv_ip: str, sink_port: int, source_port: int, local_ip: str) -> str:
++def _rtp_url(
++    tv_ip: str,
++    sink_port: int,
++    source_port: int,
++    local_ip: str,
++    *,
++    bitrate: int | None = None,
++    burst_bits: int | None = None,
++) -> str:
+     # Bind both RTP and RTCP to the ports advertised in the RTSP SETUP reply.
+     # ffmpeg's pkt_size is the whole UDP payload, including the 12-byte RTP
+     # header. WFD receivers expect seven 188-byte TS packets per RTP payload:
+     # 12 + (7 * 188) = 1328 bytes.
++    pacing = ""
++    if bitrate is not None:
++        pacing += f"&bitrate={bitrate}"
++    if burst_bits is not None:
++        pacing += f"&burst_bits={burst_bits}"
+     return (
+         f"rtp://{tv_ip}:{sink_port}"
+         f"?localaddr={local_ip}"
+         f"&local_rtpport={source_port}"
+         f"&local_rtcpport={source_port + 1}"
+         "&pkt_size=1328"
++        f"{pacing}"
+     )
+ 
+ def _interface_for_ip(local_ip: str) -> Optional[str]:
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index 42cbfc5..79a6ec3 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -225,6 +225,21 @@ class AospTablesVersionTest(unittest.TestCase):
+         self.assertNotIn("-sdt_period", args)
+         self.assertEqual(args[args.index("-mpegts_pmt_start_pid") + 1], "4096")
+ 
++    def test_transport_is_constant_rate_and_udp_burst_paced(self):
++        config = wfd.WFDMediaConfig(
++            monitor=None, output_resolution="1280x720", bitrate="4M"
++        )
++        pipeline = wfd.WFDMediaPipeline(
++            config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
++            sink_rtp_port=35034,
++        )
++        args = pipeline._common_output_args()
++
++        self.assertEqual(args[args.index("-muxrate") + 1], "6000000")
++        output = args[-1]
++        self.assertIn("bitrate=6000000", output)
++        self.assertIn("burst_bits=100000", output)
++
+     def test_flag_stamps_version_1_like_aosp(self):
+         # AOSP writes 0xc3 (version_number=1) in PAT and PMT; both muxers
+         # default to 0, which a sink seeded at 0 can treat as already seen.
+-- 
+2.53.0

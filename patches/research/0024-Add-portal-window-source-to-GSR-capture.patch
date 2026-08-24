@@ -1,0 +1,139 @@
+From e5f952ce53a58a535790926e09cbca011becadc9 Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Sun, 23 Aug 2026 09:58:09 +1200
+Subject: [PATCH] Add portal window source to GSR capture
+
+---
+ src/main.py              |  4 ++++
+ src/wfd/config.py        |  1 +
+ src/wfd/media/wlroots.py |  8 ++++++--
+ src/wfd/session.py       |  1 +
+ tests/test_wfd.py        | 40 ++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 52 insertions(+), 2 deletions(-)
+
+diff --git a/src/main.py b/src/main.py
+index 2b5683d..2c56a04 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -156,6 +156,10 @@ def parse_args() -> argparse.Namespace:
+                      dest="wfd_gsr_handoff",
+                      help="GPU Screen Recorder pipe container: mkv (receiver-proven default) "
+                           "or flv (lower-burst experimental handoff)")
++    wfd.add_argument("--wfd-gsr-source", default="monitor", choices=["monitor", "portal"],
++                     dest="wfd_gsr_source",
++                     help="GPU Screen Recorder source: selected monitor (default), or the "
++                          "desktop portal picker for a window")
+     wfd.add_argument("--wfd-video-encoder", default="auto",
+                      choices=["auto", "software", "vaapi"],
+                      dest="wfd_video_encoder",
+diff --git a/src/wfd/config.py b/src/wfd/config.py
+index ab42d8f..57e04d7 100644
+--- a/src/wfd/config.py
++++ b/src/wfd/config.py
+@@ -22,6 +22,7 @@ class WFDMediaConfig:
+     packet_log_path: Optional[str] = None
+     capture_backend: str = "auto"
+     gsr_handoff: str = "mkv"
++    gsr_source: str = "monitor"
+     video_encoder: str = "auto"
+     peer_name: str = ""
+     uibc: bool = False  # opt-in: accept touch/mouse input back from the sink (issue #37)
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index efce811..9ace07b 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -47,6 +47,7 @@ class WlrootsMixin:
+             if capture_container == "mkv"
+             else "live=1;flush_packets=1"
+         )
++        capture_target = "portal" if self.config.gsr_source == "portal" else monitor.name
+ 
+         # GPU Screen Recorder owns capture, scaling, H.264, AAC and their
+         # common clock. Unlike wf-recorder 0.6, it emits silent AAC packets
+@@ -54,7 +55,7 @@ class WlrootsMixin:
+         # releases a multi-second burst when playback begins.
+         capture_cmd = [
+             "gpu-screen-recorder",
+-            "-w", monitor.name,
++            "-w", capture_target,
+             "-s", out_res,
+             "-f", str(self.config.fps),
+             "-fm", "cfr",
+@@ -106,7 +107,10 @@ class WlrootsMixin:
+                 self.config.packet_log_path,
+             ]
+ 
+-        print(f"[FluxCast WFD Media] Capturing screen : {monitor.name} ({src_res})")
++        print(
++            "[FluxCast WFD Media] Capturing source : "
++            + ("desktop portal window picker" if capture_target == "portal" else f"{monitor.name} ({src_res})")
++        )
+         print("[FluxCast WFD Media] Capture/encoder   : GPU Screen Recorder")
+         print(f"[FluxCast WFD Media] Capture handoff   : {capture_container}")
+         if not self.config.no_audio:
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 7fe7422..5e9f5c5 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -121,6 +121,7 @@ def start_experimental_backend(args) -> None:
+         packet_log_path=getattr(args, "wfd_packet_log", None),
+         capture_backend=getattr(args, "wfd_capture_backend", "auto"),
+         gsr_handoff=getattr(args, "wfd_gsr_handoff", "mkv"),
++        gsr_source=getattr(args, "wfd_gsr_source", "monitor"),
+         video_encoder=getattr(args, "wfd_video_encoder", "auto"),
+         peer_name=peer.name,
+         uibc=getattr(args, "wfd_uibc", False),
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index d2ee6d0..24ed87c 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -232,6 +232,46 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-f") + 1], "flv")
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-f", ffmpeg_cmd.index("-f") + 1) + 1], "rtp_mpegts")
+ 
++    def test_gsr_portal_source_keeps_the_measured_capture_pipeline(self):
++        class Mon:
++            name = "eDP-1"
++            width = 1920
++            height = 1080
++
++        class Proc:
++            def __init__(self):
++                self.stdout = io.BytesIO()
++
++            def poll(self):
++                return None
++
++        commands = []
++
++        def popen(command, *args, **kwargs):
++            commands.append(list(command))
++            return Proc()
++
++        config = wfd.WFDMediaConfig(
++            monitor=Mon(), output_resolution="1280x720", fps=30,
++            bitrate="7M", audio_device="sink.monitor", gsr_source="portal",
++        )
++        pipeline = wfd.WFDMediaPipeline(
++            config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
++            sink_rtp_port=35034,
++        )
++        with (
++            mock.patch("wfd.media.wlroots.subprocess.Popen", side_effect=popen),
++            mock.patch("wfd.media.wlroots.time.sleep"),
++            contextlib.redirect_stdout(io.StringIO()),
++        ):
++            pipeline._start_desktop_wf_recorder()
++
++        capture_cmd, ffmpeg_cmd = commands
++        self.assertEqual(capture_cmd[capture_cmd.index("-w") + 1], "portal")
++        self.assertEqual(capture_cmd[capture_cmd.index("-s") + 1], "1280x720")
++        self.assertEqual(capture_cmd[capture_cmd.index("-c") + 1], "mkv")
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-f") + 1], "matroska")
++
+ 
+ class FirewallPortTest(unittest.TestCase):
+     def test_existing_port_skips_privileged_add(self):
+-- 
+2.55.0
+

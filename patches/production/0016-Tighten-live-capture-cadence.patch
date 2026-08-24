@@ -1,0 +1,53 @@
+From d53f6789942ba61d510e7900859e854b095bb57e Mon Sep 17 00:00:00 2001
+From: Omarchy Cast package build <packaging@localhost>
+Date: Sat, 22 Aug 2026 12:31:37 +1200
+Subject: [PATCH] Tighten live capture cadence
+
+---
+ src/wfd/media/wlroots.py | 2 +-
+ tests/test_wfd.py        | 8 +++++---
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 090483f..83184dc 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -61,7 +61,7 @@ class WlrootsMixin:
+             "-keyint", str(keyint_seconds),
+             "-ffmpeg-video-opts", f"profile={profile};level={level};aud=1",
+             "-ffmpeg-opts",
+-            "cluster_time_limit=50;cluster_size_limit=32768;live=1;flush_packets=1",
++            "cluster_time_limit=20;cluster_size_limit=16384;live=1;flush_packets=1",
+             "-c", "mkv",
+         ]
+ 
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index 76c3a2c..de7fa37 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -140,7 +140,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+             return Proc()
+ 
+         config = wfd.WFDMediaConfig(
+-            monitor=Mon(), output_resolution="1280x720", fps=30,
++            monitor=Mon(), output_resolution="1280x720", fps=60,
+             bitrate="4M", audio_device="sink.monitor",
+         )
+         pipeline = wfd.WFDMediaPipeline(
+@@ -158,9 +158,11 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         self.assertEqual(capture_cmd[0], "gpu-screen-recorder")
+         self.assertIn("sink.monitor", capture_cmd)
+         self.assertEqual(capture_cmd[capture_cmd.index("-s") + 1], "1280x720")
+-        self.assertIn("profile=constrained_baseline;level=31;aud=1", capture_cmd)
++        self.assertEqual(capture_cmd[capture_cmd.index("-f") + 1], "60")
++        self.assertEqual(capture_cmd[capture_cmd.index("-q") + 1], "7000")
++        self.assertIn("profile=constrained_baseline;level=32;aud=1", capture_cmd)
+         self.assertIn(
+-            "cluster_time_limit=50;cluster_size_limit=32768;live=1;flush_packets=1",
++            "cluster_time_limit=20;cluster_size_limit=16384;live=1;flush_packets=1",
+             capture_cmd,
+         )
+         self.assertEqual(ffmpeg_cmd.count("-i"), 1)
+-- 
+2.55.0
+

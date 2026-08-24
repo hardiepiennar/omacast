@@ -1,0 +1,13 @@
+[Match]
+Name=p2p-wlp58s0-*
+
+[Network]
+DHCP=ipv4
+IPv6AcceptRA=no
+LinkLocalAddressing=ipv6
+
+[DHCPv4]
+UseDNS=no
+UseDomains=no
+UseRoutes=yes
+RouteMetric=2048

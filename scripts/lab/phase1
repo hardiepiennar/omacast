@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Phase 1 helper for a manual Fire TV / Miracast proof of concept.
+# This script never edits desktop configuration or creates persistent outputs.
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/lab/phase1 {doctor|scan|pattern|mirror} [extra FluxCast options]
+
+  doctor   Report FluxCast and host prerequisites; makes no network changes.
+  scan     Scan for Fire TV while it displays "Enable Display Mirroring".
+  pattern  Stream a 720p30 test pattern; validates WFD before desktop capture.
+  mirror   Start a conservative 1080p30 mirrored desktop stream.
+
+Examples:
+  scripts/lab/phase1 doctor
+  scripts/lab/phase1 scan
+  scripts/lab/phase1 pattern --wfd-peer "Fire TV"
+  scripts/lab/phase1 mirror --monitor eDP-1 --wfd-peer "Fire TV"
+EOF
+}
+
+action="${1:-}"
+if [[ $# -gt 0 ]]; then shift; fi
+
+case "$action" in
+  -h|--help|help|'')
+    usage
+    exit 0
+    ;;
+esac
+
+if ! command -v fluxcast >/dev/null 2>&1; then
+  printf '%s\n' 'FluxCast is not installed.' >&2
+  printf '%s\n' 'On Omarchy, install it from a visible terminal with:' >&2
+  printf '%s\n' '  omarchy pkg add wf-recorder libva-utils' >&2
+  printf '%s\n' '  omarchy pkg aur add fluxcast-git' >&2
+  exit 127
+fi
+
+case "$action" in
+  doctor)
+    exec fluxcast --doctor "$@"
+    ;;
+  scan)
+    exec fluxcast --protocol wfd --wfd-scan "$@"
+    ;;
+  pattern)
+    exec fluxcast --protocol wfd --wfd-test-pattern \
+      --output-res 1280x720 --fps 30 --bitrate 3M \
+      --wfd-latency-log /tmp/omarchy-cast-pattern.jsonl "$@"
+    ;;
+  mirror)
+    exec fluxcast --protocol wfd --wfd-capture-backend wf-recorder \
+      --output-res 1920x1080 --fps 30 --bitrate 5M \
+      --wfd-media-pipeline ffmpeg \
+      --wfd-latency-log /tmp/omarchy-cast-mirror.jsonl "$@"
+    ;;
+  *)
+    printf 'Unknown action: %s\n\n' "$action" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

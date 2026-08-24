@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Build the companion package from the exact committed tree and emit checksums.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+output_dir="${1:-$repo_root/dist}"
+build_root="/tmp/omacast-release-build-${UID}"
+lock_path="${build_root}.lock"
+
+die() {
+  echo "build-release-artifact: $*" >&2
+  exit 1
+}
+
+cleanup() {
+  if [[ "$build_root" == "/tmp/omacast-release-build-${UID}" && -d "$build_root" ]]; then
+    rm -rf -- "$build_root"
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+command -v git >/dev/null || die "git is required"
+command -v makepkg >/dev/null || die "makepkg is required"
+command -v pacman >/dev/null || die "pacman is required"
+command -v flock >/dev/null || die "flock is required"
+
+[[ -d "$repo_root/.git" ]] || die "run this from a git clone"
+[[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]] \
+  || die "the source tree must be clean"
+
+source_commit="$(git -C "$repo_root" rev-parse --verify HEAD)"
+[[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || die "could not resolve the source commit"
+
+exec 9>"$lock_path"
+flock -n 9 || die "another release build is active"
+if [[ -e "$build_root" ]]; then
+  [[ -d "$build_root" && ! -L "$build_root" ]] || die "unsafe build path: $build_root"
+  [[ "$(stat -c %u "$build_root")" == "$UID" ]] || die "build path is owned by another user"
+  rm -rf -- "$build_root"
+fi
+install -d -m 0700 "$build_root"
+git clone --quiet --no-local "$repo_root" "$build_root/source"
+
+clone_commit="$(git -C "$build_root/source" rev-parse --verify HEAD)"
+[[ "$clone_commit" == "$source_commit" ]] || die "clean clone does not match source commit"
+
+source_date_epoch="$(git -C "$build_root/source" show -s --format=%ct HEAD)"
+export SOURCE_DATE_EPOCH="$source_date_epoch"
+
+(
+  cd "$build_root/source/packaging/arch"
+  makepkg --cleanbuild --clean --noconfirm
+)
+
+mapfile -t packages < <(
+  find "$build_root/source/packaging/arch" -maxdepth 1 -type f \
+    -name 'fluxcast-omarchy-cast-*.pkg.tar.zst' -print
+)
+[[ ${#packages[@]} -eq 1 ]] || die "expected exactly one built package, found ${#packages[@]}"
+
+mkdir -p "$output_dir"
+output_dir="$(cd "$output_dir" && pwd)"
+package_name="$(basename "${packages[0]}")"
+install -m 0644 "${packages[0]}" "$output_dir/$package_name"
+
+(
+  cd "$output_dir"
+  sha256sum "$package_name" > SHA256SUMS
+  pacman -Qip "$package_name" > PACKAGE-INFO.txt
+  printf '%s\n' "$source_commit" > SOURCE-COMMIT.txt
+)
+
+printf 'Built %s from %s\n' "$output_dir/$package_name" "$source_commit"
+printf 'Verify with: (cd %q && sha256sum -c SHA256SUMS)\n' "$output_dir"

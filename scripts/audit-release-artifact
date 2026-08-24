@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Inspect a built companion package without installing it or requiring root.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+package="${1:-}"
+
+die() {
+  echo "audit-release-artifact: $*" >&2
+  exit 1
+}
+
+for command in bsdtar pacman python3 realpath sha256sum; do
+  command -v "$command" >/dev/null || die "$command is required"
+done
+
+if [[ -z "$package" ]]; then
+  mapfile -t candidates < <(find "$repo_root/dist" -maxdepth 1 -type f -name 'fluxcast-omarchy-cast-*.pkg.tar.zst' -print)
+  if [[ ${#candidates[@]} -eq 1 ]]; then
+    package="${candidates[0]}"
+  elif [[ -f "$repo_root/dist/SHA256SUMS" ]]; then
+    checksum_name="$(awk 'NF == 2 { print $2; exit }' "$repo_root/dist/SHA256SUMS")"
+    checksum_name="${checksum_name#\*}"
+    [[ -n "$checksum_name" && "$checksum_name" == "$(basename "$checksum_name")" ]] || die "SHA256SUMS names an unsafe package"
+    package="$repo_root/dist/$checksum_name"
+  else
+    die "multiple companion packages found; pass one explicitly"
+  fi
+fi
+[[ -f "$package" && ! -L "$package" ]] || die "package must be a regular, non-symlink file"
+package="$(realpath "$package")"
+package_name="$(basename "$package")"
+expected_version="${package_name#fluxcast-omarchy-cast-}"
+expected_version="${expected_version%-any.pkg.tar.zst}"
+[[ -n "$expected_version" && "$expected_version" != "$package_name" ]] || die "unexpected package filename"
+
+audit_root="$(mktemp -d "${TMPDIR:-/tmp}/omacast-artifact-audit.XXXXXX")"
+cleanup() {
+  case "$audit_root" in
+    "${TMPDIR:-/tmp}"/omacast-artifact-audit.*)
+      [[ -d "$audit_root" && ! -L "$audit_root" && "$(stat -c %u "$audit_root")" == "$UID" ]] && rm -rf -- "$audit_root"
+      ;;
+  esac
+}
+trap cleanup EXIT HUP INT TERM
+
+checksum_file="$(dirname "$package")/SHA256SUMS"
+if [[ -f "$checksum_file" ]]; then
+  grep -Fq "  $package_name" "$checksum_file" || die "SHA256SUMS does not name $package_name"
+  (cd "$(dirname "$package")" && sha256sum -c SHA256SUMS --ignore-missing)
+fi
+
+mapfile -t members < <(bsdtar -tf "$package")
+[[ ${#members[@]} -gt 0 ]] || die "package archive is empty"
+for member in "${members[@]}"; do
+  [[ "$member" != /* && "$member" != ".." && "$member" != ../* && "$member" != */../* ]] \
+    || die "unsafe archive member: $member"
+done
+[[ " ${members[*]} " != *" .INSTALL "* ]] || die "unexpected install script"
+
+package_info="$(bsdtar -xOf "$package" .PKGINFO)"
+grep -Fxq 'pkgname = fluxcast-omarchy-cast' <<<"$package_info" || die "unexpected package name"
+grep -Fxq "pkgver = $expected_version" <<<"$package_info" || die "package metadata does not match its filename"
+for dependency in python gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw polkit systemd iproute2; do
+  grep -Fxq "depend = $dependency" <<<"$package_info" || die "missing runtime dependency: $dependency"
+done
+
+bsdtar -xpf "$package" -C "$audit_root"
+engine="$audit_root/usr/bin/fluxcast"
+guard="$audit_root/usr/lib/omarchy-cast/omarchy-cast-guard"
+recovery="$audit_root/usr/lib/omarchy-cast/omarchy-cast-guard-recover"
+policy="$audit_root/usr/share/polkit-1/actions/com.omacast.guard.policy"
+for executable in "$engine" "$guard" "$recovery"; do
+  [[ -f "$executable" && ! -L "$executable" && -x "$executable" ]] || die "missing immutable executable: ${executable#"$audit_root"}"
+  [[ "$(stat -c %a "$executable")" == 755 ]] || die "unsafe executable mode: ${executable#"$audit_root"}"
+done
+[[ -f "$policy" && ! -L "$policy" && "$(stat -c %a "$policy")" == 644 ]] || die "missing or unsafe Polkit action"
+python3 - "$policy" <<'PY' || die "Polkit action contract is incompatible"
+import sys
+import xml.etree.ElementTree as ET
+
+action = ET.parse(sys.argv[1]).getroot().find("action")
+assert action is not None and action.attrib == {"id": "com.omacast.guard.prepare"}
+defaults = action.find("defaults")
+assert defaults is not None
+assert {node.tag: node.text for node in defaults} == {
+    "allow_any": "no", "allow_inactive": "no", "allow_active": "yes",
+}
+assert {node.attrib["key"]: node.text for node in action.findall("annotate")} == {
+    "org.freedesktop.policykit.exec.path": "/usr/lib/omarchy-cast/omarchy-cast-guard",
+    "org.freedesktop.policykit.exec.argv1": "prepare",
+}
+PY
+bash -n "$guard"
+bash -n "$recovery"
+
+guard_version="$($guard --version)"
+python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":4}' "$guard_version" \
+  || die "guard API contract does not match revision 4"
+
+site_packages="$(find "$audit_root/usr/lib" -type d -path '*/site-packages' -print -quit)"
+[[ -n "$site_packages" ]] || die "packaged Python modules are missing"
+PYTHONPATH="$site_packages" PYSTRAY_BACKEND=dummy "$engine" --help > "$audit_root/fluxcast-help.txt"
+for flag in --wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-progress-log; do
+  grep -Fq -- "$flag" "$audit_root/fluxcast-help.txt" || die "packaged engine is missing $flag"
+done
+
+pacman -Qp "$package" >/dev/null
+printf 'Artifact audit passed: %s\n' "$package"
+printf 'SHA-256: '
+sha256sum "$package" | cut -d' ' -f1

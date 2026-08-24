@@ -1,0 +1,57 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Sat, 22 Aug 2026 08:05:00 +1200
+Subject: [PATCH] Clock-pace portal RTP output
+
+Pad the portal MPEG-TS to a stable transport rate and let udpsink synchronize
+delivery to the pipeline clock. The previous sync=false command still emitted
+encoded access units in bursts even though capture and audio shared a clock.
+---
+ src/wfd/media/portal.py |  4 +++-
+ tests/test_wfd.py       | 11 +++++++++++
+ 2 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/src/wfd/media/portal.py b/src/wfd/media/portal.py
+index f6f352f..eec7e9a 100644
+--- a/src/wfd/media/portal.py
++++ b/src/wfd/media/portal.py
+@@ -394,5 +394,7 @@ class PortalMixin:
+                 "mpegtsmux", "name=mux",
+                 "alignment=7",
++                f"bitrate={self._transport_rate_bps()}",
++                "latency=100000000",
+                 f"prog-map={prog_map}",
+                 "pat-interval=9000",
+                 "pmt-interval=9000",
+@@ -407,7 +409,7 @@ class PortalMixin:
+                 f"port={self.sink_rtp_port}",
+                 f"bind-address={self.local_ip}",
+                 f"bind-port={self.config.source_port}",
+-                "sync=false",
++                "sync=true",
+                 "async=false",
+                 *_gst_video_chain(video_caps, selector_args),
+                 *gst_audio_chain,
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index 3e7421b..f0533d1 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -373,6 +373,17 @@ class AspectRatioTest(unittest.TestCase):
+         self.assertIn("rate-control=bitrate", portal)
+         self.assertIn("usage-type=screen", portal)
+ 
++    def test_portal_mux_and_udp_output_are_clock_paced(self):
++        commands = self._gst_commands(lambda name: name != "x264enc")
++        portal = next(cmd for cmd in commands if "pipewiresrc" in cmd)
++
++        mux_index = portal.index("mpegtsmux")
++        sink_index = portal.index("udpsink")
++        self.assertIn("bitrate=6000000", portal[mux_index:sink_index])
++        self.assertIn("latency=100000000", portal[mux_index:sink_index])
++        self.assertIn("sync=true", portal[sink_index:])
++        self.assertNotIn("sync=false", portal[sink_index:])
++
+ def _sequence(values):
+     """Yield the given values, then repeat the last one forever."""
+     state = list(values)
+-- 
+2.53.0

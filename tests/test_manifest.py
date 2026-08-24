@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import struct
+import unittest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class ManifestTest(unittest.TestCase):
+    def test_manifest_declares_a_valid_bar_widget_entrypoint(self) -> None:
+        manifest = json.loads((REPO_ROOT / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["schemaVersion"], 1)
+        self.assertEqual(manifest["id"], "hardie.omarchy-cast")
+        self.assertEqual(manifest["name"], "Omacast")
+        self.assertIn("Nerd Mode", manifest["description"])
+        self.assertIn("safe recovery", manifest["description"])
+        self.assertEqual(manifest["barWidget"]["displayName"], "Omacast")
+        self.assertEqual(manifest["kinds"], ["bar-widget"])
+        entry_point = REPO_ROOT / manifest["entryPoints"]["barWidget"]
+        self.assertTrue(entry_point.is_file())
+        self.assertNotIn("..", entry_point.relative_to(REPO_ROOT).parts)
+
+    def test_marketplace_payload_contains_omacast_controller(self) -> None:
+        controller = REPO_ROOT / "bin" / "omacast"
+        self.assertTrue(controller.is_file())
+        self.assertTrue(controller.stat().st_mode & 0o111)
+        panel = (REPO_ROOT / "ui" / "Panel.qml").read_text(encoding="utf-8")
+        self.assertIn('../bin/omacast', panel)
+        self.assertIn("IdleInhibitor", panel)
+        self.assertIn("enabled: root.sessionActive", panel)
+        self.assertIn('InfoPair { label: "Session"; value: root.elapsedStatus() }', panel)
+        self.assertIn("property bool startPending: false", panel)
+        self.assertIn("property bool cancelRequested: false", panel)
+        self.assertIn("property bool stopAwaitingIdle: false", panel)
+        self.assertIn("id: startDeadline", panel)
+        self.assertIn("The cast did not enter a session. Cancelling it safely", panel)
+        self.assertIn("root.requestStop()", panel)
+        self.assertIn('visible: root.sessionBusy', panel)
+        self.assertIn('"Cancel connection <span style=\\"color:" + root.muted + "\\">(Q)</span>"', panel)
+        self.assertIn("function open() { showPanel() }", panel)
+        self.assertIn("onPressed: function(buttonCode) { root.toggle() }", panel)
+        self.assertNotIn("function castActiveWindow(): void", panel)
+        self.assertNotIn('"active-window"', panel)
+        self.assertNotIn('"--source"', panel)
+        self.assertNotIn('receiverId = items.length ?', panel)
+        self.assertIn("function moveReceiverCursor(delta)", panel)
+        self.assertIn("function activateKeyboardAction()", panel)
+        self.assertIn("onMoveRequested: function(dx, dy)", panel)
+        self.assertIn("onActivateRequested: root.activateKeyboardAction()", panel)
+        self.assertIn('text: "Click a TV, or use ↑/↓ and Enter · Esc close"', panel)
+        self.assertIn("hasCursor: root.keyboardCursor && root.receiverCursor === index", panel)
+        self.assertNotIn("onHovered:", panel)
+        self.assertIn("onClicked: root.selectAndConnect(modelData)", panel)
+        self.assertIn('(text === "n" || text === "N") && root.sessionActive', panel)
+        self.assertIn('(text === "q" || text === "Q") && root.sessionBusy', panel)
+        self.assertIn('root.nerdMode ? "Hide Nerd Mode" : "Show Nerd Mode"', panel)
+        self.assertIn('"Stop casting <span style=\\"color:" + root.muted + "\\">(Q)</span>"', panel)
+        self.assertNotIn("Enter stop", panel)
+        self.assertIn('root.message = "Stopping the cast safely…"', panel)
+        self.assertIn('root.message = "Connection cancelled"', panel)
+        self.assertIn("property bool doctorComplete: false", panel)
+        self.assertIn("interval: 3000; running: !root.opened && !root.sessionBusy", panel)
+        self.assertIn("property bool nerdMode: false", panel)
+        self.assertIn('"\\">(N)</span>"', panel)
+        self.assertIn('"Rescan <span style=\\"color:" + root.muted + "\\">(R)</span>"', panel)
+        self.assertIn('text: "NERD MODE"', panel)
+        self.assertIn('return "Off · stream-safe"', panel)
+        self.assertIn('component NerdMetric: BorderSurface', panel)
+        self.assertIn('property color valueColor: root.foreground', panel)
+        self.assertIn('valueColor: root.cadenceColor()', panel)
+        self.assertIn('valueColor: root.radioColor()', panel)
+        self.assertIn('function signalColor(level)', panel)
+        self.assertIn('label: "FPS · ACTUAL / MUX"', panel)
+        self.assertIn('label: "CPU · CAP / MUX"', panel)
+        self.assertIn('visible: root.packetProbeActive()', panel)
+        self.assertNotIn("issues.join", panel)
+        self.assertIn('property string pendingReceiverId: ""', panel)
+        self.assertIn('stderr: StdioCollector', panel)
+        self.assertNotIn("ScreencopyView", panel)
+        self.assertNotIn("sourcePreviewActive", panel)
+        self.assertIn('needsRecovery ? "󰀦" : streaming ? "󰄙" : "󰄘"', panel)
+        self.assertIn('return "Omacast · Recovery required"', panel)
+        self.assertIn('return "Omacast · Looking for displays"', panel)
+        self.assertIn('return "Omacast · Preparing network"', panel)
+        self.assertIn('readonly property bool visuallyBusy: scanRunning || sessionBusy', panel)
+        self.assertIn('active: root.visuallyBusy || root.needsRecovery', panel)
+        self.assertIn('tooltipText: root.iconTooltip()', panel)
+        for code in ("authorization-cancelled", "authorization-timeout", "guard-setup-failed", "dhcp-failed", "p2p-negotiation-failed", "receiver-negotiation-failed", "receiver-negotiation-timeout", "capture-failed", "engine-exited"):
+            self.assertIn('code === "' + code + '"', panel)
+        self.assertIn("function maybeAutoScan()", panel)
+        self.assertIn("doctorComplete && systemReady() && !autoScanDone", panel)
+        self.assertIn('text: root.doctorComplete && root.setupRequired() ? "Open setup terminal"', panel)
+        self.assertIn('return "cd " + Util.shellQuote(packagePath) + " && makepkg -si"', panel)
+
+    def test_marketplace_root_has_preview_license_and_removal_instructions(self) -> None:
+        self.assertTrue((REPO_ROOT / "LICENSE").is_file())
+        security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        self.assertIn("/run/user/$UID", security)
+        self.assertIn("does not trust PID or command data from a\nshared `/tmp` path", security)
+        preview = (REPO_ROOT / "preview.png").read_bytes()
+        self.assertTrue(preview.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertLess(len(preview), 500_000)
+        self.assertEqual(struct.unpack(">II", preview[16:24]), (390, 267))
+        nerd_preview = (REPO_ROOT / "nerd-mode.png").read_bytes()
+        self.assertTrue(nerd_preview.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertLess(len(nerd_preview), 500_000)
+        self.assertEqual(struct.unpack(">II", nerd_preview[16:24]), (390, 563))
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("## Install on Omarchy", readme)
+        self.assertIn("## Remove", readme)
+        self.assertIn("## Development disclosure", readme)
+        self.assertIn("GPT-5.6 Sol", readme)
+        self.assertIn("![Omacast ready to cast](preview.png)", readme)
+        self.assertIn("![Omacast Nerd Mode during a healthy cast](nerd-mode.png)", readme)
+        self.assertIn("omarchy plugin remove hardie.omarchy-cast", readme)
+        self.assertIn("gio trash ~/.config/omarchy-cast ~/.local/state/omarchy-cast", readme)
+        self.assertIn("does not silently erase user data", security)
+
+    def test_marketplace_submission_draft_is_safe_and_complete(self) -> None:
+        draft = (REPO_ROOT / "docs" / "marketplace-submission.md").read_text(encoding="utf-8")
+        headings = (
+            "### Repository URL",
+            "### Category",
+            "### Tags",
+            "### Suggest a missing tag",
+            "### Maintainer notes",
+            "### Submission checklist",
+        )
+        positions = [draft.index(heading) for heading in headings]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("Hardware", draft)
+        self.assertIn("bar, media, quickshell", draft)
+        self.assertIn("55f3491b665e72e72ad12ec8718ee49609db09b6", draft)
+        self.assertIn("approved-and-verified", draft)
+        self.assertEqual(draft.count("- [ ]"), 5)
+        self.assertNotIn("- [x]", draft)
+        self.assertIn("https://github.com/hardiepiennar/omacast", draft)
+        self.assertNotIn("<repository-url>", draft)

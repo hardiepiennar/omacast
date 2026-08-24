@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Narrow, package-owned privilege boundary for one direct-supplicant WFD session.
+# It accepts no paths, commands, or configuration from the caller.
+set -euo pipefail
+
+readonly schema_version=1 status_kind='omarchy-cast-guard-status'
+readonly api_revision=4 version_kind='omarchy-cast-guard-version'
+readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network' dbus_root='/etc/dbus-1/system.d'
+readonly wait_for_trigger_seconds=300
+readonly networkd_units=(systemd-networkd.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-networkd-varlink-metrics.socket systemd-networkd-resolve-hook.socket)
+action='' session_id='' uid='' interface='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' qos_file='' network_file='' policy_file='' networkd_state_file='' network_root_marker='' token='' nm_pid='' ufw_rule_added=false runtime_dirs_created=false
+
+die() { printf '%s\n' "$*" >&2; exit 2; }
+status() { local ok="$1" phase="$2" error="${3:-null}"; printf '{"schemaVersion":%s,"kind":"%s","ok":%s,"phase":"%s","sessionId":"%s","error":%s}\n' "$schema_version" "$status_kind" "$ok" "$phase" "$session_id" "$error"; }
+json_error() { status false error "\"$1\""; }
+valid_session() { [[ "$1" =~ ^[a-f0-9]{32}$ ]]; }
+valid_uid() { [[ "$1" =~ ^[1-9][0-9]{3,9}$ ]] && (( $1 <= 2147483647 )); }
+valid_interface() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; }
+valid_duration() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 60 && $1 <= 1800 )); }
+usage() { die 'Usage: omarchy-cast-guard prepare|stop --schema-version 1 --session <32-hex> --uid <uid> --interface <ifname> --duration <60-1800>'; }
+
+parse_request() {
+  [[ ${EUID} -eq 0 ]] || die 'administrator approval is required'
+  action="${1:-}"; shift || true
+  [[ "$action" == prepare || "$action" == stop ]] || usage
+  [[ $# -eq 10 && "$1" == --schema-version && "$2" == 1 && "$3" == --session && "$5" == --uid && "$7" == --interface && "$9" == --duration ]] || usage
+  session_id="$4"; uid="$6"; interface="$8"; duration="${10}"
+  valid_session "$session_id" || die 'invalid session identifier'; valid_uid "$uid" || die 'invalid user identifier'; valid_interface "$interface" || die 'invalid Wi-Fi interface'; valid_duration "$duration" || die 'invalid session duration'
+  [[ "${PKEXEC_UID:-}" == "$uid" ]] || die 'requested user does not match the Polkit caller'
+  getent passwd "$uid" >/dev/null || die 'requested user does not exist'
+  user_root="/run/user/$uid/omarchy-cast/$session_id"; session_root="$run_root/$session_id"; token_file="$session_root/token"; ready_file="$session_root/ready.json"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; qos_file="/run/user/$uid/omarchy-cast/telemetry/$session_id/qos.pid"; network_file="$network_root/80-omarchy-cast-$session_id.network"; policy_file="$dbus_root/zz-omarchy-cast-$session_id.conf"; networkd_state_file="$session_root/networkd-units"; network_root_marker="$session_root/network-root-created"
+}
+verify_user_runtime() { [[ -d "/run/user/$uid" && "$(stat -c '%u:%a' "/run/user/$uid")" == "$uid:700" ]] || die 'user runtime directory is unavailable or unsafe'; }
+verify_interface() { [[ -d "/sys/class/net/$interface" ]] || die 'Wi-Fi interface is unavailable'; command -v iw >/dev/null || die 'iw is required'; [[ "$(iw dev "$interface" info 2>/dev/null | awk '$1 == "type" {print $2; exit}')" == managed ]] || die 'Wi-Fi interface is not a managed station'; }
+verify_network_manager() {
+  nm_pid="$(systemctl show --property MainPID --value NetworkManager.service)"
+  if [[ ! "$nm_pid" =~ ^[0-9]+$ ]] || (( nm_pid <= 1 )); then die 'NetworkManager is not running'; fi
+  [[ -r "/proc/$nm_pid/comm" && "$(<"/proc/$nm_pid/comm")" == NetworkManager ]] || die 'refusing to signal an unexpected process'
+}
+remove_stale_interfaces() { local stale state type; while read -r stale; do [[ -n "$stale" ]] || continue; state="$(<"/sys/class/net/$stale/operstate")"; type="$(iw dev "$stale" info 2>/dev/null | awk '$1 == "type" {print $2; exit}')"; [[ "$state" == down && "$type" == P2P-client ]] || die 'an existing P2P device may still be active'; ! ip -4 -o address show dev "$stale" | grep -q . || die 'an existing P2P device still has an address'; iw dev "$stale" del; done < <(iw dev | awk -v prefix="p2p-$interface-" '$1 == "Interface" && index($2, prefix) == 1 {print $2}'); }
+
+prepare_network_runtime() {
+  if [[ -e "$network_root" ]]; then
+    [[ -d "$network_root" && ! -L "$network_root" && "$(stat -c '%u:%g:%a' "$network_root")" == '0:0:755' ]] || die 'systemd network runtime directory is unsafe'
+  else
+    install -d -o root -g root -m755 "$network_root"
+    install -m600 /dev/null "$network_root_marker"
+  fi
+  : > "$networkd_state_file"; chmod 600 "$networkd_state_file"
+  local unit
+  for unit in "${networkd_units[@]}"; do
+    if systemctl is-active --quiet "$unit"; then printf '%s active\n' "$unit"; else printf '%s inactive\n' "$unit"; fi
+  done > "$networkd_state_file"
+}
+
+restore_networkd_state() {
+  [[ -f "$networkd_state_file" && ! -L "$networkd_state_file" && "$(stat -c '%u:%a' "$networkd_state_file" 2>/dev/null)" == '0:600' ]] || return 1
+  local unit state
+  while read -r unit state; do [[ "$state" == inactive ]] && systemctl stop "$unit" 2>/dev/null || true; done < "$networkd_state_file"
+  while read -r unit state; do [[ "$state" == active ]] && systemctl start "$unit" 2>/dev/null || true; done < "$networkd_state_file"
+  ! systemctl is-active --quiet systemd-networkd.service || systemctl reload systemd-networkd.service
+}
+
+write_runtime_files() {
+  local user_name user_group
+  user_name="$(getent passwd "$uid" | cut -d: -f1)"; user_group="$(id -g "$user_name")"
+  [[ ! -e "$session_root" && ! -e "$user_root" ]] || die 'a conflicting cast session already owns this resource'
+  [[ ! -e "$network_file" && ! -e "$policy_file" ]] || die 'a conflicting cast session already owns this resource'
+  install -d -m700 "$session_root"; install -d -m700 -o "$uid" -g "$user_group" "$user_root"
+  runtime_dirs_created=true
+  umask 077; token="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"; printf '%s\n' "$token" > "$token_file"; chmod 600 "$token_file"
+  prepare_network_runtime
+  printf '%s\n' '[Match]' "Name=p2p-$interface-*" '' '[Network]' 'DHCP=ipv4' 'IPv6AcceptRA=no' 'LinkLocalAddressing=ipv6' '' '[DHCPv4]' 'UseDNS=no' 'UseDomains=no' 'UseRoutes=yes' 'RouteMetric=2048' > "$network_file"; chmod 644 "$network_file"
+  printf '%s\n' '<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">' '<busconfig>' "  <policy user=\"$uid\">" '    <allow send_destination="fi.w1.wpa_supplicant1" send_interface="org.freedesktop.DBus.Properties" send_member="Get"/>' '    <allow send_destination="fi.w1.wpa_supplicant1" send_interface="org.freedesktop.DBus.Properties" send_member="Set"/>' '    <allow send_destination="fi.w1.wpa_supplicant1" send_interface="fi.w1.wpa_supplicant1.Interface.P2PDevice" send_member="Connect"/>' '    <allow send_destination="fi.w1.wpa_supplicant1" send_interface="fi.w1.wpa_supplicant1.Interface.P2PDevice" send_member="Cancel"/>' '    <allow send_destination="fi.w1.wpa_supplicant1" send_interface="fi.w1.wpa_supplicant1.Interface.P2PDevice" send_member="Disconnect"/>' '    <allow receive_sender="fi.w1.wpa_supplicant1"/>' '  </policy>' '</busconfig>' > "$policy_file"; chmod 644 "$policy_file"
+  systemctl reload dbus.service
+}
+owns_session() { [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; }
+cleanup() { if ! owns_session; then [[ "$runtime_dirs_created" == true ]] && rmdir --ignore-fail-on-non-empty "$session_root" "$user_root" 2>/dev/null || true; return 0; fi; local remove_network_root=false; [[ -f "$network_root_marker" ]] && remove_network_root=true; kill -CONT "$nm_pid" 2>/dev/null || true; [[ "$ufw_rule_added" == true ]] && ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || true; rm -f -- "$network_file" "$policy_file" "$ready_file" "$trigger_file" "$heartbeat_file" "$stop_file" "$qos_file"; systemctl reload dbus.service 2>/dev/null || true; restore_networkd_state || true; rm -f -- "$networkd_state_file" "$network_root_marker" "$token_file"; rmdir --ignore-fail-on-non-empty "$session_root" "$user_root" 2>/dev/null || true; [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true; }
+lease_fresh() {
+  [[ -f "$heartbeat_file" && ! -L "$heartbeat_file" && "$(stat -c '%u:%a' "$heartbeat_file" 2>/dev/null)" == "$uid:600" ]] || return 1
+  local renewed
+  renewed="$(<"$heartbeat_file")"
+  [[ "$renewed" =~ ^[0-9]+$ ]] && (( EPOCHSECONDS >= renewed && EPOCHSECONDS - renewed <= duration ))
+}
+apply_media_qos() {
+  [[ -r "$qos_file" && "$(stat -c '%u:%a' "$qos_file" 2>/dev/null)" == "$uid:600" ]] || return 0
+  local root_pid process pid owner comm cmdline child
+  local -a pending
+  root_pid="$(<"$qos_file")"; [[ "$root_pid" =~ ^[1-9][0-9]*$ && -r "/proc/$root_pid/cmdline" ]] || return 0
+  owner="$(stat -c '%u' "/proc/$root_pid")"; [[ "$owner" == "$uid" ]] || return 0
+  cmdline="$(tr '\0' ' ' < "/proc/$root_pid/cmdline")"; [[ "$cmdline" == *fluxcast* ]] || return 0
+  pending=("$root_pid")
+  while (( ${#pending[@]} )); do
+    pid="${pending[0]}"; pending=("${pending[@]:1}")
+    [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/$pid/comm" ]] || continue
+    [[ "$(stat -c '%u' "/proc/$pid")" == "$uid" ]] || continue
+    comm="$(<"/proc/$pid/comm")"
+    case "$comm" in python|python3|fluxcast|gpu-screen-reco|gpu-screen-recorder|gsr-kms-server|ffmpeg) renice -n -15 -p "$pid" >/dev/null 2>&1 || true ;; esac
+    for process in /proc/"$pid"/task/*/children; do
+      if [[ -r "$process" ]]; then
+        for child in $(<"$process"); do pending+=("$child"); done
+      fi
+    done
+  done
+}
+arm_recovery() { local startup_seconds=$((wait_for_trigger_seconds + 60)); setsid /usr/lib/omarchy-cast/omarchy-cast-guard-recover "$startup_seconds" "$duration" "$session_id" "$token" "$uid" "$interface" "$nm_pid" </dev/null >/dev/null 2>&1 & }
+activate_network() { if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then ufw allow in on "p2p-$interface+" to any port 7236 proto tcp comment "omarchy-cast-$session_id" | grep -q 'Rule added' && ufw_rule_added=true; fi; kill -STOP "$nm_pid"; if systemctl is-active --quiet systemd-networkd.service; then systemctl reload systemd-networkd.service; else systemctl start systemd-networkd.service; fi; }
+prepare() {
+  verify_user_runtime
+  verify_interface
+  verify_network_manager
+  remove_stale_interfaces
+  trap 'cleanup' EXIT
+  trap 'exit 0' HUP INT TERM
+  write_runtime_files
+  trap 'cleanup; status true cleaned null' EXIT
+  arm_recovery
+  printf '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":true,"phase":"ready","sessionId":"%s","error":null,"triggerPath":"%s"}\n' "$session_id" "$trigger_file"
+  local deadline=$((SECONDS + wait_for_trigger_seconds))
+  while [[ ! -e "$trigger_file" && ! -e "$stop_file" ]] && (( SECONDS < deadline )); do sleep 0.1; done
+  [[ -e "$trigger_file" ]] || { json_error 'FluxCast did not trigger guarded networking'; exit 1; }
+  rm -f -- "$trigger_file"
+  lease_fresh || { json_error 'Omacast session lease was not established'; exit 1; }
+  activate_network
+  status true active null
+  local qos_next=$SECONDS lease_next=$SECONDS
+  while owns_session && [[ ! -e "$stop_file" ]]; do
+    if (( SECONDS >= lease_next )); then lease_fresh || break; lease_next=$((SECONDS + 1)); fi
+    if (( SECONDS >= qos_next )); then apply_media_qos; qos_next=$((SECONDS + 1)); fi
+    sleep 0.2
+  done
+}
+stop() { verify_user_runtime; [[ -d "$user_root" && -d "$session_root" && -r "$token_file" ]] || { json_error 'no matching active cast session'; return 1; }; [[ "$(stat -c '%u:%a' "$user_root")" == "$uid:700" ]] || { json_error 'active session ownership is unsafe'; return 1; }; install -m600 /dev/null "$stop_file"; status true stopping null; }
+
+if [[ $# -eq 1 && "$1" == --version ]]; then
+  printf '{"schemaVersion":%s,"kind":"%s","apiRevision":%s}\n' "$schema_version" "$version_kind" "$api_revision"
+  exit 0
+fi
+
+parse_request "$@"
+if [[ "$action" == prepare ]]; then prepare; else stop; fi

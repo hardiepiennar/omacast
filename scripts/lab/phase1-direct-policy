@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Temporarily grant the installed user's FluxCast process only the direct P2P
+# D-Bus methods used by the role-control spike. The policy is removed on exit.
+
+if (( EUID != 0 )); then
+  echo "Run this helper with administrator approval."
+  exit 1
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source_policy="$repo_root/work/fluxcast/meta/zz-dev.fluxcast.wpa-supplicant.conf"
+target_policy="/etc/dbus-1/system.d/zz-omarchy-cast-direct-supplicant.conf"
+token_file="/run/omarchy-cast-direct-policy.token"
+token="$$-$RANDOM-$RANDOM"
+
+if [[ ! -r "$source_policy" ]]; then
+  echo "Direct-supplicant policy source not found: $source_policy"
+  exit 1
+fi
+if [[ -e "$target_policy" || -e "$token_file" ]]; then
+  echo "A previous or unrelated direct-supplicant policy is already active."
+  exit 1
+fi
+
+restore_policy() {
+  local current_token=""
+  [[ -r "$token_file" ]] && current_token="$(<"$token_file")"
+  [[ "$current_token" == "$token" ]] || return 0
+  rm -f "$target_policy" "$token_file"
+  systemctl reload dbus.service
+  echo "Temporary direct-supplicant D-Bus policy removed."
+}
+trap restore_policy EXIT
+trap 'exit 0' HUP INT TERM
+
+install -Dm644 "$source_policy" "$target_policy"
+printf '%s\n' "$token" > "$token_file"
+systemctl reload dbus.service
+
+# Independent recovery if the foreground helper disappears.
+setsid sh -c '
+  sleep 660
+  expected="$1"
+  token_file="$2"
+  target_policy="$3"
+  [[ -r "$token_file" ]] || exit 0
+  [[ "$(cat "$token_file")" == "$expected" ]] || exit 0
+  rm -f "$target_policy" "$token_file"
+  systemctl reload dbus.service
+' sh "$token" "$token_file" "$target_policy" \
+  </dev/null >/dev/null 2>&1 &
+
+echo "Direct-supplicant D-Bus policy active for up to ten minutes."
+for ((remaining = 600; remaining > 0; remaining--)); do
+  sleep 1
+done

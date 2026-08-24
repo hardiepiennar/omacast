@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Briefly freeze NetworkManager after FluxCast has finished peer discovery so
+# it cannot tear down a P2P group created directly through wpa_supplicant.
+
+if (( EUID != 0 )); then
+  echo "Run this helper with administrator approval."
+  exit 1
+fi
+
+nm_pid="$(systemctl show --property MainPID --value NetworkManager.service)"
+if [[ ! "$nm_pid" =~ ^[0-9]+$ ]] || (( nm_pid <= 1 )); then
+  echo "NetworkManager is not running."
+  exit 1
+fi
+if [[ "$(cat "/proc/$nm_pid/comm")" != "NetworkManager" ]]; then
+  echo "Refusing to signal unexpected process $nm_pid."
+  exit 1
+fi
+
+resume_networkmanager() {
+  kill -CONT "$nm_pid" 2>/dev/null || true
+}
+trap resume_networkmanager EXIT
+trap 'exit 0' HUP INT TERM
+
+# Independent recovery if this helper or terminal disappears.
+setsid sh -c 'sleep 75; kill -CONT "$1" 2>/dev/null || true' sh "$nm_pid" \
+  </dev/null >/dev/null 2>&1 &
+
+echo "Pausing NetworkManager for 60 seconds."
+kill -STOP "$nm_pid"
+sleep 60
+kill -CONT "$nm_pid"
+echo "NetworkManager resumed."

@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Keep NetworkManager away from a direct-supplicant P2P group and attach a
+# narrowly-matched systemd-networkd DHCP client for the diagnostic window.
+
+if (( EUID != 0 )); then
+  echo "Run this helper with administrator approval."
+  exit 1
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source_config="$repo_root/meta/80-omarchy-cast-p2p-client.network"
+source_policy="$repo_root/work/fluxcast/meta/zz-dev.fluxcast.wpa-supplicant.conf"
+target_config="/run/systemd/network/80-omarchy-cast-p2p-client.network"
+target_policy="/etc/dbus-1/system.d/zz-omarchy-cast-direct-supplicant.conf"
+token_file="/run/omarchy-cast-network-guard.token"
+ready_file="/run/omarchy-cast-network-guard.ready"
+token="$$-$RANDOM-$RANDOM"
+guard_seconds="${1:-120}"
+wait_seconds=300
+repo_uid="$(stat -c '%u' "$repo_root")"
+trigger_file="/run/user/$repo_uid/omarchy-cast-network-guard.trigger"
+stop_file="/run/user/$repo_uid/omarchy-cast-network-guard.stop"
+networkd_units=(
+  systemd-networkd.service
+  systemd-networkd.socket
+  systemd-networkd-varlink.socket
+  systemd-networkd-varlink-metrics.socket
+  systemd-networkd-resolve-hook.socket
+)
+ufw_interface="p2p-wlp58s0+"
+ufw_comment="omarchy-cast-phase1"
+ufw_rule_added=false
+
+if [[ ! "$guard_seconds" =~ ^[0-9]+$ ]] || (( guard_seconds < 60 || guard_seconds > 1800 )); then
+  echo "Usage: $0 [guard-seconds between 60 and 1800]"
+  exit 2
+fi
+nm_pid="$(systemctl show --property MainPID --value NetworkManager.service)"
+if [[ ! "$nm_pid" =~ ^[0-9]+$ ]] || (( nm_pid <= 1 )); then
+  echo "NetworkManager is not running."
+  exit 1
+fi
+if [[ "$(cat "/proc/$nm_pid/comm")" != "NetworkManager" ]]; then
+  echo "Refusing to signal unexpected process $nm_pid."
+  exit 1
+fi
+if systemctl is-active --quiet systemd-networkd.service; then
+  echo "systemd-networkd is already active; refusing to alter its configuration."
+  exit 1
+fi
+if [[ -e "$target_config" || -e "$target_policy" || -e "$token_file" || \
+      -e "$ready_file" || -e "$trigger_file" || -e "$stop_file" ]]; then
+  echo "A previous or unrelated direct-network guard is already active."
+  exit 1
+fi
+if command -v ufw >/dev/null && ufw status | grep -Fq "$ufw_comment"; then
+  echo "A pre-existing UFW rule uses the diagnostic comment; refusing to alter it."
+  exit 1
+fi
+
+# Direct supplicant groups can leave an inert kernel netdev behind after the
+# group object is gone. Remove only our narrowly-named, down, addressless P2P
+# client devices; refuse to touch anything that may still be in use.
+while read -r stale_interface; do
+  [[ -n "$stale_interface" ]] || continue
+  [[ "$(cat "/sys/class/net/$stale_interface/operstate")" == "down" ]] || {
+    echo "P2P interface $stale_interface is still active; refusing cleanup."
+    exit 1
+  }
+  if ip -4 -o address show dev "$stale_interface" | grep -q .; then
+    echo "P2P interface $stale_interface still has an address; refusing cleanup."
+    exit 1
+  fi
+  if [[ "$(iw dev "$stale_interface" info | awk '$1 == "type" { print $2; exit }')" != "P2P-client" ]]; then
+    echo "Interface $stale_interface is not an inactive P2P client; refusing cleanup."
+    exit 1
+  fi
+  iw dev "$stale_interface" del
+  echo "Removed stale inactive P2P interface $stale_interface."
+done < <(iw dev | awk '$1 == "Interface" && $2 ~ /^p2p-wlp58s0-[0-9]+$/ { print $2 }')
+
+restore_networking() {
+  local current_token=""
+  [[ -r "$token_file" ]] && current_token="$(<"$token_file")"
+  [[ "$current_token" == "$token" ]] || return 0
+  kill -CONT "$nm_pid" 2>/dev/null || true
+  if [[ "$ufw_rule_added" == true ]]; then
+    ufw --force delete allow in on "$ufw_interface" to any port 7236 proto tcp \
+      >/dev/null || true
+  fi
+  rm -f "$target_config" "$token_file" "$ready_file" "$trigger_file" "$stop_file"
+  rm -f "$target_policy"
+  systemctl reload dbus.service
+  systemctl stop "${networkd_units[@]}"
+  echo "Temporary P2P policy, DHCP client, and firewall rule removed; NetworkManager resumed."
+}
+trap restore_networking EXIT
+trap 'exit 0' HUP INT TERM
+
+printf '%s\n' "$token" > "$token_file"
+install -Dm644 "$source_config" "$target_config"
+install -Dm644 "$source_policy" "$target_policy"
+systemctl reload dbus.service
+install -m600 /dev/null "$ready_file"
+
+# Independent recovery if this helper or terminal disappears, including while
+# it is still waiting for discovery.
+recovery_seconds=$((wait_seconds + guard_seconds + 60))
+setsid sh -c '
+  remaining=$(("$1" * 5))
+  expected="$2"
+  token_file="$3"
+  target_config="$4"
+  nm_pid="$5"
+  stop_file="$8"
+  while (( remaining > 0 )) && [[ ! -e "$stop_file" ]]; do
+    [[ -r "$token_file" ]] || exit 0
+    [[ "$(cat "$token_file")" == "$expected" ]] || exit 0
+    sleep 0.2
+    remaining=$((remaining - 1))
+  done
+  [[ -r "$token_file" ]] || exit 0
+  [[ "$(cat "$token_file")" == "$expected" ]] || exit 0
+  kill -CONT "$nm_pid" 2>/dev/null || true
+  if command -v ufw >/dev/null && ufw status | grep -Fq omarchy-cast-phase1; then
+    ufw --force delete allow in on p2p-wlp58s0+ to any port 7236 proto tcp \
+      >/dev/null 2>&1 || true
+  fi
+  rm -f "$target_config" "$token_file" "$6" "$7" "$8" "$9"
+  systemctl reload dbus.service
+  systemctl stop systemd-networkd.service systemd-networkd.socket \
+    systemd-networkd-varlink.socket systemd-networkd-varlink-metrics.socket \
+    systemd-networkd-resolve-hook.socket
+' sh "$recovery_seconds" "$token" "$token_file" "$target_config" "$nm_pid" \
+  "$ready_file" "$trigger_file" "$stop_file" "$target_policy" \
+  </dev/null >/dev/null 2>&1 &
+
+echo "Guard approved and waiting for FluxCast's post-discovery trigger."
+deadline=$((SECONDS + wait_seconds))
+while [[ ! -e "$trigger_file" ]]; do
+  if [[ ! -e "$token_file" ]]; then
+    exit 0
+  fi
+  if (( SECONDS >= deadline )); then
+    echo "No trigger arrived within $wait_seconds seconds."
+    exit 1
+  fi
+  sleep 0.1
+done
+rm -f "$trigger_file"
+
+if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
+  ufw_output="$(
+    ufw allow in on "$ufw_interface" to any port 7236 proto tcp \
+      comment "$ufw_comment"
+  )"
+  if grep -q 'Rule added' <<<"$ufw_output"; then
+    ufw_rule_added=true
+    echo "Temporary UFW rule opened TCP 7236 on $ufw_interface."
+  fi
+fi
+
+kill -STOP "$nm_pid"
+systemctl start systemd-networkd.service
+echo "NetworkManager paused; guarded P2P networking active for $guard_seconds seconds."
+guard_deadline=$((SECONDS + guard_seconds))
+while [[ -e "$token_file" && ! -e "$stop_file" && SECONDS -lt guard_deadline ]]; do
+  sleep 0.2
+done

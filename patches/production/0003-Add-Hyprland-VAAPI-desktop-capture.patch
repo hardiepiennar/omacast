@@ -1,0 +1,324 @@
+From 4422162ebee965ac6f9b4f1d713e193ed9275c7a Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 22:46:06 +1200
+Subject: [PATCH] Add Hyprland VAAPI desktop capture
+
+---
+ src/capture/capture.py         | 37 ++++++++++++++++++++
+ src/main.py                    |  5 +++
+ src/wfd/config.py              |  1 +
+ src/wfd/media/wlroots.py       | 47 +++++++++++++++++++------
+ src/wfd/session.py             |  1 +
+ tests/test_capture_hyprland.py | 44 ++++++++++++++++++++++++
+ tests/test_wfd_media_vaapi.py  | 63 ++++++++++++++++++++++++++++++++++
+ 7 files changed, 188 insertions(+), 10 deletions(-)
+ create mode 100644 tests/test_capture_hyprland.py
+ create mode 100644 tests/test_wfd_media_vaapi.py
+
+diff --git a/src/capture/capture.py b/src/capture/capture.py
+index 4d99f6e..0f88824 100644
+--- a/src/capture/capture.py
++++ b/src/capture/capture.py
+@@ -1,4 +1,5 @@
+ import glob
++import json
+ import os
+ import re
+ import subprocess
+@@ -181,7 +182,43 @@ def _parse_xrandr(display: str) -> list:
+     return monitors
+ 
+ 
++def _parse_hyprland_monitors() -> list:
++    hyprctl = shutil.which("hyprctl")
++    if not hyprctl or not detect_session().is_hyprland:
++        return []
++    try:
++        result = subprocess.run(
++            [hyprctl, "monitors", "-j"],
++            capture_output=True, text=True, timeout=4,
++        )
++        payload = json.loads(result.stdout) if result.returncode == 0 else []
++    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
++        return []
++
++    monitors: list = []
++    for entry in payload if isinstance(payload, list) else []:
++        try:
++            if entry.get("disabled", False):
++                continue
++            monitors.append(Monitor(
++                display=os.environ.get("WAYLAND_DISPLAY", "wayland"),
++                name=str(entry["name"]),
++                width=int(entry["width"]),
++                height=int(entry["height"]),
++                x=int(entry.get("x", 0)),
++                y=int(entry.get("y", 0)),
++                refresh=float(entry.get("refreshRate", 0.0)),
++                primary=bool(entry.get("focused", False)),
++            ))
++        except (KeyError, TypeError, ValueError):
++            continue
++    return monitors
++
++
+ def gather_monitors() -> list:
++    hyprland_monitors = _parse_hyprland_monitors()
++    if hyprland_monitors:
++        return hyprland_monitors
+     all_monitors: list = []
+     for disp in _detect_live_displays():
+         all_monitors.extend(_parse_xrandr(disp))
+diff --git a/src/main.py b/src/main.py
+index cb265ca..62bd368 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -152,6 +152,11 @@ def parse_args() -> argparse.Namespace:
+                      help="Desktop capture backend for --protocol wfd: auto (default), portal, "
+                           "wf-recorder, x11grab, or gst-x11 (X11 capture through the GStreamer "
+                           "MPEG-TS pipeline, for sinks that black-screen on the ffmpeg path)")
++    wfd.add_argument("--wfd-video-encoder", default="auto",
++                     choices=["auto", "software", "vaapi"],
++                     dest="wfd_video_encoder",
++                     help="H.264 encoder for WFD desktop capture: auto, software, or "
++                          "Intel/AMD VAAPI (default: auto)")
+     wfd.add_argument("--wfd-latency-log", nargs="?", const="/tmp/fluxcast-wfd-latency.jsonl",
+                      default=None, dest="wfd_latency_log",
+                      help="For --protocol wfd, JSONL file path for latency/session logging "
+diff --git a/src/wfd/config.py b/src/wfd/config.py
+index c36b98e..4b3ae53 100644
+--- a/src/wfd/config.py
++++ b/src/wfd/config.py
+@@ -19,6 +19,7 @@ class WFDMediaConfig:
+     media_pipeline: str = "auto"
+     latency_log_path: Optional[str] = None
+     capture_backend: str = "auto"
++    video_encoder: str = "auto"
+     peer_name: str = ""
+     uibc: bool = False  # opt-in: accept touch/mouse input back from the sink (issue #37)
+     # H.264 profile the encoders emit; must match the profile sent in M4 (#84).
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 472046c..416ea8f 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -1,6 +1,7 @@
+ import shutil
+ import subprocess
+ import time
++from pathlib import Path
+ 
+ from ..config import WFDNotReady
+ from ..encoding import (
+@@ -47,8 +48,20 @@ class WlrootsMixin:
+             "-f", "/dev/stdout",
+         ]
+ 
++        requested_encoder = self.config.video_encoder
++        vaapi_device = next(
++            (path for path in sorted(Path("/dev/dri").glob("renderD*"))),
++            None,
++        )
++        use_vaapi = requested_encoder == "vaapi" or (
++            requested_encoder == "auto" and vaapi_device is not None
++        )
++        if requested_encoder == "vaapi" and vaapi_device is None:
++            raise WFDNotReady("VAAPI requested but no /dev/dri/renderD* device exists.")
++
+         ffmpeg_cmd = [
+             *_ffmpeg_sender_args(self.config.ffmpeg_stats),
++            *(["-vaapi_device", str(vaapi_device)] if use_vaapi else []),
+             "-fflags", "+genpts",
+             "-thread_queue_size", "1024",
+             "-f", "nut",
+@@ -66,18 +79,27 @@ class WlrootsMixin:
+         else:
+             ffmpeg_cmd += ["-map", "0:v:0"]
+ 
+-        if out_res == src_res:
+-            ffmpeg_cmd += ["-vf", "format=yuv420p"]
+-        else:
+-            ffmpeg_cmd += ["-vf", _letterbox_vf(out_res)]
++        video_filter = "format=yuv420p" if out_res == src_res else _letterbox_vf(out_res)
++        if use_vaapi:
++            video_filter = video_filter.replace("format=yuv420p", "format=nv12,hwupload")
++        ffmpeg_cmd += ["-vf", video_filter]
+ 
++        profile = self.config.h264_profile
++        if use_vaapi and profile == "baseline":
++            profile = "constrained_baseline"
++        encoder_args = (
++            ["-c:v", "h264_vaapi", "-rc_mode", "CBR", "-quality", "7", "-aud", "1"]
++            if use_vaapi
++            else [
++                "-c:v", "libx264",
++                "-preset", "ultrafast" if parsed_out[1] > 1080 else "veryfast",
++                "-tune", "zerolatency",
++            ]
++        )
+         ffmpeg_cmd += [
+-            "-c:v", "libx264",
+-            "-preset", "ultrafast" if parsed_out[1] > 1080 else "veryfast",
+-            "-tune", "zerolatency",
+-            "-profile:v", self.config.h264_profile,
++            *encoder_args,
++            "-profile:v", profile,
+             "-level:v", _h264_level_for_mode(self.config),
+-            "-pix_fmt", "yuv420p",
+             "-r", str(self.config.fps),
+             "-g", str(gop),
+             "-keyint_min", str(gop),
+@@ -86,8 +108,9 @@ class WlrootsMixin:
+             "-b:v", effective_bitrate,
+             "-maxrate", effective_bitrate,
+             "-bufsize", _vbv_bufsize(effective_bitrate, self.config),
+-            "-x264-params", "repeat-headers=1:aud=1",
+         ]
++        if not use_vaapi:
++            ffmpeg_cmd += ["-pix_fmt", "yuv420p", "-x264-params", "repeat-headers=1:aud=1"]
+ 
+         if not self.config.no_audio:
+             ffmpeg_cmd += [
+@@ -103,6 +126,10 @@ class WlrootsMixin:
+         ffmpeg_cmd += self._common_output_args()
+ 
+         print(f"[FluxCast WFD Media] Capturing screen : {monitor.name} ({src_res})")
++        print(
++            "[FluxCast WFD Media] H.264 encoder    : "
++            + (f"VAAPI ({vaapi_device})" if use_vaapi else "libx264")
++        )
+         if not self.config.no_audio:
+             print(f"[FluxCast WFD Media] Capturing audio  : {audio_monitor}")
+         if out_res != src_res:
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 261df3b..bb409ae 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -118,6 +118,7 @@ def start_experimental_backend(args) -> None:
+         media_pipeline=getattr(args, "wfd_media_pipeline", "auto"),
+         latency_log_path=getattr(args, "wfd_latency_log", None),
+         capture_backend=getattr(args, "wfd_capture_backend", "auto"),
++        video_encoder=getattr(args, "wfd_video_encoder", "auto"),
+         peer_name=peer.name,
+         uibc=getattr(args, "wfd_uibc", False),
+         aosp_pmt_pid=getattr(args, "wfd_aosp_pmt_pid", False),
+diff --git a/tests/test_capture_hyprland.py b/tests/test_capture_hyprland.py
+new file mode 100644
+index 0000000..adf4449
+--- /dev/null
++++ b/tests/test_capture_hyprland.py
+@@ -0,0 +1,44 @@
++import json
++import os
++import unittest
++from types import SimpleNamespace
++from unittest import mock
++
++from capture.capture import gather_monitors
++
++
++class HyprlandMonitorDiscoveryTest(unittest.TestCase):
++    def test_gather_monitors_uses_hyprctl_json_on_hyprland(self):
++        payload = [{
++            "name": "eDP-1",
++            "width": 1920,
++            "height": 1080,
++            "x": 0,
++            "y": 0,
++            "refreshRate": 59.934,
++            "focused": True,
++            "disabled": False,
++        }]
++        result = SimpleNamespace(returncode=0, stdout=json.dumps(payload))
++        environment = {
++            **os.environ,
++            "WAYLAND_DISPLAY": "wayland-1",
++            "XDG_SESSION_TYPE": "wayland",
++            "XDG_CURRENT_DESKTOP": "Hyprland",
++            "HYPRLAND_INSTANCE_SIGNATURE": "test",
++        }
++
++        with mock.patch.dict(os.environ, environment, clear=True), \
++             mock.patch("capture.capture.shutil.which", return_value="/usr/bin/hyprctl"), \
++             mock.patch("capture.capture.subprocess.run", return_value=result):
++            monitors = gather_monitors()
++
++        self.assertEqual(len(monitors), 1)
++        self.assertEqual(monitors[0].name, "eDP-1")
++        self.assertEqual((monitors[0].width, monitors[0].height), (1920, 1080))
++        self.assertEqual(monitors[0].display, "wayland-1")
++        self.assertTrue(monitors[0].primary)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_wfd_media_vaapi.py b/tests/test_wfd_media_vaapi.py
+new file mode 100644
+index 0000000..92f5079
+--- /dev/null
++++ b/tests/test_wfd_media_vaapi.py
+@@ -0,0 +1,63 @@
++import io
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++from unittest import mock
++
++from wfd.config import WFDMediaConfig
++from wfd.media.pipeline import WFDMediaPipeline
++
++
++class _Process:
++    def __init__(self, with_stdout=False):
++        self.stdout = io.BytesIO() if with_stdout else None
++
++    def poll(self):
++        return None
++
++    def kill(self):
++        pass
++
++    def terminate(self):
++        pass
++
++
++class WlrootsVAAPITest(unittest.TestCase):
++    def test_wf_recorder_uses_vaapi_upload_and_baseline_profile(self):
++        config = WFDMediaConfig(
++            monitor=SimpleNamespace(name="eDP-1", width=1920, height=1080),
++            output_resolution="1280x720",
++            fps=30,
++            bitrate="5M",
++            no_audio=True,
++            capture_backend="wf-recorder",
++            video_encoder="vaapi",
++        )
++        pipeline = WFDMediaPipeline(
++            config,
++            tv_ip="192.168.49.2",
++            local_ip="192.168.49.1",
++            sink_rtp_port=19000,
++        )
++        commands = []
++
++        def popen(command, *args, **kwargs):
++            commands.append(command)
++            return _Process(with_stdout=kwargs.get("stdout") is not None)
++
++        with mock.patch("wfd.media.wlroots.shutil.which", return_value="/usr/bin/wf-recorder"), \
++             mock.patch("wfd.media.wlroots.Path.glob", return_value=[Path("/dev/dri/renderD128")]), \
++             mock.patch("wfd.media.wlroots._detect_audio_monitor", return_value="monitor"), \
++             mock.patch("wfd.media.wlroots.subprocess.Popen", side_effect=popen), \
++             mock.patch("wfd.media.wlroots.time.sleep"):
++            pipeline._start_desktop_wf_recorder()
++
++        ffmpeg = commands[1]
++        self.assertIn("h264_vaapi", ffmpeg)
++        self.assertIn("format=nv12,hwupload", ffmpeg[ffmpeg.index("-vf") + 1])
++        self.assertEqual(ffmpeg[ffmpeg.index("-profile:v") + 1], "constrained_baseline")
++        self.assertEqual(ffmpeg[ffmpeg.index("-vaapi_device") + 1], "/dev/dri/renderD128")
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.55.0

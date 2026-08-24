@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Temporarily run the repo-local wpa_supplicant build with the extended P2P GO
+# handshake deadline. This changes only /run and restores the packaged service.
+
+if (( EUID != 0 )); then
+  echo "Run this helper with administrator approval."
+  exit 1
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+patched_binary="$repo_root/work/wpa_supplicant-package/hostap-src/wpa_supplicant/wpa_supplicant"
+override_dir="/run/systemd/system/wpa_supplicant.service.d"
+override_file="$override_dir/90-omarchy-cast-timeout.conf"
+token_file="/run/omarchy-cast-supplicant.token"
+token="$$-$RANDOM-$RANDOM"
+
+if [[ ! -x "$patched_binary" ]]; then
+  echo "Patched wpa_supplicant build not found: $patched_binary"
+  exit 1
+fi
+version_output="$($patched_binary -v)"
+if [[ "$version_output" != wpa_supplicant\ v2.12-* ]]; then
+  echo "Refusing to run an unexpected supplicant build."
+  exit 1
+fi
+if [[ -e "$override_file" || -e "$token_file" ]]; then
+  echo "A previous or unrelated runtime override already exists; refusing to overwrite it."
+  exit 1
+fi
+
+restore_stock_service() {
+  local current_token=""
+  [[ -r "$token_file" ]] && current_token="$(<"$token_file")"
+  [[ "$current_token" == "$token" ]] || return 0
+
+  rm -f "$override_file" "$token_file"
+  rmdir "$override_dir" 2>/dev/null || true
+  systemctl daemon-reload
+  systemctl restart wpa_supplicant.service
+  echo "Stock wpa_supplicant restored."
+}
+trap restore_stock_service EXIT
+trap 'exit 0' HUP INT TERM
+
+mkdir -p "$override_dir"
+printf '[Service]\nExecStart=\nExecStart=%s -u -s -O /run/wpa_supplicant\n' \
+  "$patched_binary" > "$override_file"
+printf '%s\n' "$token" > "$token_file"
+
+# Independent recovery if this terminal or process disappears. It only acts if
+# this exact invocation still owns the token, so normal cleanup is not repeated.
+setsid sh -c '
+  sleep 660
+  expected="$1"
+  token_file="$2"
+  override_file="$3"
+  override_dir="$4"
+  [[ -r "$token_file" ]] || exit 0
+  [[ "$(cat "$token_file")" == "$expected" ]] || exit 0
+  rm -f "$override_file" "$token_file"
+  rmdir "$override_dir" 2>/dev/null || true
+  systemctl daemon-reload
+  systemctl restart wpa_supplicant.service
+' sh "$token" "$token_file" "$override_file" "$override_dir" \
+  </dev/null >/dev/null 2>&1 &
+
+echo "Restarting wpa_supplicant with the 30-second P2P handshake build..."
+systemctl daemon-reload
+systemctl restart wpa_supplicant.service
+
+main_pid="$(systemctl show --property MainPID --value wpa_supplicant.service)"
+running_binary="$(readlink -f "/proc/$main_pid/exe")"
+if [[ "$running_binary" != "$patched_binary" ]]; then
+  echo "The patched service did not start as expected."
+  exit 1
+fi
+
+echo "Patched wpa_supplicant is active for up to ten minutes."
+echo "This test helper will restore the packaged service automatically."
+for ((remaining = 600; remaining > 0; remaining--)); do
+  sleep 1
+done

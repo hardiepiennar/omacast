@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fluxcast_bin="${OMARCHY_CAST_FLUXCAST_BIN:-/usr/bin/fluxcast}"
+mode="${1:-connect}"
+test_pattern="${OMARCHY_CAST_TEST_PATTERN:-1}"
+fps="${OMARCHY_CAST_FPS:-30}"
+output_res="${OMARCHY_CAST_OUTPUT_RES:-1280x720}"
+bitrate="${OMARCHY_CAST_BITRATE:-5M}"
+video_encoder="${OMARCHY_CAST_VIDEO_ENCODER:-auto}"
+frequency="${OMARCHY_CAST_P2P_FREQUENCY:-auto}"
+peer="${OMARCHY_CAST_WFD_PEER:?Set OMARCHY_CAST_WFD_PEER to the receiver address}"
+interface="${OMARCHY_CAST_WIFI_INTERFACE:?Set OMARCHY_CAST_WIFI_INTERFACE to the Wi-Fi interface}"
+monitor="${OMARCHY_CAST_MONITOR:?Set OMARCHY_CAST_MONITOR to the Hyprland output}"
+if [[ "$frequency" == "auto" ]]; then
+  frequency="$(iw dev "$interface" link 2>/dev/null | awk '$1 == "freq:" { printf "%d\n", $2; exit }')"
+fi
+if [[ ! "$frequency" =~ ^[0-9]+$ ]]; then
+  frequency=0
+fi
+
+if [[ "$mode" != "authorize" && "$mode" != "connect" && "$mode" != "join" ]]; then
+  echo "Usage: $0 [authorize|connect|join]"
+  exit 2
+fi
+
+extra_args=()
+if [[ "$test_pattern" == "1" ]]; then
+  extra_args+=(--wfd-test-pattern)
+else
+  extra_args+=(--monitor "$monitor" --wfd-capture-backend wf-recorder)
+fi
+
+if [[ ! -x "$fluxcast_bin" ]]; then
+  printf 'Installed FluxCast engine not found: %s\n' "$fluxcast_bin" >&2
+  exit 1
+fi
+
+exec "$fluxcast_bin" \
+  --protocol wfd \
+  --fps "$fps" \
+  --output-res "$output_res" \
+  --bitrate "$bitrate" \
+  --wfd-video-encoder "$video_encoder" \
+  --wfd-p2p-backend supplicant \
+  --wfd-supplicant-mode "$mode" \
+  --wfd-peer "$peer" \
+  --wfd-interface "$interface" \
+  --wfd-timeout 15 \
+  --wfd-supplicant-network-trigger "/run/user/$(id -u)/omarchy-cast-network-guard.trigger" \
+  --wfd-supplicant-frequency "$frequency" \
+  --wfd-supplicant-preconnect-delay 10 \
+  --wfd-supplicant-hold 90 \
+  --wfd-no-firewall \
+  "${extra_args[@]}"

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Fire TV compatibility experiment: run an isolated FluxCast checkout whose
+# NetworkManager P2P group uses the conventional Android 192.168.49.0/24 subnet.
+
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd -- "$script_dir/../.." && pwd)"
+fluxcast_main="$project_dir/work/fluxcast/src/main.py"
+peer="${OMARCHY_CAST_WFD_PEER:?Set OMARCHY_CAST_WFD_PEER to the receiver address}"
+
+if [[ ! -f "$fluxcast_main" ]]; then
+  printf 'Patched FluxCast checkout not found: %s\n' "$fluxcast_main" >&2
+  exit 1
+fi
+
+exec python3 "$fluxcast_main" \
+  --protocol wfd \
+  --wfd-test-pattern \
+  --wfd-peer "$peer" \
+  --wfd-timeout 15 \
+  --wfd-go-intent 0 \
+  --output-res 1280x720 \
+  --fps 30 \
+  --bitrate 3M \
+  --wfd-latency-log /tmp/omarchy-cast-firetv.jsonl \
+  "$@"

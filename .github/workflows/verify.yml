@@ -1,0 +1,43 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the exact commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Run controller and contract tests
+        run: PYTHONPATH="$PWD/src" python3 -m unittest discover -s tests -v
+
+      - name: Check shell syntax and patch whitespace
+        shell: bash
+        run: |
+          while IFS= read -r file; do
+            bash -n "$file"
+          done < <(git grep -Il '^#!/.*bash' -- 'bin/*' 'scripts/*' 'packaging/arch/*')
+          # Compare the whole tracked tree to Git's empty tree so shallow
+          # checkouts still receive a complete whitespace check.
+          git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
+
+      - name: Validate manifest essentials
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path.cwd()
+          manifest = json.loads((root / "manifest.json").read_text())
+          assert manifest["schemaVersion"] == 1
+          assert manifest["id"] == "hardie.omarchy-cast"
+          assert (root / manifest["entryPoints"]["barWidget"]).is_file()
+          PY

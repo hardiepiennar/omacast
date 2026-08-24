@@ -1,0 +1,83 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Fri, 22 Aug 2026 07:20:00 +1200
+Subject: [PATCH] Honor explicit 480p WFD mode
+
+Some sinks omit the mandatory VGA mode from their advertised CEA mask while
+still accepting it. An explicit low-bandwidth 640x480 request must not be
+silently promoted to 720p, otherwise compatibility profiles do not change the
+actual media pipeline.
+---
+ src/wfd/modes.py | 16 +++++++++++++++-
+ tests/test_wfd.py | 23 +++++++++++++++++++++++
+ 2 files changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/src/wfd/modes.py b/src/wfd/modes.py
+index c7f08e8..9f1de90 100644
+--- a/src/wfd/modes.py
++++ b/src/wfd/modes.py
+@@ -106,6 +106,21 @@ def _choose_cea_mode(
+                 return False
+         return max_level is None or _wfd_level_for_mode(mode) <= max_level
+ 
++    # 640x480p60 is the only low-bandwidth CEA mode.  An explicit request for
++    # it is a diagnostic/compatibility choice, so do not silently replace it
++    # with an advertised 720p mode.  Several Miracast sinks omit the mandatory
++    # VGA mode from their capability mask but still accept it.
++    if wants_480:
++        if not supports(WFD_CEA_640P60):
++            global _mode_force_warned
++            if not _mode_force_warned:
++                _mode_force_warned = True
++                print(
++                    "[FluxCast WFD RTSP] WARNING: Sink does not advertise "
++                    "640x480p60; forcing the explicitly requested mode."
++                )
++        return WFD_CEA_MODES[WFD_CEA_640P60]
++
+     # Build preference order: if monitor is 1200p, prefer VESA 1200p modes first
+     if wants_1200:
+         preferred = (
+@@ -175,7 +190,6 @@ def _choose_cea_mode(
+             ]
+         )
+     mode = all_modes[forced[0]]
+-    global _mode_force_warned
+     if not _mode_force_warned:
+         _mode_force_warned = True
+         print(
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index 7c63916..42cbfc5 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -71,6 +71,29 @@ class VideoModeTableTest(unittest.TestCase):
+             level = wfd._wfd_level_for_mode(mode)
+             self.assertIn(level, defined, f"{mode.name} has an undefined level")
+ 
++    def test_explicit_480p_uses_advertised_480p_mode(self):
++        config = wfd.WFDMediaConfig(
++            monitor=None, output_resolution="640x480", fps=60
++        )
++        sink = wfd.WFDVideoFormat(
++            native="28", preferred="00", profile="01", level="02",
++            cea_mask=wfd.WFD_CEA_640P60 | wfd.WFD_CEA_720P30,
++            vesa_mask=0, hh_mask=0,
++        )
++
++        self.assertEqual(wfd._choose_cea_mode(config, sink).name, "640x480p60")
++
++    def test_explicit_480p_is_not_silently_promoted_to_720p(self):
++        config = wfd.WFDMediaConfig(
++            monitor=None, output_resolution="640x480", fps=60
++        )
++        sink = wfd.WFDVideoFormat(
++            native="28", preferred="00", profile="01", level="02",
++            cea_mask=wfd.WFD_CEA_720P30, vesa_mask=0, hh_mask=0,
++        )
++
++        self.assertEqual(wfd._choose_cea_mode(config, sink).name, "640x480p60")
++
+ 
+ class FfmpegProgressArgsTest(unittest.TestCase):
+     def test_progress_stats_are_disabled_by_default(self):
+-- 
+2.53.0

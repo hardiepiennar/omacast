@@ -1,0 +1,639 @@
+From dfa298c15790065f6bc623c41470e54c485990b4 Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 21:28:15 +1200
+Subject: [PATCH] Add direct supplicant P2P backend
+
+---
+ meta/zz-dev.fluxcast.wpa-supplicant.conf |   9 +
+ src/main.py                              |  22 ++
+ src/wfd/p2p/device.py                    |  11 +-
+ src/wfd/p2p/nm.py                        |  44 +++-
+ src/wfd/p2p/supplicant.py                | 276 +++++++++++++++++++++++
+ src/wfd/probe.py                         |  14 +-
+ src/wfd/session.py                       |  62 +++--
+ tests/test_wfd_p2p_nm.py                 |  16 ++
+ tests/test_wfd_p2p_supplicant.py         |  27 +++
+ 9 files changed, 444 insertions(+), 37 deletions(-)
+ create mode 100644 src/wfd/p2p/supplicant.py
+ create mode 100644 tests/test_wfd_p2p_nm.py
+ create mode 100644 tests/test_wfd_p2p_supplicant.py
+
+diff --git a/meta/zz-dev.fluxcast.wpa-supplicant.conf b/meta/zz-dev.fluxcast.wpa-supplicant.conf
+index 2219831..ef5f370 100644
+--- a/meta/zz-dev.fluxcast.wpa-supplicant.conf
++++ b/meta/zz-dev.fluxcast.wpa-supplicant.conf
+@@ -9,6 +9,15 @@
+     <allow send_destination="fi.w1.wpa_supplicant1"
+            send_interface="org.freedesktop.DBus.Properties"
+            send_member="Set"/>
++    <allow send_destination="fi.w1.wpa_supplicant1"
++           send_interface="fi.w1.wpa_supplicant1.Interface.P2PDevice"
++           send_member="Connect"/>
++    <allow send_destination="fi.w1.wpa_supplicant1"
++           send_interface="fi.w1.wpa_supplicant1.Interface.P2PDevice"
++           send_member="Cancel"/>
++    <allow send_destination="fi.w1.wpa_supplicant1"
++           send_interface="fi.w1.wpa_supplicant1.Interface.P2PDevice"
++           send_member="Disconnect"/>
+     <allow receive_sender="fi.w1.wpa_supplicant1"/>
+   </policy>
+ </busconfig>
+diff --git a/src/main.py b/src/main.py
+index e54c643..ed3b801 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -52,6 +52,10 @@ Wi-Fi Display (Miracast) Options:
+     --wfd-interface IFACE    Wi-Fi interface to use, e.g. wlan0
+     --wfd-timeout N          Wi-Fi Direct scan timeout in seconds (default: 8)
+     --wfd-go-intent 0-15     P2P group-owner intent; 0 lets the TV be the owner (default: 0)
++    --wfd-p2p-backend BACKEND
++                             networkmanager (default) or direct supplicant control
++    --wfd-supplicant-mode MODE
++                             connect (default), authorize, or join
+     --wfd-monitor NAME       Deprecated alias for --monitor
+ """
+ 
+@@ -183,6 +187,24 @@ def parse_args() -> argparse.Namespace:
+                      help="P2P group-owner intent (0-15); 0 forces the TV to be "
+                           "the group owner, which most Miracast TVs require to "
+                           "start the session (default: 0)")
++    wfd.add_argument("--wfd-p2p-backend", default="networkmanager",
++                     choices=["networkmanager", "supplicant"], dest="wfd_p2p_backend",
++                     help="P2P control backend: networkmanager (default), or "
++                          "supplicant for direct role control")
++    wfd.add_argument("--wfd-supplicant-mode", default="connect",
++                     choices=["authorize", "connect", "join"],
++                     dest="wfd_supplicant_mode",
++                     help="Direct supplicant role mode: connect initiates locally "
++                          "(default), authorize lets the sink initiate, join targets an "
++                          "already-running sink group")
++    wfd.add_argument("--wfd-supplicant-hold", type=int, default=45,
++                     dest="wfd_supplicant_hold", metavar="SECONDS",
++                     help="How long the direct supplicant role diagnostic waits and then "
++                          "holds a formed group (default: 45)")
++    wfd.add_argument("--wfd-supplicant-preconnect-delay", type=int, default=0,
++                     dest="wfd_supplicant_preconnect_delay", metavar="SECONDS",
++                     help="Diagnostic delay after discovery and before the direct "
++                          "supplicant request (default: 0)")
+     wfd.add_argument("--wfd-monitor", default=None, dest="monitor_name",
+                      help="Deprecated alias for --monitor, kept for compatibility")
+     wfd.add_argument("--wfd-uibc", action="store_true", dest="wfd_uibc",
+diff --git a/src/wfd/p2p/device.py b/src/wfd/p2p/device.py
+index f189970..aaede0d 100644
+--- a/src/wfd/p2p/device.py
++++ b/src/wfd/p2p/device.py
+@@ -2,7 +2,7 @@ import re
+ from typing import Optional
+ 
+ from ..constants import _DEVICE_NAME
+-from .dbus import _gdbus_call, _nm_get_string, _object_paths
++from .dbus import _gdbus_call, _object_paths
+ from .peers import _default_wifi_interface
+ 
+ 
+@@ -38,7 +38,14 @@ def _p2p_device_iface_paths(iface: Optional[str]) -> list[str]:
+     p2p_dev = f"p2p-dev-{physical}" if physical and not physical.startswith("p2p-dev-") else physical
+ 
+     def _priority(path: str) -> int:
+-        ifname = _nm_get_string(path, wpa_iface, "Ifname")
++        result = _gdbus_call([
++            "--dest", wpa_dest,
++            "--object-path", path,
++            "--method", "org.freedesktop.DBus.Properties.Get",
++            wpa_iface, "Ifname",
++        ], timeout=3.0)
++        match = re.search(r"<['\"]([^'\"]+)['\"]>", result.stdout) if result.returncode == 0 else None
++        ifname = match.group(1) if match else ""
+         if ifname == p2p_dev:
+             return 0
+         if ifname == physical:
+diff --git a/src/wfd/p2p/nm.py b/src/wfd/p2p/nm.py
+index be5e24e..9ea15a4 100644
+--- a/src/wfd/p2p/nm.py
++++ b/src/wfd/p2p/nm.py
+@@ -1,3 +1,4 @@
++import subprocess
+ import time
+ from typing import Optional
+ 
+@@ -36,18 +37,31 @@ def _wait_for_nm_activation(active_path: str, timeout: float = 35.0) -> None:
+     print("[FluxCast WFD] Waiting for NetworkManager P2P activation...")
+     deadline = time.monotonic() + timeout
+     last_status = ""
++    dbus_pause_reported = False
+ 
+     while time.monotonic() < deadline:
+-        state_raw = _nm_get_property(
+-            active_path,
+-            "org.freedesktop.NetworkManager.Connection.Active",
+-            "State",
+-        )
+-        state = _variant_uint(state_raw)
+-        state_text = NM_ACTIVE_STATE_NAMES.get(state or -1, str(state))
+-        devices = _nm_active_devices(active_path)
+-        device_status = ", ".join(_nm_device_summary(path) for path in devices) or "no-device"
+-        status = f"{state_text}; {device_status}"
++        try:
++            state_raw = _nm_get_property(
++                active_path,
++                "org.freedesktop.NetworkManager.Connection.Active",
++                "State",
++            )
++            state = _variant_uint(state_raw)
++            state_text = NM_ACTIVE_STATE_NAMES.get(state or -1, str(state))
++            devices = _nm_active_devices(active_path)
++            device_status = ", ".join(_nm_device_summary(path) for path in devices) or "no-device"
++            status = f"{state_text}; {device_status}"
++            dbus_pause_reported = False
++        except subprocess.TimeoutExpired:
++            # A diagnostic may briefly pause NetworkManager to work around its
++            # hard-coded five-second P2P peer timeout. The Wi-Fi group and
++            # wpa_supplicant continue running, so wait instead of tearing the
++            # newly formed group down during cleanup.
++            if not dbus_pause_reported:
++                print("[FluxCast WFD] NetworkManager status is temporarily unavailable; waiting...")
++                dbus_pause_reported = True
++            time.sleep(0.5)
++            continue
+ 
+         if status != last_status:
+             print(f"[FluxCast WFD] NM active connection: {status}")
+@@ -169,7 +183,15 @@ def _connection_settings(peer: WFDPeer, rtsp_port: int) -> str:
+         f"'peer': <'{peer_address}'>, "
+         f"'wfd-ies': <{_variant_byte_array(_wfd_source_ie(rtsp_port))}>"
+         "}, "
+-        "'ipv4': {'method': <'auto'>, 'never-default': <true>}, "
++        # Android/Fire TV Wi-Fi Direct receivers conventionally address a
++        # source-owned group through 192.168.49.1.  With no explicit address,
++        # NetworkManager's shared mode chooses 10.42.x.1 instead, leaving the
++        # receiver associated at layer 2 but unable to reach the RTSP server.
++        "'ipv4': {"
++        "'method': <'shared'>, "
++        "'address-data': <[{'address': <'192.168.49.1'>, 'prefix': <uint32 24>}]>, "
++        "'never-default': <true>"
++        "}, "
+         "'ipv6': {'method': <'auto'>, 'never-default': <true>, 'may-fail': <true>}"
+         "}"
+     )
+diff --git a/src/wfd/p2p/supplicant.py b/src/wfd/p2p/supplicant.py
+new file mode 100644
+index 0000000..9fde7ac
+--- /dev/null
++++ b/src/wfd/p2p/supplicant.py
+@@ -0,0 +1,276 @@
++import re
++import time
++from dataclasses import dataclass
++from typing import Optional
++
++from ..config import WFDNotReady
++from ..ie import WFDPeer, _parse_gdbus_byte_array
++from .dbus import _gdbus_call, _object_paths, _variant_byte_array, _wfd_source_ie
++from .device import _p2p_device_iface_paths
++
++
++WPA_DEST = "fi.w1.wpa_supplicant1"
++WPA_ROOT = "/fi/w1/wpa_supplicant1"
++WPA_IFACE = "fi.w1.wpa_supplicant1.Interface"
++WPA_P2P = f"{WPA_IFACE}.P2PDevice"
++WPA_PEER = "fi.w1.wpa_supplicant1.Peer"
++WPA_GROUP = "fi.w1.wpa_supplicant1.Group"
++
++
++@dataclass(frozen=True)
++class SupplicantGroup:
++    group_path: str
++    interface_path: str
++    ifname: str
++    role: str
++
++
++def _wpa_property(path: str, interface: str, prop: str) -> str:
++    result = _gdbus_call([
++        "--dest", WPA_DEST,
++        "--object-path", path,
++        "--method", "org.freedesktop.DBus.Properties.Get",
++        interface,
++        prop,
++    ])
++    if result.returncode != 0:
++        return ""
++    return result.stdout.strip()
++
++
++def _wpa_string_property(path: str, interface: str, prop: str) -> str:
++    raw = _wpa_property(path, interface, prop)
++    match = re.search(r"<['\"](.*?)['\"]>", raw)
++    return match.group(1) if match else ""
++
++
++def _wpa_object_path_property(path: str, interface: str, prop: str) -> str:
++    raw = _wpa_property(path, interface, prop)
++    match = re.search(r"objectpath ['\"]([^'\"]+)['\"]", raw)
++    return match.group(1) if match else ""
++
++
++def _supplicant_interface_path(interface: Optional[str]) -> str:
++    paths = _p2p_device_iface_paths(interface)
++    if not paths:
++        raise WFDNotReady("wpa_supplicant did not expose a P2P control interface.")
++    return paths[0]
++
++
++def _mac_from_byte_array(raw: str) -> str:
++    values = _parse_gdbus_byte_array(raw)
++    if len(values) < 6:
++        return ""
++    return ":".join(f"{value:02x}" for value in values[:6])
++
++
++def _supplicant_peer_path(interface_path: str, peer_address: str) -> str:
++    peers_raw = _wpa_property(interface_path, WPA_P2P, "Peers")
++    wanted = peer_address.lower().replace("-", ":")
++    for peer_path in _object_paths(peers_raw):
++        address_raw = _wpa_property(peer_path, WPA_PEER, "DeviceAddress")
++        if _mac_from_byte_array(address_raw) == wanted:
++            return peer_path
++
++    # wpa_supplicant uses the lower-case, separator-free device address in its
++    # peer object path. Keep this deterministic fallback useful for dry-runs.
++    compact = re.sub(r"[^0-9a-f]", "", wanted)
++    if len(compact) == 12:
++        return f"{interface_path}/Peers/{compact}"
++    raise WFDNotReady(f"Could not resolve supplicant peer object for {peer_address}.")
++
++
++def _supplicant_connect_options(
++    peer_path: str,
++    mode: str,
++    go_intent: int,
++    persistent: bool = False,
++) -> str:
++    if mode not in {"authorize", "connect", "join"}:
++        raise WFDNotReady(f"Unsupported direct supplicant mode: {mode}")
++    if not 0 <= go_intent <= 15:
++        raise WFDNotReady(f"Invalid P2P GO intent: {go_intent}")
++
++    authorize_only = mode == "authorize"
++    join = mode == "join"
++    boolean = lambda value: "true" if value else "false"
++    return (
++        "{"
++        f"'peer': <objectpath '{peer_path}'>, "
++        f"'persistent': <{boolean(persistent)}>, "
++        f"'join': <{boolean(join)}>, "
++        f"'authorize_only': <{boolean(authorize_only)}>, "
++        f"'go_intent': <int32 {go_intent}>, "
++        "'wps_method': <'pbc'>"
++        "}"
++    )
++
++
++def _set_supplicant_wfd_ies(rtsp_port: int, dry_run: bool = False) -> None:
++    value = f"<{_variant_byte_array(_wfd_source_ie(rtsp_port))}>"
++    args = [
++        "--dest", WPA_DEST,
++        "--object-path", WPA_ROOT,
++        "--method", "org.freedesktop.DBus.Properties.Set",
++        WPA_DEST, "WFDIEs", value,
++    ]
++    if dry_run:
++        print("[FluxCast WFD] Dry-run supplicant WFDIEs call:")
++        print("gdbus call --system " + " ".join(args))
++        return
++    result = _gdbus_call(args)
++    if result.returncode != 0:
++        raise WFDNotReady((result.stderr or result.stdout).strip())
++
++
++def _supplicant_connect(
++    interface_path: str,
++    peer: WFDPeer,
++    mode: str,
++    go_intent: int,
++    rtsp_port: int,
++    persistent: bool = False,
++    dry_run: bool = False,
++) -> None:
++    peer_path = _supplicant_peer_path(interface_path, peer.address)
++    options = _supplicant_connect_options(peer_path, mode, go_intent, persistent)
++    args = [
++        "--dest", WPA_DEST,
++        "--object-path", interface_path,
++        "--method", f"{WPA_P2P}.Connect",
++        options,
++    ]
++
++    _set_supplicant_wfd_ies(rtsp_port, dry_run=dry_run)
++    if dry_run:
++        print("[FluxCast WFD] Dry-run direct supplicant Connect call:")
++        print("gdbus call --system " + " ".join(args))
++        return
++
++    print(
++        f"[FluxCast WFD] Direct supplicant mode={mode}, go_intent={go_intent}; "
++        f"target={peer.name or peer.address}."
++    )
++    result = _gdbus_call(args, timeout=15.0)
++    if result.returncode != 0:
++        message = (result.stderr or result.stdout).strip()
++        if "AccessDenied" in message or "denied" in message.lower():
++            raise WFDNotReady(
++                "System D-Bus denied direct P2P control. Install or temporarily "
++                "activate FluxCast's direct-supplicant policy. Raw error: " + message
++            )
++        raise WFDNotReady(message)
++
++
++def _group_from_interface(interface_path: str) -> Optional[SupplicantGroup]:
++    group_path = _wpa_object_path_property(interface_path, WPA_P2P, "Group")
++    if not group_path or group_path == "/":
++        return None
++
++    # The P2PDevice.Group property is exposed on the dynamically-created group
++    # interface itself. The Group object has role/member metadata, but it does
++    # not point back to an Interface object.
++    group_interface = interface_path
++    ifname = _wpa_string_property(interface_path, WPA_IFACE, "Ifname")
++    role = _wpa_string_property(group_path, WPA_GROUP, "Role")
++    return SupplicantGroup(group_path, group_interface, ifname, role)
++
++
++def _wait_for_supplicant_group(timeout: float = 45.0) -> SupplicantGroup:
++    print("[FluxCast WFD] Waiting for direct supplicant P2P group...")
++    deadline = time.monotonic() + timeout
++    while time.monotonic() < deadline:
++        interfaces_raw = _wpa_property(WPA_ROOT, WPA_DEST, "Interfaces")
++        for interface_path in _object_paths(interfaces_raw):
++            try:
++                group = _group_from_interface(interface_path)
++            except Exception:
++                group = None
++            if group:
++                print(
++                    f"[FluxCast WFD] Direct P2P group: role={group.role or 'unknown'}, "
++                    f"interface={group.ifname or group.interface_path}."
++                )
++                return group
++        time.sleep(0.5)
++    raise WFDNotReady("Timed out waiting for a direct supplicant P2P group.")
++
++
++def _supplicant_cancel_and_disconnect(interface: Optional[str]) -> None:
++    paths = _p2p_device_iface_paths(interface)
++    for interface_path in paths:
++        for member in ("Cancel", "Disconnect"):
++            try:
++                _gdbus_call([
++                    "--dest", WPA_DEST,
++                    "--object-path", interface_path,
++                    "--method", f"{WPA_P2P}.{member}",
++                ], timeout=3.0)
++            except Exception:
++                pass
++    try:
++        _gdbus_call([
++            "--dest", WPA_DEST,
++            "--object-path", WPA_ROOT,
++            "--method", "org.freedesktop.DBus.Properties.Set",
++            WPA_DEST, "WFDIEs", "<@ay []>",
++        ], timeout=3.0)
++    except Exception:
++        pass
++
++
++def connect_supplicant_group(args, peer: WFDPeer) -> SupplicantGroup:
++    interface_path = _supplicant_interface_path(args.wfd_interface)
++    mode = getattr(args, "wfd_supplicant_mode", "connect")
++    rtsp_port = getattr(args, "wfd_rtsp_port", 7236)
++    go_intent = getattr(args, "wfd_go_intent", 0)
++    dry_run = getattr(args, "wfd_dry_run", False)
++    preconnect_delay = max(
++        0, int(getattr(args, "wfd_supplicant_preconnect_delay", 0))
++    )
++
++    if preconnect_delay and not dry_run:
++        print(
++            "[FluxCast WFD] Direct connection armed; "
++            f"waiting {preconnect_delay}s before negotiation..."
++        )
++        time.sleep(preconnect_delay)
++
++    _supplicant_connect(
++        interface_path,
++        peer,
++        mode=mode,
++        go_intent=go_intent,
++        rtsp_port=rtsp_port,
++        dry_run=dry_run,
++    )
++    if dry_run:
++        raise WFDNotReady("A dry-run does not create a supplicant P2P group.")
++
++    return _wait_for_supplicant_group(
++        timeout=float(getattr(args, "wfd_supplicant_hold", 45))
++    )
++
++
++def run_supplicant_role_test(args, peer: WFDPeer) -> None:
++    if getattr(args, "wfd_dry_run", False):
++        interface_path = _supplicant_interface_path(args.wfd_interface)
++        _supplicant_connect(
++            interface_path,
++            peer,
++            mode=getattr(args, "wfd_supplicant_mode", "connect"),
++            go_intent=getattr(args, "wfd_go_intent", 0),
++            rtsp_port=getattr(args, "wfd_rtsp_port", 7236),
++            dry_run=True,
++        )
++        return
++
++    try:
++        connect_supplicant_group(args, peer)
++        hold = max(1, int(getattr(args, "wfd_supplicant_hold", 45)))
++        print(f"[FluxCast WFD] Holding role-test group for {hold}s. Press Ctrl+C to stop.")
++        time.sleep(hold)
++    except KeyboardInterrupt:
++        print("\n[FluxCast WFD] Stopping direct supplicant role test...")
++    finally:
++        _supplicant_cancel_and_disconnect(args.wfd_interface)
+diff --git a/src/wfd/probe.py b/src/wfd/probe.py
+index b4df217..d80a9d3 100644
+--- a/src/wfd/probe.py
++++ b/src/wfd/probe.py
+@@ -35,13 +35,19 @@ def _active_rtsp_probe(
+ 
+     print("[FluxCast WFD RTSP] No passive connection; trying Source-initiated RTSP probe...")
+ 
+-    tv_ip = _wait_for_peer_ip(peer.address, timeout=10.0)
++    # A direct-supplicant client group needs to obtain its lease from the sink
++    # before the sink IP appears in the neighbour table. Fire TV took just over
++    # six seconds from group-object creation in the phase-1 trace.
++    tv_ip = _wait_for_peer_ip(peer.address, timeout=8.0)
+     if not tv_ip:
+         print(
+-            f"[FluxCast WFD RTSP] Active probe: TV IP not found for MAC {peer.address} "
+-            "— ARP table empty; is the P2P link still up?"
++            f"[FluxCast WFD RTSP] Active probe: TV IP not found for MAC {peer.address}; "
++            "trying conventional Wi-Fi Direct client address 192.168.49.2."
+         )
+-        return
++        # Some Miracast sinks use the conventional Android Wi-Fi Direct static
++        # address and remain absent from ARP until the source contacts them.
++        # Trying it also creates the ARP request needed to discover that sink.
++        tv_ip = "192.168.49.2"
+ 
+     if rtsp_server.has_connected_client:
+         return
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index aad716f..4b51049 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -14,6 +14,11 @@ from .p2p.nm import (
+     _nm_p2p_device_path, _wait_for_nm_activation,
+ )
+ from .p2p.peers import _scan_and_select
++from .p2p.supplicant import (
++    _supplicant_cancel_and_disconnect,
++    connect_supplicant_group,
++    run_supplicant_role_test,
++)
+ from .probe import _active_rtsp_probe
+ from .rtsp.rtsp_server import WFDRTSPServer
+ 
+@@ -73,9 +78,16 @@ def start_experimental_backend(args) -> None:
+     peer = _scan_and_select(
+         args.wfd_interface, getattr(args, "wfd_peer", None), args.wfd_timeout
+     )
+-    device_path = _nm_p2p_device_path(args.wfd_interface)
+-    if not device_path:
+-        raise WFDNotReady("NetworkManager P2P device disappeared before connection.")
++    p2p_backend = getattr(args, "wfd_p2p_backend", "networkmanager")
++    if p2p_backend == "supplicant" and getattr(args, "wfd_dry_run", False):
++        run_supplicant_role_test(args, peer)
++        return
++
++    device_path = ""
++    if p2p_backend == "networkmanager":
++        device_path = _nm_p2p_device_path(args.wfd_interface)
++        if not device_path:
++            raise WFDNotReady("NetworkManager P2P device disappeared before connection.")
+ 
+     if getattr(args, "wfd_dry_run", False):
+         _connect_peer(
+@@ -126,23 +138,27 @@ def start_experimental_backend(args) -> None:
+     active_path = ""
+     previous_go_intent = None
+     try:
+-        # Clear stale P2P device state from previous runs before new activation.
+-        try:
+-            _disconnect_device(device_path)
+-        except Exception:
+-            pass
++        if p2p_backend == "networkmanager":
++            # Clear stale P2P device state from previous runs before activation.
++            try:
++                _disconnect_device(device_path)
++            except Exception:
++                pass
+         rtsp.start()
+-        # Lower our GO intent before negotiation so the TV becomes the group
+-        # owner; most Miracast sinks only start the RTSP session in that role.
+-        previous_go_intent = _set_p2p_go_intent(
+-            args.wfd_interface, getattr(args, "wfd_go_intent", 0)
+-        )
+-        active_path = _connect_peer(
+-            device_path,
+-            peer,
+-            rtsp_port=rtsp_port,
+-        )
+-        _wait_for_nm_activation(active_path)
++        if p2p_backend == "supplicant":
++            connect_supplicant_group(args, peer)
++        else:
++            # Lower our GO intent before negotiation so the TV becomes the group
++            # owner; most Miracast sinks only start the RTSP session in that role.
++            previous_go_intent = _set_p2p_go_intent(
++                args.wfd_interface, getattr(args, "wfd_go_intent", 0)
++            )
++            active_path = _connect_peer(
++                device_path,
++                peer,
++                rtsp_port=rtsp_port,
++            )
++            _wait_for_nm_activation(active_path)
+ 
+         if not getattr(args, "wfd_no_firewall", False):
+             firewall_opened = _open_wfd_firewall_port(rtsp_port)
+@@ -175,7 +191,13 @@ def start_experimental_backend(args) -> None:
+         if active_path:
+             _cleanup_step("connection deactivate",
+                           lambda: _deactivate_connection(active_path))
+-        _cleanup_step("P2P device disconnect", lambda: _disconnect_device(device_path))
++        if p2p_backend == "supplicant":
++            _cleanup_step(
++                "direct P2P disconnect",
++                lambda: _supplicant_cancel_and_disconnect(args.wfd_interface),
++            )
++        else:
++            _cleanup_step("P2P device disconnect", lambda: _disconnect_device(device_path))
+         if previous_go_intent is not None:
+             _cleanup_step(
+                 "GO intent restore",
+diff --git a/tests/test_wfd_p2p_nm.py b/tests/test_wfd_p2p_nm.py
+new file mode 100644
+index 0000000..ca9b827
+--- /dev/null
++++ b/tests/test_wfd_p2p_nm.py
+@@ -0,0 +1,16 @@
++import unittest
++
++from wfd.ie import WFDPeer
++from wfd.p2p.nm import _connection_settings
++
++
++class NetworkManagerP2PSettingsTest(unittest.TestCase):
++    def test_connection_settings_pin_fire_tv_compatible_p2p_subnet(self):
++        settings = _connection_settings(
++            WFDPeer(address="02:00:00:00:00:01", name="Fire TV", path="/peer"),
++            7236,
++        )
++
++        self.assertIn("'method': <'shared'>", settings)
++        self.assertIn("'address': <'192.168.49.1'>", settings)
++        self.assertIn("'prefix': <uint32 24>", settings)
+diff --git a/tests/test_wfd_p2p_supplicant.py b/tests/test_wfd_p2p_supplicant.py
+new file mode 100644
+index 0000000..885dc55
+--- /dev/null
++++ b/tests/test_wfd_p2p_supplicant.py
+@@ -0,0 +1,27 @@
++import unittest
++
++from wfd.p2p.supplicant import _supplicant_connect_options
++
++
++class SupplicantP2POptionsTest(unittest.TestCase):
++    def test_authorize_mode_lets_sink_initiate_with_low_go_intent(self):
++        options = _supplicant_connect_options(
++            "/fi/w1/wpa_supplicant1/Interfaces/0/Peers/f22f9e8b714d",
++            mode="authorize",
++            go_intent=0,
++        )
++
++        self.assertIn("'authorize_only': <true>", options)
++        self.assertIn("'join': <false>", options)
++        self.assertIn("'go_intent': <int32 0>", options)
++        self.assertIn("'persistent': <false>", options)
++
++    def test_join_mode_requests_existing_sink_group(self):
++        options = _supplicant_connect_options(
++            "/fi/w1/wpa_supplicant1/Interfaces/0/Peers/f22f9e8b714d",
++            mode="join",
++            go_intent=0,
++        )
++
++        self.assertIn("'authorize_only': <false>", options)
++        self.assertIn("'join': <true>", options)
+-- 
+2.55.0

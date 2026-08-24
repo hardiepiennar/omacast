@@ -1,0 +1,52 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Sat, 22 Aug 2026 08:20:00 +1200
+Subject: [PATCH] Separate WFD payload and wire rates
+
+The MPEG-TS muxrate excludes RTP framing while FFmpeg's UDP pacer applies to
+the framed datagrams. Give the wire pacer five percent headroom and constrain
+bursts to one RTP datagram so the socket cannot periodically back up and drain.
+---
+ src/wfd/media/pipeline.py | 9 +++++++--
+ tests/test_wfd.py         | 4 ++--
+ 2 files changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+index a157b9b..fdd8d33 100644
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -124,13 +124,18 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+ 
+     def _rtp_output(self) -> str:
+         transport_rate = self._transport_rate_bps()
++        # The MPEG-TS muxrate counts only 188-byte TS packets, while the UDP
++        # pacer sees RTP framing too.  Equal ceilings slowly back up the socket
++        # and release it in periodic bursts.  Leave wire headroom and allow
++        # only one seven-TS-packet RTP datagram per burst.
++        wire_rate = transport_rate * 105 // 100
+         return _rtp_url(
+             self.tv_ip,
+             self.sink_rtp_port,
+             self.config.source_port,
+             self.local_ip,
+-            bitrate=transport_rate,
+-            burst_bits=max(1328 * 8, transport_rate // 60),
++            bitrate=wire_rate,
++            burst_bits=1328 * 8,
+         )
+ 
+     def _common_output_args(self) -> list[str]:
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index f0533d1..eeecb33 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -238,6 +238,6 @@ class AospTablesVersionTest(unittest.TestCase):
+         self.assertEqual(args[args.index("-muxrate") + 1], "6000000")
+         output = args[-1]
+-        self.assertIn("bitrate=6000000", output)
+-        self.assertIn("burst_bits=100000", output)
++        self.assertIn("bitrate=6300000", output)
++        self.assertIn("burst_bits=10624", output)
+ 
+     def test_flag_stamps_version_1_like_aosp(self):
+-- 
+2.53.0

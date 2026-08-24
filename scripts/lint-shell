@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Lint production shell surfaces; retained lab evidence is intentionally frozen.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+command -v shellcheck >/dev/null || { printf '%s\n' 'shellcheck is required' >&2; exit 2; }
+
+shellcheck \
+  "$repo_root/packaging/arch/omarchy-cast-guard" \
+  "$repo_root/packaging/arch/omarchy-cast-guard-recover" \
+  "$repo_root/scripts/audit-release-artifact" \
+  "$repo_root/scripts/bootstrap-fluxcast" \
+  "$repo_root/scripts/build-release-artifact" \
+  "$repo_root/scripts/lint-shell" \
+  "$repo_root/scripts/test" \
+  "$repo_root/scripts/test-package-lifecycle" \
+  "$repo_root/scripts/validate-plugin"
+# makepkg defines and consumes these variables and runs PKGBUILD functions in a
+# fail-fast shell; ShellCheck cannot infer that framework contract.
+shellcheck -s bash -e SC2034,SC2154,SC2164 "$repo_root/packaging/arch/PKGBUILD"

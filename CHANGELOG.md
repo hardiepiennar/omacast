@@ -1,0 +1,177 @@
+# Changelog
+
+## 0.1.0 — 2026-08-22
+
+- Companion revision 37 replaces the recurring cast password prompt with a
+  package-owned Polkit action scoped to the exact guard path, `prepare` as the
+  first argument, and the active local user. Guard API 4 additionally binds the
+  requested UID to Polkit's authenticated caller.
+- Clicking a receiver now starts casting immediately, matching Enter on the
+  keyboard-selected receiver. N toggles Nerd Mode, Q stops an active cast,
+  and the documented Super+C binding uses Omarchy's native panel toggle route.
+- The upstream FluxCast source is pinned by its full 40-character commit ID.
+- Receiver liveness now requires the session-owned P2P group to remain present.
+  A TV-side disconnect returns the supervised session to idle after a
+  three-second grace instead of trusting a stale RTSP socket and showing a
+  false streaming state.
+- N now opens Nerd Mode throughout connection as well as streaming, and Q
+  cancels from the first busy connection state instead of waiting for media.
+- The single Safe profile is now the receiver-accepted 1280×720 at 60 fps and
+  7 Mbps Matroska path. A controlled Fire TV run was subjectively accepted with
+  zero reported dropped/duplicated frames or radio retries in sampled telemetry.
+- Nerd Mode keeps every existing signal but uses compact, scannable values and
+  a health flag count instead of expanding raw issue strings. Each value uses
+  signal-specific green, amber, or red thresholds for at-a-glance health.
+- Nerd Mode's final layout uses a two-column metric grid and hides unavailable
+  deep-probe cards. Panel launches snapshot the selected receiver and surface
+  launcher stderr instead of silently returning to idle.
+- Live discovery offers only the Fire TV receiver class validated for 0.1.0;
+  generic WFD advertisements remain unsupported rather than appearing usable.
+- Revision 34 consolidates the release on the receiver-proven full-display
+  path. The experimental portal/window command surface, portal picker,
+  GStreamer-only dependencies, and in-panel screenshot preview are removed.
+  Their revision-31 through revision-33 findings remain in the research log.
+- Super+C and the bar icon now open the same keyboard-first desktop workflow;
+  the Source row identifies the output and one Enter starts the selected TV.
+- The shipped FluxCast compatibility series contains only the accepted 20-patch
+  display baseline while retaining encoded-frame proof before green streaming.
+  Portal-only and rejected handoff patches remain research and are not shipped.
+- Once RTSP connects, the single display capture path now has a focused
+  30-second media-start deadline instead of the portal picker's long allowance.
+- First Omacast marketplace release candidate.
+- Native Omarchy bar panel with Super+C summon workflow.
+- Automatic nearby-display discovery and receiver selection by name.
+- Receiver discovery excludes Wi-Fi Direct devices that explicitly advertise
+  no Wi-Fi Display information, so nearby printers are not offered as TVs, and
+  puts the validated Fire TV receiver class before generic WFD labels.
+- A stationary pointer can no longer move the keyboard destination cursor as
+  the panel opens; arrow keys and Enter always act on the visibly highlighted
+  receiver, while mouse selection remains click-based.
+- Compact Bluetooth/Agents-style interface with a dedicated cast glyph and
+  only the actions that drive the supported workflow.
+- Orange connecting, green streaming, and red recovery icon states.
+- Receiver scanning now shares the orange busy state, and tooltips distinguish
+  discovery, administrator approval, receiver connection, and restoration.
+- Cast supervision moved into a collectable user service so shell reloads do
+  not own the media session.
+- Failed authorization and lost-session ownership now lead to a contextual
+  Restore action instead of trapping the panel behind Stop.
+- The orange start-pending state bridges the systemd/status publication race,
+  keeps duplicate actions disabled, and exposes immediate cancellation even
+  before the detached service publishes session state. Its watchdog now
+  cancels failed launches instead of merely unlocking the panel.
+- Cancellation is valid from the first `checking` transition, and a service
+  stopped before state publication performs a post-stop stale-state sweep so
+  late startup cannot resurrect a dead cast in the panel.
+- Stop and authorization cancellation now use the unprivileged session marker;
+  only starting a real cast requires administrator approval.
+- Guarded Fire TV mirror sessions with deterministic cleanup.
+- Live capture, mux, transport, packet-timing, radio, and health telemetry.
+- Volatile per-session telemetry is removed after normal completion and stale
+  recovery; durable telemetry history is pruned with the same 50-session bound
+  as event history.
+- Integrated session elapsed time and bounded 50-session diagnostic history.
+- Wayland idle and logind sleep inhibitors scoped exactly to the active cast;
+  normal Stop and forced owner death release both automatically.
+- Legacy hardware experiments moved under `scripts/lab/` so production and
+  marketplace paths are unambiguous.
+- Bootstrap and Arch packaging now consume one authoritative 22-patch series;
+  a clean pinned-base reconstruction applied the complete series successfully.
+- Receiver-validated 720p30 H.264/AAC profile with GPU Screen Recorder capture.
+- Compatibility entry point retained as `omarchy-cast`.
+- First-run readiness now gates automatic scanning on the complete supported
+  engine/helper/host path and distinguishes companion setup from transient
+  Wi-Fi, display, or audio availability.
+- A contextual setup state replaces the receiver controls when the companion
+  is missing; one action copies `makepkg -si` and opens a visible terminal.
+- Companion package revision 25 promotes every required Miracast runtime tool
+  from optional guidance to declared package dependencies.
+- Closed panels now poll controller state with a lightweight heartbeat, so the
+  bar icon changes state without requiring the user to click it first.
+- P2P group formation has a dedicated 45-second timeout and the complete
+  connection stage fails actionably after 75 seconds instead of inheriting the
+  requested cast lifetime.
+- Normal hardware sessions default to Cast Until Stopped. Companion package
+  revision 26 replaces the fixed 30-minute privileged ceiling with a renewable
+  60-second safety lease and an independent missed-heartbeat cleanup path.
+- The networking helper safely creates a missing volatile
+  `/run/systemd/network` directory after boot and restores the exact prior
+  systemd-networkd service/socket state during cleanup.
+- Companion patch 23 adds an explicit, default-off FLV handoff candidate for
+  controlled GSR cadence testing while retaining the receiver-proven Matroska
+  handoff as the normal path.
+- Companion package revision 27 publishes a machine-readable guard API revision.
+  Readiness now rejects an old engine or helper contract and shows the normal
+  companion-update action before a mismatched marketplace UI can start a cast.
+- The everyday live panel now keeps only display, session, quality, and health
+  visible. Optional Nerd Mode reveals the full measured signal path, labels
+  unavailable probes honestly, and never turns on deep packet tracing.
+- Recovery now uses a warning glyph as well as urgent color, while state-aware
+  tooltips distinguish readiness, setup, connection, casting, cleanup, and
+  recovery without requiring the panel to be opened.
+- Authorization cancellation, helper setup, DHCP, P2P, receiver negotiation,
+  receiver timeout, capture, and otherwise-unclassified engine exits now have
+  stable diagnostic codes. The controller preserves those codes in live state
+  and bounded session history instead of collapsing them into one transport
+  failure.
+- A direct-supplicant group timeout is classified as P2P negotiation failure
+  even when earlier engine diagnostics mention the later DHCP stage.
+- Release artifacts now have a repeatable no-root audit for checksum, safe
+  archive paths, runtime dependencies, executable permissions, guard API
+  compatibility, packaged engine flags, and pacman archive integrity.
+- A disposable fakeroot/pacman lifecycle test now proves that a prior companion
+  installs intact, revision 27 upgrades it in place with zero altered files,
+  exposes the new helper contract, and removes without orphaned package files.
+- Superseded revision-31 experiment: active-window casting requested a typed
+  window from the private desktop portal and failed closed if the picker
+  returned a monitor, virtual output, or untyped source. Picker guidance used its
+  Windows tab.
+- Superseded revision-33 experiment: GStreamer's PipeWire reader replaced GPU
+  Screen Recorder's incompatible portal SHM path and fed the receiver-proven FFmpeg
+  VAAPI Safe pipeline. Display casting remains on the accepted GSR path.
+- Connecting state now remains orange until FFmpeg proves an encoded video
+  frame; an RTSP socket alone can no longer turn the bar icon green. Portal
+  cancellation and selection timeout have distinct recovery guidance.
+- The compatibility series is now 25 patches. Revision 33 passed its 101 engine
+  tests, exact-clean artifact audit, fresh lifecycle, live revision-32 upgrade,
+  package-integrity check, and Omarchy plugin validation.
+- Marketplace metadata now uses the more discoverable Hardware + bar/media/
+  quickshell combination, and the current upstream static baseline reports no
+  findings while retaining the expected explicit-review capabilities.
+- Marketplace and README copy now lead with the authentic privacy-safe panel
+  preview and clearly distinguish the calm cast flow, optional Nerd Mode, and
+  end-to-end recovery behavior.
+- Companion revision 28 removes the household receiver's personal label and
+  radio address from public research/test artifacts; retained lab launchers now
+  require explicit receiver, Wi-Fi interface, and monitor inputs instead of
+  embedding this workstation's values.
+- Release CI now installs the candidate with pacman in a disposable root,
+  verifies every packaged file and the helper API, then proves complete removal
+  before artifact upload or provenance attestation.
+- Read-only host diagnostics now expose the desktop ScreenCast portal version,
+  standard source and cursor masks, and honest picker-dependent region status.
+  The probe only reads D-Bus properties and never opens the source picker.
+- Companion revision 29 extends independent missed-heartbeat recovery to the
+  fixed allowlist of volatile session telemetry files, including the media QoS
+  marker, then removes the empty session telemetry directory.
+- Removed the old config surface and every experimental display/quality choice
+  from production planning, simulation, probes, state validation, and guarded
+  execution. Omacast now has one consistent mirror/Safe contract end to end.
+- Companion revision 30 replaces ambiguous shell control-flow expressions,
+  including a prepare-failure path that could incorrectly fall through to
+  `stop`, and release CI now ShellChecks every production shell surface.
+- Superseded revision-31 experiment: Super+C opened a private, contextual
+  active-window prompt. Nearby receivers used an Omarchy-style keyboard cursor: ↑/↓ chose and one Enter
+  starts the selected destination; mouse users must explicitly choose a TV
+  before the Cast action appears.
+- Super+C routes through Omarchy's stable shell-level summon API, so plugin
+  upgrades cannot leave it calling a stale per-widget IPC handler. Clicking the
+  bar icon remains the explicit whole-display route.
+- Companion revision 31 adds an explicit desktop-portal source to the measured
+  GPU Screen Recorder pipeline. Window selection retains Safe 720p30, audio,
+  pacing, supervision, and cleanup, and remains gated on final receiver tests.
+- Companion revision 32 accepts a safely pre-existing systemd-networkd service
+  (including socket activation after a prior cast), reloads only the session
+  configuration, and restores the exact recorded unit states. A root-owned
+  helper exit can no longer mask its actionable setup error with `EPERM` during
+  unprivileged cleanup.

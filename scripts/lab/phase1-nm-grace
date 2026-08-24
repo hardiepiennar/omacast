@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# One-run diagnostic for NetworkManager's hard-coded five-second Wi-Fi P2P
+# peer-membership timeout. Run this as root before starting lab/phase1-firetv.
+
+if (( EUID != 0 )); then
+  echo "Run this helper with sudo."
+  exit 1
+fi
+
+nm_pid="$(systemctl show --property MainPID --value NetworkManager.service)"
+if [[ ! "$nm_pid" =~ ^[0-9]+$ ]] || (( nm_pid <= 1 )); then
+  echo "NetworkManager is not running."
+  exit 1
+fi
+if [[ "$(cat "/proc/$nm_pid/comm")" != "NetworkManager" ]]; then
+  echo "Refusing to signal unexpected process $nm_pid."
+  exit 1
+fi
+
+resume_networkmanager() {
+  kill -CONT "$nm_pid" 2>/dev/null || true
+}
+trap resume_networkmanager EXIT HUP INT TERM
+
+echo "Waiting for an activated 192.168.49.1 Wi-Fi Direct group..."
+deadline=$((SECONDS + 90))
+group_interface=""
+while (( SECONDS < deadline )); do
+  group_interface="$(
+    ip -4 -o address show 2>/dev/null |
+      awk '$4 == "192.168.49.1/24" && $2 ~ /^p2p-/ { print $2; exit }'
+  )"
+  nm_state="$(
+    nmcli --get-values GENERAL.STATE device show p2p-dev-wlp58s0 2>/dev/null || true
+  )"
+  if [[ -n "$group_interface" && "$nm_state" == 100* ]]; then
+    break
+  fi
+  sleep 0.1
+done
+
+if [[ -z "$group_interface" ]]; then
+  echo "No FluxCast Wi-Fi Direct group appeared within 90 seconds."
+  exit 1
+fi
+
+# The Fire TV has been observed retrying its final WPA association about ten
+# seconds after WPS. The independent guard is deliberately longer than the
+# primary pause. If this helper is interrupted, NetworkManager still resumes.
+setsid sh -c "sleep 25; kill -CONT $nm_pid 2>/dev/null || true" \
+  </dev/null >/dev/null 2>&1 &
+
+# Let FluxCast observe ACTIVATED and advance into its RTSP wait before the
+# NetworkManager D-Bus service is paused.
+sleep 1
+echo "Found activated $group_interface; pausing NetworkManager cleanup for twenty seconds."
+kill -STOP "$nm_pid"
+sleep 20
+kill -CONT "$nm_pid"
+echo "NetworkManager resumed."

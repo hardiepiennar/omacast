@@ -1,0 +1,71 @@
+# Maintained companion engine for Omacast.
+#
+# This is intentionally separate from the Omarchy plugin: plugins cannot
+# install packages or grant privileged networking access. Build it from a clean
+# clone of this repository, then install the resulting package explicitly.
+
+pkgname=fluxcast-omarchy-cast
+pkgver=0.1.5.r3.omarchy
+pkgrel=37
+pkgdesc='Pinned FluxCast WFD engine with Omacast compatibility patches'
+arch=('any')
+url='https://github.com/IlyaP358/fluxcast'
+license=('GPL-3.0-or-later')
+depends=(
+  'python'
+  'python-dbus-next'
+  'python-pillow'
+  'python-pystray'
+  'python-gobject'
+  'python-pychromecast'
+  'gpu-screen-recorder'
+  'ffmpeg'
+  'networkmanager'
+  'wpa_supplicant'
+  'iw'
+  'libpulse'
+  'polkit'
+  'systemd'
+  'iproute2'
+)
+makedepends=('git' 'python-build' 'python-installer' 'python-hatchling')
+optdepends=(
+  'wf-recorder: optional wlroots capture fallback'
+  'python-upnpclient: optional DLNA discovery; not required for Miracast'
+)
+provides=('fluxcast=0.1.5')
+conflicts=('fluxcast')
+source=(
+  "fluxcast::git+${url}.git#commit=9d27c39670940ada3a0e520a1d70574910646083"
+)
+b2sums=('SKIP')
+
+prepare() {
+  cd "$srcdir/fluxcast"
+  git config user.name 'Omacast package build'
+  git config user.email 'packaging@localhost'
+  while IFS= read -r patch; do
+    [[ "$patch" =~ ^[0-9]{4}-[A-Za-z0-9.-]+\.patch$ ]] || return 1
+    git am --3way "$startdir/../../patches/production/$patch"
+  done < "$startdir/../../patches/production/series"
+}
+
+build() {
+  cd "$srcdir/fluxcast"
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd "$srcdir/fluxcast"
+  # Pystray otherwise probes GTK/X11 during import and fails in headless package
+  # builders before its configuration tests can run.
+  PYSTRAY_BACKEND=dummy PYTHONPATH=src python -m unittest discover -s tests
+}
+
+package() {
+  cd "$srcdir/fluxcast"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm755 "$startdir/omarchy-cast-guard" "$pkgdir/usr/lib/omarchy-cast/omarchy-cast-guard"
+  install -Dm755 "$startdir/omarchy-cast-guard-recover" "$pkgdir/usr/lib/omarchy-cast/omarchy-cast-guard-recover"
+  install -Dm644 "$startdir/com.omacast.guard.policy" "$pkgdir/usr/share/polkit-1/actions/com.omacast.guard.policy"
+}

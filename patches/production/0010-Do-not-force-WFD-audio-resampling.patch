@@ -1,0 +1,86 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Sat, 22 Aug 2026 08:35:00 +1200
+Subject: [PATCH] Do not force WFD audio resampling
+
+The source audio already carries timestamps. Forced asynchronous resampling is
+shared by the desktop and synthetic paths and can introduce periodic audible
+corrections. Preserve source timing and let the MPEG-TS mux interleave it.
+---
+ src/wfd/media/portal.py      |  1 -
+ src/wfd/media/testpattern.py |  1 -
+ src/wfd/media/wlroots.py     |  1 -
+ src/wfd/media/x11.py         |  1 -
+ tests/test_wfd.py            | 10 ++++++++++
+ 5 files changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/src/wfd/media/portal.py b/src/wfd/media/portal.py
+index e264130..0135405 100644
+--- a/src/wfd/media/portal.py
++++ b/src/wfd/media/portal.py
+@@ -141,7 +141,6 @@ class PortalMixin:
+         ]
+         if not self.config.no_audio:
+             ffmpeg_cmd += [
+-                "-af", "aresample=async=1",
+                 "-c:a", "aac", "-profile:a", "aac_low",
+                 "-b:a", "128k", "-ac", "2", "-ar", "48000",
+                 "-streamid", "1:4352",
+diff --git a/src/wfd/media/testpattern.py b/src/wfd/media/testpattern.py
+index fe254e9..65f8b89 100644
+--- a/src/wfd/media/testpattern.py
++++ b/src/wfd/media/testpattern.py
+@@ -60,7 +60,6 @@ class TestPatternMixin:
+ 
+         if not self.config.no_audio:
+             cmd += [
+-                "-af", "aresample=async=1",
+                 "-c:a", "aac",
+                 "-profile:a", "aac_low",
+                 "-b:a", "128k",
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index befa34a..4a4ae73 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -124,7 +124,6 @@ class WlrootsMixin:
+ 
+         if not self.config.no_audio:
+             ffmpeg_cmd += [
+-                "-af", "aresample=async=1",
+                 "-c:a", "aac",
+                 "-profile:a", "aac_low",
+                 "-b:a", "128k",
+diff --git a/src/wfd/media/x11.py b/src/wfd/media/x11.py
+index 59a8fbc..3c69497 100644
+--- a/src/wfd/media/x11.py
++++ b/src/wfd/media/x11.py
+@@ -83,7 +83,6 @@ class X11Mixin:
+ 
+         if not self.config.no_audio:
+             ffmpeg_cmd += [
+-                "-af", "aresample=async=1",
+                 "-c:a", "aac",
+                 "-profile:a", "aac_low",
+                 "-b:a", "128k",
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index c45cd9c..40a4f57 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -96,6 +96,16 @@ class VideoModeTableTest(unittest.TestCase):
+ 
+ 
+ class FfmpegProgressArgsTest(unittest.TestCase):
++    def test_ffmpeg_paths_do_not_force_periodic_audio_resampling(self):
++        starters = (
++            wfd.WFDMediaPipeline._start_test_pattern,
++            wfd.WFDMediaPipeline._start_desktop_wf_recorder,
++            wfd.WFDMediaPipeline._start_desktop_x11grab,
++            wfd.WFDMediaPipeline._start_desktop_portal_ffmpeg,
++        )
++        for starter in starters:
++            self.assertNotIn("aresample=async=1", inspect.getsource(starter))
++
+     def test_progress_stats_are_disabled_by_default(self):
+         args = wfd._ffmpeg_sender_args()
+ 
+-- 
+2.53.0

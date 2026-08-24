@@ -1,0 +1,305 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Sat, 22 Aug 2026 13:00:00 +1200
+Subject: [PATCH] Use GPU Screen Recorder for clocked WFD capture
+
+wf-recorder 0.6 declares audio in its NUT stream but emits no audio packets
+while the monitor is idle. That makes the muxer hold video and later release
+an invalid multi-second burst. GPU Screen Recorder emits clocked silent AAC,
+captures and scales on the GPU, and provides H.264 and AAC on one timeline.
+Remux those streams without a second encode.
+---
+ src/wfd/media/wlroots.py | 126 ++++++++++++++-------------------------
+ tests/test_wfd.py         |  16 ++---
+ tests/test_wfd_media_vaapi.py | 16 ++---
+ 3 files changed, 60 insertions(+), 98 deletions(-)
+
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index caf3dd2..487f24d 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -1,12 +1,11 @@
+ import shutil
+ import subprocess
+ import time
+-from pathlib import Path
+ 
+ from ..config import WFDNotReady
+ from ..encoding import (
+-    _bitrate_to_kbits, _calculate_gop, _kbits_to_bitrate_text, _letterbox_vf,
+-    _parse_resolution, _quality_floor_kbits, _vbv_bufsize,
++    _bitrate_to_kbits, _calculate_gop, _kbits_to_bitrate_text,
++    _parse_resolution, _quality_floor_kbits,
+ )
+ from ..env import _detect_audio_monitor
+ from ..modes import _h264_level_for_mode
+@@ -15,8 +14,8 @@ from ..net import _ffmpeg_sender_args
+ 
+ class WlrootsMixin:
+     def _start_desktop_wf_recorder(self) -> None:
+-        if not shutil.which("wf-recorder"):
+-            raise WFDNotReady("wf-recorder is required for WFD desktop streaming.")
++        if not shutil.which("gpu-screen-recorder"):
++            raise WFDNotReady("gpu-screen-recorder is required for WFD desktop streaming.")
+ 
+         monitor = self.config.monitor
+         if monitor is None:
+@@ -36,116 +35,54 @@ class WlrootsMixin:
+                 f"{self.config.bitrate} -> {effective_bitrate}"
+             )
+ 
+-        wf_cmd = [
+-            "wf-recorder",
+-            "-y",
+-            "-D",
+-            "-r", str(self.config.fps),
+-            "-o", monitor.name,
+-            "-c", "rawvideo",
+-            "-m", "nut",
+-            "-p", "pix_fmt=yuv420p",
++        profile = self.config.h264_profile
++        if profile == "baseline":
++            profile = "constrained_baseline"
++        level = _h264_level_for_mode(self.config).replace(".", "")
++        keyint_seconds = max(1, round(gop / self.config.fps))
++
++        # GPU Screen Recorder owns capture, scaling, H.264, AAC and their
++        # common clock. Unlike wf-recorder 0.6, it emits silent AAC packets
++        # while the selected output is idle, so the live mux never stalls and
++        # releases a multi-second burst when playback begins.
++        capture_cmd = [
++            "gpu-screen-recorder",
++            "-w", monitor.name,
++            "-s", out_res,
++            "-f", str(self.config.fps),
++            "-fm", "cfr",
+         ]
+         if not self.config.no_audio:
+-            # Capture audio and video in one process and one NUT timeline.
+-            # A separate Pulse input gives ffmpeg two independent clocks and
+-            # periodically makes the receiver repeat or drop audio samples.
+-            wf_cmd += [
+-                f"-a{audio_monitor}",
+-                "--audio-backend=pulseaudio",
+-                "-C", "pcm_s16le",
+-                "-R", "48000",
+-            ]
+-        wf_cmd += ["-f", "/dev/stdout"]
+-
+-        requested_encoder = self.config.video_encoder
+-        vaapi_device = next(
+-            (path for path in sorted(Path("/dev/dri").glob("renderD*"))),
+-            None,
+-        )
+-        use_vaapi = requested_encoder == "vaapi" or (
+-            requested_encoder == "auto" and vaapi_device is not None
+-        )
+-        if requested_encoder == "vaapi" and vaapi_device is None:
+-            raise WFDNotReady("VAAPI requested but no /dev/dri/renderD* device exists.")
++            capture_cmd += ["-a", audio_monitor, "-ac", "aac", "-ab", "128"]
++        capture_cmd += [
++            "-k", "h264",
++            "-bm", "cbr",
++            "-q", str(effective_kbits),
++            "-keyint", str(keyint_seconds),
++            "-ffmpeg-video-opts", f"profile={profile};level={level};aud=1",
++            "-c", "mkv",
++        ]
+ 
+         ffmpeg_cmd = [
+             *_ffmpeg_sender_args(self.config.ffmpeg_stats),
+-            *(["-vaapi_device", str(vaapi_device)] if use_vaapi else []),
+             "-fflags", "+genpts",
+-            "-thread_queue_size", "1024",
+-            "-f", "nut",
++            "-f", "matroska",
+             "-i", "pipe:0",
++            "-map", "0:v:0",
++            "-c:v", "copy",
+         ]
+ 
+         if not self.config.no_audio:
+             ffmpeg_cmd += [
+-                "-map", "0:v:0",
+                 "-map", "0:a:0",
+-            ]
+-        else:
+-            ffmpeg_cmd += ["-map", "0:v:0"]
+-
+-        if use_vaapi:
+-            if out_res == src_res:
+-                video_filter = "format=nv12,hwupload"
+-            else:
+-                target_width, target_height = out_res.split("x")
+-                video_filter = (
+-                    "format=nv12,hwupload,"
+-                    f"scale_vaapi=w={target_width}:h={target_height}:"
+-                    "force_original_aspect_ratio=decrease:force_divisible_by=2:out_range=tv,"
+-                    f"pad_vaapi=w={target_width}:h={target_height}:x=(ow-iw)/2:y=(oh-ih)/2"
+-                )
+-        else:
+-            video_filter = "format=yuv420p" if out_res == src_res else _letterbox_vf(out_res)
+-        ffmpeg_cmd += ["-vf", video_filter]
+-
+-        profile = self.config.h264_profile
+-        if use_vaapi and profile == "baseline":
+-            profile = "constrained_baseline"
+-        encoder_args = (
+-            ["-c:v", "h264_vaapi", "-rc_mode", "CBR", "-quality", "7", "-aud", "1"]
+-            if use_vaapi
+-            else [
+-                "-c:v", "libx264",
+-                "-preset", "ultrafast" if parsed_out[1] > 1080 else "veryfast",
+-                "-tune", "zerolatency",
+-            ]
+-        )
+-        ffmpeg_cmd += [
+-            *encoder_args,
+-            "-profile:v", profile,
+-            "-level:v", _h264_level_for_mode(self.config),
+-            "-r", str(self.config.fps),
+-            "-g", str(gop),
+-            "-keyint_min", str(gop),
+-            "-sc_threshold", "0",
+-            "-bf", "0",
+-            "-b:v", effective_bitrate,
+-            "-maxrate", effective_bitrate,
+-            "-bufsize", _vbv_bufsize(effective_bitrate, self.config),
+-        ]
+-        if not use_vaapi:
+-            ffmpeg_cmd += ["-pix_fmt", "yuv420p", "-x264-params", "repeat-headers=1:aud=1"]
+-
+-        if not self.config.no_audio:
+-            ffmpeg_cmd += [
+-                "-c:a", "aac",
+-                "-profile:a", "aac_low",
+-                "-b:a", "128k",
+-                "-ac", "2",
+-                "-ar", "48000",
++                "-c:a", "copy",
+                 "-streamid", "1:4352",
+             ]
+ 
+         ffmpeg_cmd += self._common_output_args()
+ 
+         print(f"[FluxCast WFD Media] Capturing screen : {monitor.name} ({src_res})")
+-        print(
+-            "[FluxCast WFD Media] H.264 encoder    : "
+-            + (f"VAAPI ({vaapi_device})" if use_vaapi else "libx264")
+-        )
++        print("[FluxCast WFD Media] Capture/encoder   : GPU Screen Recorder")
+         if not self.config.no_audio:
+             print(f"[FluxCast WFD Media] Capturing audio  : {audio_monitor}")
+         if out_res != src_res:
+@@ -155,20 +92,20 @@ class WlrootsMixin:
+             f"{self.tv_ip}:{self.sink_rtp_port} from local port {self.config.source_port}"
+         )
+ 
+-        wf_proc = subprocess.Popen(wf_cmd, stdout=subprocess.PIPE, stderr=None)
+-        if wf_proc.stdout is None:
+-            wf_proc.kill()
+-            raise WFDNotReady("wf-recorder did not expose stdout.")
++        capture_proc = subprocess.Popen(capture_cmd, stdout=subprocess.PIPE, stderr=None)
++        if capture_proc.stdout is None:
++            capture_proc.kill()
++            raise WFDNotReady("gpu-screen-recorder did not expose stdout.")
+ 
+-        ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=wf_proc.stdout, stderr=None)
+-        wf_proc.stdout.close()
++        ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=capture_proc.stdout, stderr=None)
++        capture_proc.stdout.close()
+         time.sleep(1.0)
+ 
+-        if wf_proc.poll() is not None:
++        if capture_proc.poll() is not None:
+             ffmpeg_proc.terminate()
+-            raise WFDNotReady("wf-recorder exited immediately during WFD streaming.")
++            raise WFDNotReady("gpu-screen-recorder exited immediately during WFD streaming.")
+         if ffmpeg_proc.poll() is not None:
+-            wf_proc.terminate()
++            capture_proc.terminate()
+             raise WFDNotReady("ffmpeg exited immediately during WFD streaming.")
+ 
+-        self.processes = [wf_proc, ffmpeg_proc]
++        self.processes = [capture_proc, ffmpeg_proc]
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index eba85c0..3c23692 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -119,7 +119,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+ 
+         self.assertIn("-stats", args)
+ 
+-    def test_wf_recorder_owns_one_audio_video_clock(self):
++    def test_gpu_capture_owns_one_audio_video_clock(self):
+         class Mon:
+             name, width, height = "eDP-1", 1920, 1080
+ 
+@@ -154,13 +154,15 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         ):
+             pipeline._start_desktop_wf_recorder()
+ 
+-        wf_cmd, ffmpeg_cmd = commands
+-        self.assertIn("-asink.monitor", wf_cmd)
+-        self.assertIn("--audio-backend=pulseaudio", wf_cmd)
++        capture_cmd, ffmpeg_cmd = commands
++        self.assertEqual(capture_cmd[0], "gpu-screen-recorder")
++        self.assertIn("sink.monitor", capture_cmd)
++        self.assertEqual(capture_cmd[capture_cmd.index("-s") + 1], "1280x720")
++        self.assertIn("profile=constrained_baseline;level=31;aud=1", capture_cmd)
+         self.assertEqual(ffmpeg_cmd.count("-i"), 1)
+         self.assertIn("0:a:0", ffmpeg_cmd)
+-        self.assertNotIn("1:a:0", ffmpeg_cmd)
+-        self.assertNotIn("pulse", ffmpeg_cmd)
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:v") + 1], "copy")
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:a") + 1], "copy")
+ 
+ 
+ class FirewallPortTest(unittest.TestCase):
+diff --git a/tests/test_wfd_media_vaapi.py b/tests/test_wfd_media_vaapi.py
+index 92f5079..9695cda 100644
+--- a/tests/test_wfd_media_vaapi.py
++++ b/tests/test_wfd_media_vaapi.py
+@@ -1,6 +1,5 @@
+ import io
+ import unittest
+-from pathlib import Path
+ from types import SimpleNamespace
+ from unittest import mock
+ 
+@@ -23,7 +22,7 @@ class _Process:
+ 
+ 
+ class WlrootsVAAPITest(unittest.TestCase):
+-    def test_wf_recorder_uses_vaapi_upload_and_baseline_profile(self):
++    def test_gpu_capture_encodes_once_with_wfd_profile(self):
+         config = WFDMediaConfig(
+             monitor=SimpleNamespace(name="eDP-1", width=1920, height=1080),
+             output_resolution="1280x720",
+@@ -45,18 +44,18 @@ class WlrootsVAAPITest(unittest.TestCase):
+             commands.append(command)
+             return _Process(with_stdout=kwargs.get("stdout") is not None)
+ 
+-        with mock.patch("wfd.media.wlroots.shutil.which", return_value="/usr/bin/wf-recorder"), \
+-             mock.patch("wfd.media.wlroots.Path.glob", return_value=[Path("/dev/dri/renderD128")]), \
++        with mock.patch("wfd.media.wlroots.shutil.which", return_value="/usr/bin/gpu-screen-recorder"), \
+              mock.patch("wfd.media.wlroots._detect_audio_monitor", return_value="monitor"), \
+              mock.patch("wfd.media.wlroots.subprocess.Popen", side_effect=popen), \
+              mock.patch("wfd.media.wlroots.time.sleep"):
+             pipeline._start_desktop_wf_recorder()
+ 
+-        ffmpeg = commands[1]
+-        self.assertIn("h264_vaapi", ffmpeg)
+-        self.assertIn("format=nv12,hwupload", ffmpeg[ffmpeg.index("-vf") + 1])
+-        self.assertEqual(ffmpeg[ffmpeg.index("-profile:v") + 1], "constrained_baseline")
+-        self.assertEqual(ffmpeg[ffmpeg.index("-vaapi_device") + 1], "/dev/dri/renderD128")
++        capture, ffmpeg = commands
++        self.assertEqual(capture[0], "gpu-screen-recorder")
++        self.assertIn("profile=constrained_baseline;level=31;aud=1", capture)
++        self.assertEqual(ffmpeg[ffmpeg.index("-c:v") + 1], "copy")
++        self.assertNotIn("-vf", ffmpeg)
++        self.assertNotIn("-vaapi_device", ffmpeg)
+ 
+ 
+ if __name__ == "__main__":
+-- 
+2.53.0

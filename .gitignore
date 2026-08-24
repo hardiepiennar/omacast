@@ -1,0 +1,12 @@
+__pycache__/
+*.log
+*.jsonl
+.venv/
+build/
+dist/
+*.egg-info/
+work/
+packaging/arch/pkg/
+packaging/arch/src/
+packaging/arch/fluxcast/
+packaging/arch/*.pkg.tar.zst

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Own both temporary workarounds for a single Phase 1 Fire TV test. One root
+# process means one approval prompt and one reliable cleanup path.
+
+if (( EUID != 0 )); then
+  echo "Run this helper with administrator approval."
+  exit 1
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+supplicant_helper="$repo_root/scripts/lab/phase1-patched-supplicant"
+nm_helper="$repo_root/scripts/lab/phase1-nm-grace"
+patched_binary="$repo_root/work/wpa_supplicant-package/hostap-src/wpa_supplicant/wpa_supplicant"
+supplicant_pid=""
+
+cleanup() {
+  if [[ -n "$supplicant_pid" ]]; then
+    kill -TERM "$supplicant_pid" 2>/dev/null || true
+    wait "$supplicant_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+"$supplicant_helper" &
+supplicant_pid=$!
+
+deadline=$((SECONDS + 20))
+while (( SECONDS < deadline )); do
+  exec_start="$(systemctl show --property ExecStart --value wpa_supplicant.service)"
+  [[ "$exec_start" == *"$patched_binary"* ]] && break
+  kill -0 "$supplicant_pid" 2>/dev/null || {
+    echo "The patched supplicant helper exited before activation."
+    exit 1
+  }
+  sleep 0.2
+done
+if [[ "$exec_start" != *"$patched_binary"* ]]; then
+  echo "Timed out waiting for the patched supplicant service."
+  exit 1
+fi
+
+echo "Both Phase 1 guards are armed."
+"$nm_helper"

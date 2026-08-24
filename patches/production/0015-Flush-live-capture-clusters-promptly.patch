@@ -1,0 +1,40 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Sat, 22 Aug 2026 14:00:00 +1200
+Subject: [PATCH] Flush live capture clusters promptly
+
+The default Matroska pipe batches synchronized audio and video into large
+clusters. Cap live clusters at 50 ms or 32 KiB and flush them immediately so
+the downstream MPEG-TS/RTP pacer receives a continuous packet train.
+---
+ src/wfd/media/wlroots.py | 2 ++
+ tests/test_wfd.py         | 4 ++++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -65,6 +65,8 @@ class WlrootsMixin:
+             "-q", str(effective_kbits),
+             "-keyint", str(keyint_seconds),
+             "-ffmpeg-video-opts", f"profile={profile};level={level};aud=1",
++            "-ffmpeg-opts",
++            "cluster_time_limit=50;cluster_size_limit=32768;live=1;flush_packets=1",
+             "-c", "mkv",
+         ]
+ 
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -160,6 +160,10 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         self.assertIn("sink.monitor", capture_cmd)
+         self.assertEqual(capture_cmd[capture_cmd.index("-s") + 1], "1280x720")
+         self.assertIn("profile=constrained_baseline;level=31;aud=1", capture_cmd)
++        self.assertIn(
++            "cluster_time_limit=50;cluster_size_limit=32768;live=1;flush_packets=1",
++            capture_cmd,
++        )
+         self.assertEqual(ffmpeg_cmd.count("-i"), 1)
+         self.assertIn("0:a:0", ffmpeg_cmd)
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:v") + 1], "copy")
+-- 
+2.53.0

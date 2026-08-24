@@ -1,0 +1,224 @@
+From 68a647e536258874719d0959b64cc5f917474a51 Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 22:24:02 +1200
+Subject: [PATCH] Harden guarded direct P2P sessions
+
+---
+ src/main.py                      |  8 +++++
+ src/wfd/p2p/supplicant.py        | 48 +++++++++++++++++++++-------
+ src/wfd/session.py               |  5 ++-
+ tests/test_wfd_p2p_supplicant.py | 54 +++++++++++++++++++++++++++++++-
+ 4 files changed, 102 insertions(+), 13 deletions(-)
+
+diff --git a/src/main.py b/src/main.py
+index ed3b801..cb265ca 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -205,6 +205,14 @@ def parse_args() -> argparse.Namespace:
+                      dest="wfd_supplicant_preconnect_delay", metavar="SECONDS",
+                      help="Diagnostic delay after discovery and before the direct "
+                           "supplicant request (default: 0)")
++    wfd.add_argument("--wfd-supplicant-network-trigger", default=None,
++                     dest="wfd_supplicant_network_trigger", metavar="PATH",
++                     help="Create a guarded-session trigger file immediately before "
++                          "the direct-supplicant pre-connection delay")
++    wfd.add_argument("--wfd-supplicant-frequency", type=int, default=0,
++                     dest="wfd_supplicant_frequency", metavar="MHZ",
++                     help="Preferred direct P2P operating frequency in MHz; use the "
++                          "existing Wi-Fi frequency for single-channel adapters")
+     wfd.add_argument("--wfd-monitor", default=None, dest="monitor_name",
+                      help="Deprecated alias for --monitor, kept for compatibility")
+     wfd.add_argument("--wfd-uibc", action="store_true", dest="wfd_uibc",
+diff --git a/src/wfd/p2p/supplicant.py b/src/wfd/p2p/supplicant.py
+index 9fde7ac..8250287 100644
+--- a/src/wfd/p2p/supplicant.py
++++ b/src/wfd/p2p/supplicant.py
+@@ -1,3 +1,4 @@
++import os
+ import re
+ import time
+ from dataclasses import dataclass
+@@ -85,25 +86,29 @@ def _supplicant_connect_options(
+     mode: str,
+     go_intent: int,
+     persistent: bool = False,
++    frequency: int = 0,
+ ) -> str:
+     if mode not in {"authorize", "connect", "join"}:
+         raise WFDNotReady(f"Unsupported direct supplicant mode: {mode}")
+     if not 0 <= go_intent <= 15:
+         raise WFDNotReady(f"Invalid P2P GO intent: {go_intent}")
++    if frequency < 0:
++        raise WFDNotReady(f"Invalid P2P operating frequency: {frequency}")
+ 
+     authorize_only = mode == "authorize"
+     join = mode == "join"
+     boolean = lambda value: "true" if value else "false"
+-    return (
+-        "{"
+-        f"'peer': <objectpath '{peer_path}'>, "
+-        f"'persistent': <{boolean(persistent)}>, "
+-        f"'join': <{boolean(join)}>, "
+-        f"'authorize_only': <{boolean(authorize_only)}>, "
+-        f"'go_intent': <int32 {go_intent}>, "
+-        "'wps_method': <'pbc'>"
+-        "}"
+-    )
++    fields = [
++        f"'peer': <objectpath '{peer_path}'>",
++        f"'persistent': <{boolean(persistent)}>",
++        f"'join': <{boolean(join)}>",
++        f"'authorize_only': <{boolean(authorize_only)}>",
++        f"'go_intent': <int32 {go_intent}>",
++    ]
++    if frequency:
++        fields.append(f"'frequency': <int32 {frequency}>")
++    fields.append("'wps_method': <'pbc'>")
++    return "{" + ", ".join(fields) + "}"
+ 
+ 
+ def _set_supplicant_wfd_ies(rtsp_port: int, dry_run: bool = False) -> None:
+@@ -129,11 +134,14 @@ def _supplicant_connect(
+     mode: str,
+     go_intent: int,
+     rtsp_port: int,
++    frequency: int = 0,
+     persistent: bool = False,
+     dry_run: bool = False,
+ ) -> None:
+     peer_path = _supplicant_peer_path(interface_path, peer.address)
+-    options = _supplicant_connect_options(peer_path, mode, go_intent, persistent)
++    options = _supplicant_connect_options(
++        peer_path, mode, go_intent, persistent, frequency
++    )
+     args = [
+         "--dest", WPA_DEST,
+         "--object-path", interface_path,
+@@ -225,9 +233,25 @@ def connect_supplicant_group(args, peer: WFDPeer) -> SupplicantGroup:
+     rtsp_port = getattr(args, "wfd_rtsp_port", 7236)
+     go_intent = getattr(args, "wfd_go_intent", 0)
+     dry_run = getattr(args, "wfd_dry_run", False)
++    frequency = max(0, int(getattr(args, "wfd_supplicant_frequency", 0)))
+     preconnect_delay = max(
+         0, int(getattr(args, "wfd_supplicant_preconnect_delay", 0))
+     )
++    trigger_path = getattr(args, "wfd_supplicant_network_trigger", None)
++
++    if trigger_path and not dry_run:
++        try:
++            descriptor = os.open(
++                trigger_path,
++                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
++                0o600,
++            )
++            os.close(descriptor)
++        except OSError as exc:
++            raise WFDNotReady(
++                f"Could not trigger the guarded P2P network session: {exc}"
++            ) from exc
++        print("[FluxCast WFD] Guarded P2P network session triggered.")
+ 
+     if preconnect_delay and not dry_run:
+         print(
+@@ -242,6 +266,7 @@ def connect_supplicant_group(args, peer: WFDPeer) -> SupplicantGroup:
+         mode=mode,
+         go_intent=go_intent,
+         rtsp_port=rtsp_port,
++        frequency=frequency,
+         dry_run=dry_run,
+     )
+     if dry_run:
+@@ -261,6 +286,7 @@ def run_supplicant_role_test(args, peer: WFDPeer) -> None:
+             mode=getattr(args, "wfd_supplicant_mode", "connect"),
+             go_intent=getattr(args, "wfd_go_intent", 0),
+             rtsp_port=getattr(args, "wfd_rtsp_port", 7236),
++            frequency=max(0, int(getattr(args, "wfd_supplicant_frequency", 0))),
+             dry_run=True,
+         )
+         return
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 4b51049..261df3b 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -178,7 +178,10 @@ def start_experimental_backend(args) -> None:
+         while True:
+             time.sleep(1)
+     except KeyboardInterrupt:
+-        print("\n[FluxCast WFD] Stopping WFD session...")
++        try:
++            print("\n[FluxCast WFD] Stopping WFD session...")
++        except KeyboardInterrupt:
++            pass
+     finally:
+         _cleanup_step("media shutdown", rtsp.stop_all_media)
+         _cleanup_step("TS dump report",
+diff --git a/tests/test_wfd_p2p_supplicant.py b/tests/test_wfd_p2p_supplicant.py
+index 885dc55..001a10c 100644
+--- a/tests/test_wfd_p2p_supplicant.py
++++ b/tests/test_wfd_p2p_supplicant.py
+@@ -1,6 +1,15 @@
++import os
++import tempfile
+ import unittest
++from types import SimpleNamespace
++from unittest import mock
+ 
+-from wfd.p2p.supplicant import _supplicant_connect_options
++from wfd.ie import WFDPeer
++from wfd.p2p.supplicant import (
++    SupplicantGroup,
++    _supplicant_connect_options,
++    connect_supplicant_group,
++)
+ 
+ 
+ class SupplicantP2POptionsTest(unittest.TestCase):
+@@ -25,3 +34,46 @@ class SupplicantP2POptionsTest(unittest.TestCase):
+ 
+         self.assertIn("'authorize_only': <false>", options)
+         self.assertIn("'join': <true>", options)
++
++    def test_connect_can_prefer_the_existing_wifi_frequency(self):
++        options = _supplicant_connect_options(
++            "/fi/w1/wpa_supplicant1/Interfaces/0/Peers/f22f9e8b714d",
++            mode="connect",
++            go_intent=0,
++            frequency=5745,
++        )
++
++        self.assertIn("'frequency': <int32 5745>", options)
++
++    def test_guard_trigger_is_created_before_direct_connect(self):
++        with tempfile.TemporaryDirectory() as directory:
++            trigger = os.path.join(directory, "guard.trigger")
++            args = SimpleNamespace(
++                wfd_interface="wlan0",
++                wfd_supplicant_mode="connect",
++                wfd_rtsp_port=7236,
++                wfd_go_intent=0,
++                wfd_dry_run=False,
++                wfd_supplicant_preconnect_delay=0,
++                wfd_supplicant_network_trigger=trigger,
++                wfd_supplicant_frequency=5745,
++                wfd_supplicant_hold=45,
++            )
++            group = SupplicantGroup("/group", "/interface", "p2p-wlan0-0", "client")
++
++            with mock.patch(
++                "wfd.p2p.supplicant._supplicant_interface_path",
++                return_value="/interface",
++            ), mock.patch(
++                "wfd.p2p.supplicant._supplicant_connect"
++            ) as connect, mock.patch(
++                "wfd.p2p.supplicant._wait_for_supplicant_group",
++                return_value=group,
++            ):
++                self.assertEqual(
++                    connect_supplicant_group(args, WFDPeer(address="00:11:22:33:44:55")),
++                    group,
++                )
++
++            self.assertTrue(os.path.isfile(trigger))
++            connect.assert_called_once()
+-- 
+2.55.0

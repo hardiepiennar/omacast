@@ -1,0 +1,422 @@
+From e62f0afb59749ebcc299069a82b0ad8b963d615d Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Sun, 23 Aug 2026 21:27:31 +1200
+Subject: [PATCH] Use SHM-capable portal capture for windows
+
+---
+ src/capture/portal_capture.py | 11 +++--
+ src/main.py                   |  8 ++--
+ src/wfd/config.py             |  2 +-
+ src/wfd/media/pipeline.py     |  3 +-
+ src/wfd/media/portal.py       | 64 ++++++++++++++++++++---------
+ src/wfd/media/wlroots.py      |  9 +----
+ src/wfd/session.py            |  2 +-
+ tests/test_wfd.py             | 76 +++++++++++++++++++++++++++++++++--
+ 8 files changed, 136 insertions(+), 39 deletions(-)
+
+diff --git a/src/capture/portal_capture.py b/src/capture/portal_capture.py
+index 01993f2..532c110 100644
+--- a/src/capture/portal_capture.py
++++ b/src/capture/portal_capture.py
+@@ -260,6 +260,7 @@ async def _start_portal_capture_async(
+     timeout: float,
+     preferred_position: Optional[tuple[int, int]] = None,
+     preferred_size: Optional[tuple[int, int]] = None,
++    source_types: int = 5,
+ ) -> PortalCaptureSession:
+     create_opts = {
+         "session_handle_token": Variant("s", "fluxcast_session_" + secrets.token_hex(4)),
+@@ -277,9 +278,9 @@ async def _start_portal_capture_async(
+     session_handle = _as_string(session_handle_var)
+ 
+     select_opts = {
+-        # 1=Monitor | 4=Virtual. Declaring both lets the compositor properly
+-        # configure a virtual output stream when the user picks one.
+-        "types": Variant("u", 5),
++        # 1=Monitor | 2=Window | 4=Virtual. The caller deliberately requests
++        # only the source classes it can safely consume.
++        "types": Variant("u", source_types),
+         "multiple": Variant("b", False),
+         # 2: Embedded cursor.
+         "cursor_mode": Variant("u", 2),
+@@ -352,9 +353,12 @@ def start_portal_capture(
+     timeout: float = 120.0,
+     preferred_position: Optional[tuple[int, int]] = None,
+     preferred_size: Optional[tuple[int, int]] = None,
++    source_types: int = 5,
+ ) -> PortalCaptureSession:
+     if (os.environ.get("XDG_SESSION_TYPE") or "").lower() != "wayland" and not os.environ.get("WAYLAND_DISPLAY"):
+         raise PortalCaptureError("Portal backend requires an active Wayland session.")
++    if source_types not in (1, 2, 4, 5):
++        raise PortalCaptureError("Portal source type request is invalid.")
+     runtime = _PortalRuntime()
+     bus = None
+     try:
+@@ -365,6 +369,7 @@ def start_portal_capture(
+                 timeout=timeout,
+                 preferred_position=preferred_position,
+                 preferred_size=preferred_size,
++                source_types=source_types,
+             ),
+             timeout=timeout + 5.0,
+         )
+diff --git a/src/main.py b/src/main.py
+index 2c56a04..31e314b 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -156,10 +156,10 @@ def parse_args() -> argparse.Namespace:
+                      dest="wfd_gsr_handoff",
+                      help="GPU Screen Recorder pipe container: mkv (receiver-proven default) "
+                           "or flv (lower-burst experimental handoff)")
+-    wfd.add_argument("--wfd-gsr-source", default="monitor", choices=["monitor", "portal"],
+-                     dest="wfd_gsr_source",
+-                     help="GPU Screen Recorder source: selected monitor (default), or the "
+-                          "desktop portal picker for a window")
++    wfd.add_argument("--wfd-portal-source", default="monitor", choices=["monitor", "window"],
++                     dest="wfd_portal_source",
++                     help="Source type requested from the desktop portal: monitor (default), "
++                          "or a single window")
+     wfd.add_argument("--wfd-video-encoder", default="auto",
+                      choices=["auto", "software", "vaapi"],
+                      dest="wfd_video_encoder",
+diff --git a/src/wfd/config.py b/src/wfd/config.py
+index 57e04d7..f7ce391 100644
+--- a/src/wfd/config.py
++++ b/src/wfd/config.py
+@@ -22,7 +22,7 @@ class WFDMediaConfig:
+     packet_log_path: Optional[str] = None
+     capture_backend: str = "auto"
+     gsr_handoff: str = "mkv"
+-    gsr_source: str = "monitor"
++    portal_source: str = "monitor"
+     video_encoder: str = "auto"
+     peer_name: str = ""
+     uibc: bool = False  # opt-in: accept touch/mouse input back from the sink (issue #37)
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+index c9ac238..78395d3 100644
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -184,6 +184,8 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+             raise WFDNotReady("ffmpeg is required for WFD desktop streaming.")
+ 
+         backends = _wfd_capture_backend_order(self.config)
++        if self.config.portal_source == "window" and backends != ["portal"]:
++            raise WFDNotReady("Window capture requires the desktop portal backend.")
+         if self.config.aosp_pmt_pid and "gst-x11" in backends:
+             print("[FluxCast WFD Media] WARNING the gst-x11 backend muxes with mpegtsmux, "
+                   "which cannot set the PAT/PMT version to AOSP's 1.")
+@@ -219,4 +221,3 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+ 
+ 
+ 
+-
+diff --git a/src/wfd/media/portal.py b/src/wfd/media/portal.py
+index 8597935..0e95072 100644
+--- a/src/wfd/media/portal.py
++++ b/src/wfd/media/portal.py
+@@ -1,6 +1,7 @@
+ import shutil
+ import subprocess
+ import time
++from pathlib import Path
+ 
+ from capture.portal_capture import (
+     PortalCaptureError, close_portal_capture, start_portal_capture,
+@@ -23,25 +24,32 @@ from ..net import _ffmpeg_sender_args
+ 
+ class PortalMixin:
+     def _open_portal_session(self, monitor):
+-        print("[FluxCast WFD Media] Opening portal screen-share dialog (KDE/GNOME Wayland)...")
++        requested_source = self.config.portal_source
++        source_types = 2 if requested_source == "window" else 5
++        print(f"[FluxCast WFD Media] Opening portal {requested_source} picker...")
+         try:
+             self.portal_session = start_portal_capture(
+                 timeout=120.0,
+                 preferred_position=(monitor.x, monitor.y) if monitor is not None else None,
+                 preferred_size=(monitor.width, monitor.height) if monitor is not None else None,
++                source_types=source_types,
+             )
+         except PortalCaptureError as exc:
+             raise WFDNotReady(f"portal capture setup failed: {exc}") from exc
+ 
+         session = self.portal_session
+         # source_type: 1=MONITOR, 2=WINDOW, 4=VIRTUAL ("Share virtual screen")
+-        if session.source_type is not None and session.source_type not in (1, 4):
++        allowed_types = (2,) if requested_source == "window" else (1, 4)
++        source_mismatch = (
++            session.source_type not in allowed_types
++            if requested_source == "window"
++            else session.source_type is not None and session.source_type not in allowed_types
++        )
++        if source_mismatch:
+             close_portal_capture(self.portal_session)
+             self.portal_session = None
+-            raise WFDNotReady(
+-                "Portal returned a window or camera source. "
+-                "In the portal picker choose a full monitor or 'Share virtual screen'."
+-            )
++            expected = "a single window" if requested_source == "window" else "a full monitor or virtual screen"
++            raise WFDNotReady(f"Portal returned the wrong source type. Choose {expected}.")
+         return session
+     def _start_desktop_portal_ffmpeg(self) -> None:
+         """
+@@ -56,7 +64,7 @@ class PortalMixin:
+             raise WFDNotReady("Portal backend requires gst-launch-1.0 (pipewiresrc pipeline).")
+         if not shutil.which("ffmpeg"):
+             raise WFDNotReady("ffmpeg is required for the portal->ffmpeg pipeline.")
+-        missing = [name for name in ("pipewiresrc", "videoconvert", "videoscale", "videorate")
++        missing = [name for name in ("pipewiresrc", "videoconvert", "videoscale", "videorate", "fdsink")
+                    if not _gst_has_element(name)]
+         if missing:
+             raise WFDNotReady(
+@@ -99,8 +107,17 @@ class PortalMixin:
+             ("min-force-user-latency=0", "min-force-user-latency"),
+         ) if prop in props]
+ 
++        requested_encoder = self.config.video_encoder
++        vaapi_device = next((path for path in sorted(Path("/dev/dri").glob("renderD*"))), None)
++        use_vaapi = requested_encoder == "vaapi" or (
++            requested_encoder == "auto" and vaapi_device is not None
++        )
++        if requested_encoder == "vaapi" and vaapi_device is None:
++            raise WFDNotReady("VAAPI requested but no /dev/dri/renderD* device exists.")
++
+         ffmpeg_cmd = [
+             *_ffmpeg_sender_args(self.config.ffmpeg_stats, self.config.progress_log_path),
++            *(["-vaapi_device", str(vaapi_device)] if use_vaapi else []),
+             "-fflags", "+genpts",
+             "-thread_queue_size", "1024",
+             "-f", "rawvideo",
+@@ -117,18 +134,26 @@ class PortalMixin:
+             ]
+         else:
+             ffmpeg_cmd += ["-map", "0:v:0"]
+-        if (cap_w, cap_h) != (out_w, out_h):
+-            ffmpeg_cmd += ["-vf", f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,"
+-                                  "setsar=1,format=yuv420p"]
+-        else:
+-            ffmpeg_cmd += ["-vf", "format=yuv420p"]
++        video_filter = (
++            f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
++            if (cap_w, cap_h) != (out_w, out_h)
++            else "format=yuv420p"
++        )
++        profile = self.config.h264_profile
++        if use_vaapi:
++            video_filter = video_filter.replace("format=yuv420p", "format=nv12,hwupload")
++            if profile == "baseline":
++                profile = "constrained_baseline"
++        ffmpeg_cmd += ["-vf", video_filter]
++        encoder_args = (
++            ["-c:v", "h264_vaapi", "-rc_mode", "CBR", "-quality", "7", "-aud", "1"]
++            if use_vaapi
++            else ["-c:v", "libx264", "-preset", "ultrafast" if out_h > 1080 else "veryfast", "-tune", "zerolatency"]
++        )
+         ffmpeg_cmd += [
+-            "-c:v", "libx264",
+-            "-preset", "ultrafast" if out_h > 1080 else "veryfast",
+-            "-tune", "zerolatency",
+-            "-profile:v", self.config.h264_profile,
++            *encoder_args,
++            "-profile:v", profile,
+             "-level:v", _h264_level_for_mode(self.config),
+-            "-pix_fmt", "yuv420p",
+             "-r", str(self.config.fps),
+             "-g", str(gop),
+             "-keyint_min", str(gop),
+@@ -137,8 +162,9 @@ class PortalMixin:
+             "-b:v", effective_bitrate,
+             "-maxrate", effective_bitrate,
+             "-bufsize", _vbv_bufsize(effective_bitrate, self.config),
+-            "-x264-params", "repeat-headers=1:aud=1",
+         ]
++        if not use_vaapi:
++            ffmpeg_cmd += ["-pix_fmt", "yuv420p", "-x264-params", "repeat-headers=1:aud=1"]
+         if not self.config.no_audio:
+             ffmpeg_cmd += [
+                 "-c:a", "aac", "-profile:a", "aac_low",
+@@ -151,6 +177,8 @@ class PortalMixin:
+         print(f"[FluxCast WFD Media] Pipeline             : portal->ffmpeg (AOSP TS)")
+         source = f"{session.size[0]}x{session.size[1]}" if session.size else "unknown"
+         print(f"[FluxCast WFD Media] Portal source        : {source}")
++        print("[FluxCast WFD Media] H.264 encoder        : "
++              + (f"VAAPI ({vaapi_device})" if use_vaapi else "libx264"))
+         print(f"[FluxCast WFD Media] Scaling output       : {cap_w}x{cap_h} "
+               f"padded to {out_w}x{out_h}")
+ 
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 9ace07b..a573610 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -47,15 +47,13 @@ class WlrootsMixin:
+             if capture_container == "mkv"
+             else "live=1;flush_packets=1"
+         )
+-        capture_target = "portal" if self.config.gsr_source == "portal" else monitor.name
+-
+         # GPU Screen Recorder owns capture, scaling, H.264, AAC and their
+         # common clock. Unlike wf-recorder 0.6, it emits silent AAC packets
+         # while the selected output is idle, so the live mux never stalls and
+         # releases a multi-second burst when playback begins.
+         capture_cmd = [
+             "gpu-screen-recorder",
+-            "-w", capture_target,
++            "-w", monitor.name,
+             "-s", out_res,
+             "-f", str(self.config.fps),
+             "-fm", "cfr",
+@@ -107,10 +105,7 @@ class WlrootsMixin:
+                 self.config.packet_log_path,
+             ]
+ 
+-        print(
+-            "[FluxCast WFD Media] Capturing source : "
+-            + ("desktop portal window picker" if capture_target == "portal" else f"{monitor.name} ({src_res})")
+-        )
++        print(f"[FluxCast WFD Media] Capturing source : {monitor.name} ({src_res})")
+         print("[FluxCast WFD Media] Capture/encoder   : GPU Screen Recorder")
+         print(f"[FluxCast WFD Media] Capture handoff   : {capture_container}")
+         if not self.config.no_audio:
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 5e9f5c5..4ba5075 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -121,7 +121,7 @@ def start_experimental_backend(args) -> None:
+         packet_log_path=getattr(args, "wfd_packet_log", None),
+         capture_backend=getattr(args, "wfd_capture_backend", "auto"),
+         gsr_handoff=getattr(args, "wfd_gsr_handoff", "mkv"),
+-        gsr_source=getattr(args, "wfd_gsr_source", "monitor"),
++        portal_source=getattr(args, "wfd_portal_source", "monitor"),
+         video_encoder=getattr(args, "wfd_video_encoder", "auto"),
+         peer_name=peer.name,
+         uibc=getattr(args, "wfd_uibc", False),
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index 24ed87c..244002e 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -2,6 +2,7 @@ import contextlib
+ import inspect
+ import io
+ import os
++from pathlib import Path
+ import subprocess
+ import sys
+ import unittest
+@@ -232,7 +233,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-f") + 1], "flv")
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-f", ffmpeg_cmd.index("-f") + 1) + 1], "rtp_mpegts")
+ 
+-    def test_gsr_portal_source_keeps_the_measured_capture_pipeline(self):
++    def test_gsr_display_source_stays_on_the_measured_monitor_pipeline(self):
+         class Mon:
+             name = "eDP-1"
+             width = 1920
+@@ -253,7 +254,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+ 
+         config = wfd.WFDMediaConfig(
+             monitor=Mon(), output_resolution="1280x720", fps=30,
+-            bitrate="7M", audio_device="sink.monitor", gsr_source="portal",
++            bitrate="7M", audio_device="sink.monitor",
+         )
+         pipeline = wfd.WFDMediaPipeline(
+             config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
+@@ -267,11 +268,23 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+             pipeline._start_desktop_wf_recorder()
+ 
+         capture_cmd, ffmpeg_cmd = commands
+-        self.assertEqual(capture_cmd[capture_cmd.index("-w") + 1], "portal")
++        self.assertEqual(capture_cmd[capture_cmd.index("-w") + 1], "eDP-1")
+         self.assertEqual(capture_cmd[capture_cmd.index("-s") + 1], "1280x720")
+         self.assertEqual(capture_cmd[capture_cmd.index("-c") + 1], "mkv")
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-f") + 1], "matroska")
+ 
++    def test_window_source_requires_the_portal_backend(self):
++        config = wfd.WFDMediaConfig(
++            monitor=None, output_resolution="1280x720", fps=30,
++            capture_backend="wf-recorder", portal_source="window",
++        )
++        pipeline = wfd.WFDMediaPipeline(
++            config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
++            sink_rtp_port=35034,
++        )
++        with self.assertRaisesRegex(wfd.WFDNotReady, "Window capture requires"):
++            pipeline._start_desktop()
++
+ 
+ class FirewallPortTest(unittest.TestCase):
+     def test_existing_port_skips_privileged_add(self):
+@@ -503,7 +516,8 @@ class AspectRatioTest(unittest.TestCase):
+                 return False
+ 
+         config = wfd.WFDMediaConfig(monitor=Mon(), output_resolution="1280x720", fps=30,
+-                                    bitrate="4M", no_audio=True, peer_name="X")
++                                    bitrate="4M", no_audio=True, peer_name="X",
++                                    video_encoder="software")
+         pipeline = wfd.WFDMediaPipeline(config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
+                                         sink_rtp_port=35034)
+         pipeline.tx_interface = "lo"
+@@ -557,6 +571,60 @@ class AspectRatioTest(unittest.TestCase):
+         self.assertIn("sync=true", portal[sink_index:])
+         self.assertNotIn("sync=false", portal[sink_index:])
+ 
++    def test_window_portal_requests_only_a_window_and_uses_vaapi(self):
++        class Sess:
++            session_handle, pw_node_id, pw_fd, restore_token = "/h", 7, 42, None
++            source_type, position, size = 2, None, (1896, 1030)
++            stream_label, runtime, bus = "window", None, None
++
++        class Proc:
++            pid = 4242
++            stdout = io.BytesIO()
++            def poll(self): return None
++            def terminate(self): pass
++
++        captured = []
++        config = wfd.WFDMediaConfig(
++            monitor=None, output_resolution="1280x720", fps=30,
++            bitrate="7M", no_audio=True, capture_backend="portal",
++            portal_source="window", video_encoder="vaapi",
++        )
++        pipeline = wfd.WFDMediaPipeline(
++            config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
++            sink_rtp_port=35034,
++        )
++        with (
++            mock.patch.object(wfd.shutil, "which", return_value="/usr/bin/tool"),
++            patch_all("_gst_has_element", return_value=True),
++            patch_all("_gst_pipewiresrc_properties", return_value=set()),
++            patch_all("_pipewiresrc_selector_attempts", return_value=[("path", ["path=7"])]),
++            patch_all("start_portal_capture", return_value=Sess()) as start,
++            patch_all("_process_written_bytes", return_value=None),
++            mock.patch("wfd.media.portal.Path.glob", return_value=[Path("/dev/dri/renderD129")]),
++            mock.patch.object(wfd.subprocess, "Popen", side_effect=lambda cmd, *a, **k: (captured.append(list(cmd)), Proc())[1]),
++            mock.patch.object(wfd.time, "sleep"),
++            contextlib.redirect_stdout(io.StringIO()),
++        ):
++            pipeline._start_desktop_portal_ffmpeg()
++
++        self.assertEqual(start.call_args.kwargs["source_types"], 2)
++        ffmpeg = next(command for command in captured if command[0] == "ffmpeg")
++        self.assertEqual(ffmpeg[ffmpeg.index("-vaapi_device") + 1], "/dev/dri/renderD129")
++        self.assertEqual(ffmpeg[ffmpeg.index("-c:v") + 1], "h264_vaapi")
++        self.assertIn("format=nv12,hwupload", ffmpeg[ffmpeg.index("-vf") + 1])
++
++    def test_window_portal_rejects_unproven_source_metadata(self):
++        for source_type in (None, 1, 4):
++            session = SimpleNamespace(source_type=source_type)
++            config = wfd.WFDMediaConfig(monitor=None, portal_source="window")
++            pipeline = wfd.WFDMediaPipeline(config, tv_ip="10.42.0.2", local_ip="10.42.0.1", sink_rtp_port=35034)
++            with (
++                patch_all("start_portal_capture", return_value=session),
++                patch_all("close_portal_capture"),
++                self.assertRaisesRegex(wfd.WFDNotReady, "wrong source type"),
++            ):
++                pipeline._open_portal_session(None)
++
+ def _sequence(values):
+     """Yield the given values, then repeat the last one forever."""
+     state = list(values)
+-- 
+2.55.0
+

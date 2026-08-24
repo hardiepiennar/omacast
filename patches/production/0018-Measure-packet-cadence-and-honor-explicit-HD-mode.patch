@@ -1,0 +1,155 @@
+From 22a567c8fb79d4d64ac44835210d5001869ad668 Mon Sep 17 00:00:00 2001
+From: Omarchy Cast package build <packaging@localhost>
+Date: Sat, 22 Aug 2026 19:18:41 +1200
+Subject: [PATCH] Measure packet cadence and honor explicit HD mode
+
+---
+ src/main.py              |  2 ++
+ src/wfd/config.py        |  1 +
+ src/wfd/media/wlroots.py | 12 ++++++++++++
+ src/wfd/modes.py         | 20 ++++++++++++++++++++
+ src/wfd/session.py       |  3 +++
+ tests/test_wfd.py        | 13 +++++++++++++
+ 6 files changed, 51 insertions(+)
+
+diff --git a/src/main.py b/src/main.py
+index 72c439a..f7b5231 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -163,6 +163,8 @@ def parse_args() -> argparse.Namespace:
+                           "(default: /tmp/fluxcast-wfd-latency.jsonl)")
+     wfd.add_argument("--wfd-progress-log", default=None, dest="wfd_progress_log",
+                      help="For --protocol wfd, write machine-readable ffmpeg progress at 250 ms intervals")
++    wfd.add_argument("--wfd-packet-log", default=None, dest="wfd_packet_log",
++                     help="For --protocol wfd, write per-stream packet timestamps before muxing")
+     wfd.add_argument("--wfd-dump-ts", nargs="?", const="/tmp/fluxcast-wfd-stream.ts",
+                      default=None, dest="wfd_dump_ts",
+                      help="For --protocol wfd, write the transmitted MPEG-TS to this file and "
+diff --git a/src/wfd/config.py b/src/wfd/config.py
+index 4a976b8..d808fc4 100644
+--- a/src/wfd/config.py
++++ b/src/wfd/config.py
+@@ -19,6 +19,7 @@ class WFDMediaConfig:
+     media_pipeline: str = "auto"
+     latency_log_path: Optional[str] = None
+     progress_log_path: Optional[str] = None
++    packet_log_path: Optional[str] = None
+     capture_backend: str = "auto"
+     video_encoder: str = "auto"
+     peer_name: str = ""
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index e03dba7..06d445b 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -82,6 +82,18 @@ class WlrootsMixin:
+             ]
+ 
+         ffmpeg_cmd += self._common_output_args()
++        if self.config.packet_log_path:
++            # stats_mux_pre is silently ignored for stream-copy outputs. A
++            # second framecrc output observes every encoded H.264/AAC packet
++            # and PTS without re-encoding or changing the paced RTP output.
++            ffmpeg_cmd += [
++                "-map", "0:v:0",
++                "-map", "0:a:0",
++                "-c", "copy",
++                "-flush_packets", "1",
++                "-f", "framecrc",
++                self.config.packet_log_path,
++            ]
+ 
+         print(f"[FluxCast WFD Media] Capturing screen : {monitor.name} ({src_res})")
+         print("[FluxCast WFD Media] Capture/encoder   : GPU Screen Recorder")
+diff --git a/src/wfd/modes.py b/src/wfd/modes.py
+index 9f1de90..1faccee 100644
+--- a/src/wfd/modes.py
++++ b/src/wfd/modes.py
+@@ -121,6 +121,26 @@ def _choose_cea_mode(
+                 )
+         return WFD_CEA_MODES[WFD_CEA_640P60]
+ 
++    # An explicit standard-HD request is an operator choice, not a hint. Some
++    # Android sinks advertise only the mandatory 720p30 bit while accepting
++    # 720p60 and 1080p30/60. Preserve the requested stress/quality mode so the
++    # caller can measure it instead of silently testing a lower workload.
++    requested_bit = None
++    if resolution == (1280, 720):
++        requested_bit = WFD_CEA_720P60 if wants_60 else WFD_CEA_720P30
++    elif resolution == (1920, 1080):
++        requested_bit = WFD_CEA_1080P60 if wants_60 else WFD_CEA_1080P30
++    if requested_bit is not None:
++        mode = WFD_CEA_MODES[requested_bit]
++        if not supports(requested_bit):
++            if not _mode_force_warned:
++                _mode_force_warned = True
++                print(
++                    f"[FluxCast WFD RTSP] WARNING: Sink does not advertise "
++                    f"{mode.name}; forcing the explicitly requested mode."
++                )
++        return mode
++
+     # Build preference order: if monitor is 1200p, prefer VESA 1200p modes first
+     if wants_1200:
+         preferred = (
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 5bba514..9868447 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -118,6 +118,7 @@ def start_experimental_backend(args) -> None:
+         media_pipeline=getattr(args, "wfd_media_pipeline", "auto"),
+         latency_log_path=getattr(args, "wfd_latency_log", None),
+         progress_log_path=getattr(args, "wfd_progress_log", None),
++        packet_log_path=getattr(args, "wfd_packet_log", None),
+         capture_backend=getattr(args, "wfd_capture_backend", "auto"),
+         video_encoder=getattr(args, "wfd_video_encoder", "auto"),
+         peer_name=peer.name,
+@@ -131,6 +132,8 @@ def start_experimental_backend(args) -> None:
+         print(f"[FluxCast WFD] Latency log file: {media_config.latency_log_path}")
+     if media_config.progress_log_path:
+         print(f"[FluxCast WFD] Progress log file: {media_config.progress_log_path}")
++    if media_config.packet_log_path:
++        print(f"[FluxCast WFD] Packet timing log enabled")
+ 
+     rtsp_port = getattr(args, "wfd_rtsp_port", WFD_RTSP_PORT)
+     rtsp = WFDRTSPServer(
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index 325ed09..5a8822c 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -94,6 +94,14 @@ class VideoModeTableTest(unittest.TestCase):
+ 
+         self.assertEqual(wfd._choose_cea_mode(config, sink).name, "640x480p60")
+ 
++    def test_explicit_1080p_is_not_silently_downgraded_to_advertised_720p(self):
++        config = wfd.WFDMediaConfig(monitor=None, output_resolution="1920x1080", fps=30)
++        sink = wfd.WFDVideoFormat(
++            native="28", preferred="00", profile="01", level="02",
++            cea_mask=wfd.WFD_CEA_720P30, vesa_mask=0, hh_mask=0,
++        )
++        self.assertEqual(wfd._choose_cea_mode(config, sink).name, "1920x1080p30")
++
+ 
+ class FfmpegProgressArgsTest(unittest.TestCase):
+     def test_ffmpeg_paths_do_not_force_periodic_audio_resampling(self):
+@@ -142,6 +150,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         config = wfd.WFDMediaConfig(
+             monitor=Mon(), output_resolution="1280x720", fps=60,
+             bitrate="4M", audio_device="sink.monitor", progress_log_path="/tmp/wfd-progress.log",
++            packet_log_path="/tmp/wfd-packets.csv",
+         )
+         pipeline = wfd.WFDMediaPipeline(
+             config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
+@@ -168,6 +177,10 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         self.assertEqual(ffmpeg_cmd.count("-i"), 1)
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-stats_period") + 1], "0.25")
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-progress") + 1], "/tmp/wfd-progress.log")
++        self.assertEqual(ffmpeg_cmd[-1], "/tmp/wfd-packets.csv")
++        self.assertEqual(ffmpeg_cmd[-2], "framecrc")
++        self.assertEqual(ffmpeg_cmd[-4], "1")
++        self.assertEqual(ffmpeg_cmd[-5], "-flush_packets")
+         self.assertIn("0:a:0", ffmpeg_cmd)
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:v") + 1], "copy")
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:a") + 1], "copy")
+-- 
+2.55.0
+

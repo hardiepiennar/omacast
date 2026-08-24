@@ -1,0 +1,41 @@
+From 2f8c176a8929e555e497528890850fd48d3c4d3e Mon Sep 17 00:00:00 2001
+From: Omarchy Cast packaging <packaging@localhost>
+Date: Fri, 21 Aug 2026 21:38:00 +1200
+Subject: [PATCH] Use VAAPI scaling for wlroots desktop capture
+
+Avoid CPU scaling before VAAPI encoding when a render device is available.
+The source frames still originate in system memory, but upload, resize, and
+letterbox padding stay on the VAAPI device before h264_vaapi consumes them.
+
+---
+ src/wfd/media/wlroots.py | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 416ea8f..baf5001 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -79,9 +79,19 @@ class WlrootsMixin:
+         else:
+             ffmpeg_cmd += ["-map", "0:v:0"]
+ 
+-        video_filter = "format=yuv420p" if out_res == src_res else _letterbox_vf(out_res)
+         if use_vaapi:
+-            video_filter = video_filter.replace("format=yuv420p", "format=nv12,hwupload")
++            if out_res == src_res:
++                video_filter = "format=nv12,hwupload"
++            else:
++                target_width, target_height = out_res.split("x")
++                video_filter = (
++                    "format=nv12,hwupload,"
++                    f"scale_vaapi=w={target_width}:h={target_height}:"
++                    "force_original_aspect_ratio=decrease:force_divisible_by=2:out_range=tv,"
++                    f"pad_vaapi=w={target_width}:h={target_height}:x=(ow-iw)/2:y=(oh-ih)/2"
++                )
++        else:
++            video_filter = "format=yuv420p" if out_res == src_res else _letterbox_vf(out_res)
+         ffmpeg_cmd += ["-vf", video_filter]
+ 
+         profile = self.config.h264_profile
+-- 
+2.55.0

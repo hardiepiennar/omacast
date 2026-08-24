@@ -1,0 +1,87 @@
+name: Build companion release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the exact commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Require release tag to match the manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          version="$(python3 -c 'import json; print(json.load(open("manifest.json"))["version"])')"
+          [[ "$GITHUB_REF_NAME" == "v$version" ]]
+
+      - name: Run controller and contract tests
+        run: PYTHONPATH="$PWD/src" python3 -m unittest discover -s tests -v
+
+      - name: Build in a fresh Arch Linux environment
+        shell: bash
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            archlinux:base-devel \
+            bash -euo pipefail -c '
+              pacman -Syu --needed --noconfirm \
+                fakeroot ffmpeg git gpu-screen-recorder iproute2 iw libpulse \
+                networkmanager polkit python python-build python-dbus-next \
+                python-gobject python-hatchling python-installer python-pillow \
+                python-pychromecast python-pystray shellcheck systemd wpa_supplicant
+              useradd --create-home builder
+              mkdir -p /build/source /build/dist
+              cp -a /workspace/. /build/source/
+              chown -R builder:builder /build
+              runuser -u builder -- /build/source/scripts/lint-shell
+              runuser -u builder -- /build/source/scripts/build-release-artifact /build/dist
+              runuser -u builder -- /build/source/scripts/audit-release-artifact /build/dist/fluxcast-omarchy-cast-*.pkg.tar.zst
+              runuser -u builder -- /build/source/scripts/test-package-lifecycle /build/dist/fluxcast-omarchy-cast-*.pkg.tar.zst
+              cp -a /build/dist /workspace/dist
+            '
+
+      - name: Verify emitted checksum and source identity
+        shell: bash
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          [[ "$(cat dist/SOURCE-COMMIT.txt)" == "$GITHUB_SHA" ]]
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: omacast-companion-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: Attest package provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/*.pkg.tar.zst
+
+      - name: Publish immutable release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.pkg.tar.zst \
+            dist/SHA256SUMS \
+            dist/PACKAGE-INFO.txt \
+            dist/SOURCE-COMMIT.txt \
+            --verify-tag \
+            --title "Omacast $GITHUB_REF_NAME" \
+            --generate-notes

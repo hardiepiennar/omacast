@@ -1,0 +1,159 @@
+From 550b5bfc714022b066948e778aab5a306b484fc1 Mon Sep 17 00:00:00 2001
+From: Omarchy Cast package build <packaging@localhost>
+Date: Sat, 22 Aug 2026 12:45:41 +1200
+Subject: [PATCH] Expose machine-readable WFD progress
+
+---
+ src/main.py                  | 2 ++
+ src/wfd/config.py            | 1 +
+ src/wfd/media/portal.py      | 2 +-
+ src/wfd/media/testpattern.py | 2 +-
+ src/wfd/media/wlroots.py     | 2 +-
+ src/wfd/media/x11.py         | 2 +-
+ src/wfd/net.py               | 4 +++-
+ src/wfd/session.py           | 3 +++
+ tests/test_wfd.py            | 4 +++-
+ 9 files changed, 16 insertions(+), 6 deletions(-)
+
+diff --git a/src/main.py b/src/main.py
+index 62bd368..72c439a 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -161,6 +161,8 @@ def parse_args() -> argparse.Namespace:
+                      default=None, dest="wfd_latency_log",
+                      help="For --protocol wfd, JSONL file path for latency/session logging "
+                           "(default: /tmp/fluxcast-wfd-latency.jsonl)")
++    wfd.add_argument("--wfd-progress-log", default=None, dest="wfd_progress_log",
++                     help="For --protocol wfd, write machine-readable ffmpeg progress at 250 ms intervals")
+     wfd.add_argument("--wfd-dump-ts", nargs="?", const="/tmp/fluxcast-wfd-stream.ts",
+                      default=None, dest="wfd_dump_ts",
+                      help="For --protocol wfd, write the transmitted MPEG-TS to this file and "
+diff --git a/src/wfd/config.py b/src/wfd/config.py
+index 4b3ae53..4a976b8 100644
+--- a/src/wfd/config.py
++++ b/src/wfd/config.py
+@@ -18,6 +18,7 @@ class WFDMediaConfig:
+     source_port: int = 19002
+     media_pipeline: str = "auto"
+     latency_log_path: Optional[str] = None
++    progress_log_path: Optional[str] = None
+     capture_backend: str = "auto"
+     video_encoder: str = "auto"
+     peer_name: str = ""
+diff --git a/src/wfd/media/portal.py b/src/wfd/media/portal.py
+index 0135405..8597935 100644
+--- a/src/wfd/media/portal.py
++++ b/src/wfd/media/portal.py
+@@ -100,7 +100,7 @@ class PortalMixin:
+         ) if prop in props]
+ 
+         ffmpeg_cmd = [
+-            *_ffmpeg_sender_args(self.config.ffmpeg_stats),
++            *_ffmpeg_sender_args(self.config.ffmpeg_stats, self.config.progress_log_path),
+             "-fflags", "+genpts",
+             "-thread_queue_size", "1024",
+             "-f", "rawvideo",
+diff --git a/src/wfd/media/testpattern.py b/src/wfd/media/testpattern.py
+index 65f8b89..d6828a0 100644
+--- a/src/wfd/media/testpattern.py
++++ b/src/wfd/media/testpattern.py
+@@ -23,7 +23,7 @@ class TestPatternMixin:
+         gop = _calculate_gop(self.config)
+         _tp_h = (_parse_resolution(resolution) or (1280, 720))[1]
+         cmd = [
+-            *_ffmpeg_sender_args(self.config.ffmpeg_stats),
++            *_ffmpeg_sender_args(self.config.ffmpeg_stats, self.config.progress_log_path),
+             "-re",
+             "-f", "lavfi",
+             "-i", f"testsrc2=size={resolution}:rate={self.config.fps}",
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 83184dc..e03dba7 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -66,7 +66,7 @@ class WlrootsMixin:
+         ]
+ 
+         ffmpeg_cmd = [
+-            *_ffmpeg_sender_args(self.config.ffmpeg_stats),
++            *_ffmpeg_sender_args(self.config.ffmpeg_stats, self.config.progress_log_path),
+             "-fflags", "+genpts",
+             "-f", "matroska",
+             "-i", "pipe:0",
+diff --git a/src/wfd/media/x11.py b/src/wfd/media/x11.py
+index 3c69497..10aaf9c 100644
+--- a/src/wfd/media/x11.py
++++ b/src/wfd/media/x11.py
+@@ -39,7 +39,7 @@ class X11Mixin:
+ 
+         display = os.environ.get("DISPLAY", monitor.display or ":0")
+         ffmpeg_cmd = [
+-            *_ffmpeg_sender_args(self.config.ffmpeg_stats),
++            *_ffmpeg_sender_args(self.config.ffmpeg_stats, self.config.progress_log_path),
+             "-thread_queue_size", "1024",
+             "-f", "x11grab",
+             "-framerate", str(self.config.fps),
+diff --git a/src/wfd/net.py b/src/wfd/net.py
+index b99c5e8..fbd0838 100644
+--- a/src/wfd/net.py
++++ b/src/wfd/net.py
+@@ -88,11 +88,13 @@ def _netdev_tx_bytes(interface: Optional[str]) -> Optional[int]:
+                 return None
+     return None
+ 
+-def _ffmpeg_sender_args(show_stats: bool = False) -> list[str]:
++def _ffmpeg_sender_args(show_stats: bool = False, progress_path: str | None = None) -> list[str]:
+     args = [
+         "ffmpeg", "-hide_banner", "-y",
+         "-loglevel", "warning",
+     ]
+     if show_stats:
+         args.append("-stats")
++    if progress_path:
++        args.extend(("-stats_period", "0.25", "-progress", progress_path))
+     return args
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index bb409ae..5bba514 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -117,6 +117,7 @@ def start_experimental_backend(args) -> None:
+         source_port=getattr(args, "wfd_rtp_source_port", 19002),
+         media_pipeline=getattr(args, "wfd_media_pipeline", "auto"),
+         latency_log_path=getattr(args, "wfd_latency_log", None),
++        progress_log_path=getattr(args, "wfd_progress_log", None),
+         capture_backend=getattr(args, "wfd_capture_backend", "auto"),
+         video_encoder=getattr(args, "wfd_video_encoder", "auto"),
+         peer_name=peer.name,
+@@ -128,6 +129,8 @@ def start_experimental_backend(args) -> None:
+         print(f"[FluxCast WFD] Dumping transmitted MPEG-TS to: {media_config.dump_ts_path}")
+     if media_config.latency_log_path:
+         print(f"[FluxCast WFD] Latency log file: {media_config.latency_log_path}")
++    if media_config.progress_log_path:
++        print(f"[FluxCast WFD] Progress log file: {media_config.progress_log_path}")
+ 
+     rtsp_port = getattr(args, "wfd_rtsp_port", WFD_RTSP_PORT)
+     rtsp = WFDRTSPServer(
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index de7fa37..325ed09 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -141,7 +141,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+ 
+         config = wfd.WFDMediaConfig(
+             monitor=Mon(), output_resolution="1280x720", fps=60,
+-            bitrate="4M", audio_device="sink.monitor",
++            bitrate="4M", audio_device="sink.monitor", progress_log_path="/tmp/wfd-progress.log",
+         )
+         pipeline = wfd.WFDMediaPipeline(
+             config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
+@@ -166,6 +166,8 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+             capture_cmd,
+         )
+         self.assertEqual(ffmpeg_cmd.count("-i"), 1)
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-stats_period") + 1], "0.25")
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-progress") + 1], "/tmp/wfd-progress.log")
+         self.assertIn("0:a:0", ffmpeg_cmd)
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:v") + 1], "copy")
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:a") + 1], "copy")
+-- 
+2.55.0
+

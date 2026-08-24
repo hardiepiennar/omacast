@@ -1,0 +1,40 @@
+From: Omarchy Cast maintainers <packaging@localhost>
+Date: Sat, 22 Aug 2026 12:00:00 +1200
+Subject: [PATCH] Let the WFD pacer smooth muxer output
+
+The constant-rate MPEG-TS muxer and RTP URL pacer already control packet
+timing. Forcing an immediate flush for every muxer packet bypasses useful
+buffering and turns encoder scheduling variation into network jitter.
+---
+ src/wfd/media/pipeline.py | 1 -
+ tests/test_wfd.py         | 5 +++++
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -161,7 +161,6 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+         return [
+             "-muxdelay", "0",
+             "-muxpreload", "0",
+-            "-flush_packets", "1",
+             # WFD receivers (notably Samsung) are sensitive to MPEG-TS layout.
+             # Keep PMT/video/audio PID values aligned with the working gst path!!!
+             # PMT PID 0x1000, video PID 0x1011, audio PID 0x1100.
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -243,6 +243,11 @@ class AospTablesVersionTest(unittest.TestCase):
+         self.assertIn("bitrate=6300000", output)
+         self.assertIn("burst_bits=10624", output)
+ 
++    def test_transport_does_not_force_per_packet_flushes(self):
++        # The constant-rate muxer and UDP pacer own packet timing. Forcing the
++        # muxer to flush every packet defeats that buffering and creates jitter.
++        self.assertNotIn("-flush_packets", self._args(False))
++
+     def test_flag_stamps_version_1_like_aosp(self):
+         # AOSP writes 0xc3 (version_number=1) in PAT and PMT; both muxers
+         # default to 0, which a sink seeded at 0 can treat as already seen.
+-- 
+2.53.0
