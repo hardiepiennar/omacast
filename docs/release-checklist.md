@@ -220,6 +220,14 @@
       plain-text rendering, and pre-parse state size/shape checks. The adjacent
       telemetry stat/read race and FluxCast diagnostic sink were hardened
       without changing the guard, network, or media path.
+- [x] Post-review smoke test installed exact remediation commit `4ec0f62` in
+      the real Omarchy shell, validated a clean QML load, discovered the waiting
+      receiver, negotiated `1280x720p60`, and held healthy 59.5–60.5 measured
+      fps at approximately realtime with zero FFmpeg drops or duplicates. A
+      cooperative Stop reported complete owned-session cleanup, restored idle,
+      removed current runtime/telemetry, left Wi-Fi connected, and released the
+      user service and media processes. No subjective motion/audio verdict was
+      requested during this short smoke test.
 - [x] Proposed marketplace metadata: category `Hardware`; tags `bar`, `media`,
       and `quickshell`. These match the closest current Hardware/media peers and
       describe the user-facing plugin more precisely than duplicating Hardware

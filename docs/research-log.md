@@ -1297,3 +1297,31 @@ desktop cards use a fixed landscape area with `object-fit: cover`, so the prior
 portrait image would have lost most of its telemetry. The new composition keeps
 the original panel pixels and privacy redactions intact over a non-identifying
 violet/cyan desktop backdrop; `nerd-mode.png` remains the source capture.
+
+### Post-review live smoke (2026-08-25)
+
+The installed plugin was moved from its clean pre-sanitization history onto
+exact pushed remediation commit `4ec0f62`, passed Omarchy validation and a real
+shell restart, and produced no plugin/QML error in the shell log. With the user
+confirming that the receiver was waiting and accepting the temporary network
+impact, the production controller discovered one validated Fire TV and started
+the normal guarded `safe` mirror path. It reached `streaming` after encoded-frame
+proof and negotiated `1280x720p60`.
+
+After warm-up, twelve consecutive one-second observations reported `healthy`,
+59.49–60.50 measured fps, 0.992–1.008 realtime ratio, zero FFmpeg drops, zero
+duplicates, and no health issues. The UI toggle was exercised against the real
+shell and its log remained free of Omacast/QML errors. This was a short plumbing
+smoke test; the user did not provide a new subjective motion or audio verdict,
+so it does not supersede the earlier receiver acceptance evidence.
+
+Cooperative Stop returned the controller to `idle`, marked transport cleanup
+complete, removed the current session's live telemetry/runtime directory,
+released the transient service and all Omacast/FluxCast media processes, and
+left the managed Wi-Fi station connected with its default route. A kernel P2P
+client interface remained visible for at least 20 seconds, but it was down,
+disconnected, carried no IPv4 address, and had no owning cast process. This is
+consistent with the previously recorded delayed supplicant teardown ambiguity;
+the guard still removes such a proven-down, unaddressed stale interface before
+the next session. Do not reinterpret this smoke test as proof of immediate
+kernel-interface disappearance.
