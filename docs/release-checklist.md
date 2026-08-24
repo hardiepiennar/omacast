@@ -22,8 +22,9 @@
 - [x] Immediate installed-controller start/cancel exercised five consecutive
       times across both sides of the state-publication race; every attempt
       returned to idle with no user service or sleep inhibitor left behind.
-- [x] Super+C toggle command documented and installed on the development host;
-      a second press closes the panel.
+- [x] Super+Alt+C toggle command documented and installed on the development
+      host; a second press closes the panel and stock Super+C Universal Copy
+      remains available.
 - [x] Existing plugin upgrades in place under `hardie.omarchy-cast`.
 - [x] Real Omarchy CLI lifecycle exercised with a temporary unique-ID twin of
       the release payload: add with enable, official validation, fast-forward
@@ -263,7 +264,7 @@
 - [ ] Push the repository to its permanent public git URL.
 - [ ] Publish a trusted companion Arch package or signed release artifact.
 - [x] Replace `<repository-url>` in the README with the permanent URL.
-- [ ] From a clean Omarchy account, run add, enable, Super+C summon, update,
+- [ ] From a clean Omarchy account, run add, enable, Super+Alt+C summon, update,
       disable, and remove using the permanent public repository; the equivalent
       local real-shell lifecycle has passed with an isolated plugin ID.
 - [ ] Complete the documented 30-minute repeatability and forced-cleanup gates
@@ -286,7 +287,7 @@
       offline tests, including dismissed authorization as a no-change result;
       privileged and receiver-backed injections remain open.
 - [x] Receiver-backed revision-37 acceptance verifies passwordless prepare,
-      click/Enter-to-cast, keyboard N/Q controls, Super+C close, automatic
+      click/Enter-to-cast, keyboard N/Q controls, panel toggle close, automatic
       TV-side disconnect, and exact cleanup. Passwordless prepare, click start,
       keyboard/UI review, healthy 720p60 streaming, shell survival, and the
       automatic disconnect path passed. Receiver-side exit produced a

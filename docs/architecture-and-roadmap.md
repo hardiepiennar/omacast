@@ -32,8 +32,8 @@ smoothness, continuous internet access, and audio/video sync all matter.
 ### Target experience
 
 1. Install the repository with `omarchy plugin add <git-url> --enable`.
-2. Put the Fire TV in Display Mirroring. Press Super+C or click the bar icon to
-   open the current-display workflow.
+2. Put the Fire TV in Display Mirroring. Press Super+Alt+C or click the bar icon
+   to open the current-display workflow without replacing Universal Copy.
 3. Use ↑/↓ to highlight a discovered receiver and press Enter once to start;
    clicking a receiver starts the same action immediately.
 4. The package-owned exact-purpose Polkit action prepares networking without a
@@ -128,8 +128,9 @@ smoothness, continuous internet access, and audio/video sync all matter.
   files from `$XDG_RUNTIME_DIR`; archived samples are pruned alongside the same
   50-session event-history boundary.
 - The installable plugin is branded **Omacast** while retaining the stable
-  `hardie.omarchy-cast` plugin ID for in-place upgrades. Super+C is the intended
-  summon gesture; it explicitly replaces Omarchy's default Universal copy bind.
+  `hardie.omarchy-cast` plugin ID for in-place upgrades. Super+Alt+C is the
+  intended optional summon gesture and leaves Omarchy's stock Super+C Universal
+  Copy binding intact. The earlier Super+C choice is superseded.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the
@@ -602,7 +603,7 @@ offers one Safe stream contract and exposes only contextual Cancel, Scan, Stop,
 and Recover actions. It never selects the first receiver implicitly: a mouse
 click casts the chosen receiver immediately, while ↑/↓ and Enter provide a
 complete Omarchy-style keyboard path. N toggles Nerd Mode and Q stops the
-live cast. Super+C uses
+live cast. Super+Alt+C uses
 the shell's native toggle route and the bar icon opens the same current-display
 workflow without reading window metadata, taking a screenshot, or opening a
 portal picker. Live discovery identifies receivers without a hard-coded MAC.
@@ -763,7 +764,7 @@ independent acceptance remain required:
 1. Publish this repository and its full patch series at a stable git URL.
 2. Publish the companion Arch package through a trusted channel or provide a
    signed release artifact. Omarchy's plugin manager cannot install it.
-3. Test `omarchy plugin add`, enable, Super+C summon, update, disable, and
+3. Test `omarchy plugin add`, enable, Super+Alt+C summon, update, disable, and
    removal from a clean clone/account.
 4. Complete repeated 30-minute 720p60 sessions and one forced-failure cleanup
    matrix on the supported topology before changing “release candidate” to
@@ -935,8 +936,8 @@ waiting in Display Mirroring and understands any temporary network change.
   zero mux delay, owned-process scheduler priority, and measured 64 ms audio
   timestamp correction. There are no alternate production profiles.
 - **Brand/shortcut:** marketplace name **Omacast**, stable plugin ID
-  `hardie.omarchy-cast`, and documented Super+C summon binding that replaces
-  Omarchy's Universal copy shortcut only with explicit user configuration.
+  `hardie.omarchy-cast`, and documented Super+Alt+C summon binding that leaves
+  Omarchy's stock Super+C Universal Copy shortcut intact.
 - **Browser-video policy:** explicit real-world acceptance test, no DRM bypass,
   and no protected-service compatibility claim until proven.
 

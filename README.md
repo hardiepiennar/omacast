@@ -7,7 +7,7 @@ display. It is keyboard-first, runs from the Omarchy bar, and has been validated
 with a stock Fire TV Stick in **Display Mirroring** mode.
 
 ```text
-Super+C  →  choose a TV  →  Enter
+Super+Alt+C  →  choose a TV  →  Enter
 ```
 
 ## Features
@@ -59,15 +59,15 @@ Install and enable the plugin:
 omarchy plugin add https://github.com/hardiepiennar/omacast --enable
 ```
 
-### Bind Super+C
+### Bind Super+Alt+C
 
 Add the following to `~/.config/hypr/bindings.lua`:
 
 ```lua
--- Replace Omarchy's default Universal copy binding.
-hl.unbind("SUPER + C")
-o.bind("SUPER + C", "Cast desktop", "omarchy-shell shell toggle hardie.omarchy-cast")
+o.bind("SUPER + ALT + C", "Cast desktop", "omarchy-shell shell toggle hardie.omarchy-cast")
 ```
+
+This leaves Omarchy's stock **Super+C** Universal Copy shortcut intact.
 
 Reload Hyprland:
 
@@ -81,7 +81,7 @@ The bar icon works without this optional keybinding.
 ## Use
 
 1. Put the TV in **Display Mirroring** mode.
-2. Press **Super+C** or click the Omacast bar icon.
+2. Press **Super+Alt+C** or click the Omacast bar icon.
 3. Choose the TV with **↑/↓** and press **Enter**, or click it.
 4. Press **N** for Nerd Mode, **Q** to cancel or stop, and **R** to rescan when
    idle.
@@ -99,9 +99,9 @@ omarchy plugin remove hardie.omarchy-cast
 sudo pacman -Rns fluxcast-omarchy-cast
 ```
 
-Remove the optional Super+C binding manually if you added it. Omacast retains a
-bounded local diagnostic history after uninstall. To move that history and old
-preferences to the desktop Trash:
+Remove the optional Super+Alt+C binding manually if you added it. Omacast
+retains a bounded local diagnostic history after uninstall. To move that
+history and old preferences to the desktop Trash:
 
 ```bash
 gio trash ~/.config/omarchy-cast ~/.local/state/omarchy-cast

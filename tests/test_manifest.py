@@ -117,6 +117,9 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("![Omacast Nerd Mode during a healthy cast](nerd-mode.png)", readme)
         self.assertIn("omarchy plugin remove hardie.omarchy-cast", readme)
         self.assertIn("gio trash ~/.config/omarchy-cast ~/.local/state/omarchy-cast", readme)
+        self.assertIn('o.bind("SUPER + ALT + C", "Cast desktop"', readme)
+        self.assertIn("stock **Super+C** Universal Copy shortcut intact", readme)
+        self.assertNotIn('hl.unbind("SUPER + C")', readme)
         self.assertIn("does not silently erase user data", security)
 
     def test_marketplace_submission_draft_is_safe_and_complete(self) -> None:
