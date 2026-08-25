@@ -29,3 +29,6 @@ Rules for future work:
 - Preserve conflicting evidence in the research log; mark conclusions
   superseded instead of rewriting history.
 - Update the canonical plan and acceptance evidence as decisions change.
+- Keep marketplace and review comments terse and human: state the relevant
+  change, exact commit, and requested action. Do not add test-result recitals,
+  promotional detail, or release-summary prose unless the reviewer requires it.
