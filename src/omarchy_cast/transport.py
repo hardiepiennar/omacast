@@ -169,6 +169,26 @@ class GuardedTransportAdapter:
                 raise TransportError(error or "The networking helper exited before it was ready.", code="guard-setup-failed")
         raise TransportError("Administrator approval or guarded setup took too long. Try again and answer the approval prompt.", code="authorization-timeout")
 
+    @staticmethod
+    def _cleanup_confirmed(process: subprocess.Popen[str], request: GuardRequest) -> bool:
+        """Require the exited helper's final bounded status to confirm cleanup."""
+        if process.stdout is None or process.poll() is None:
+            return False
+        try:
+            remainder = process.stdout.read(65_537)
+        except (OSError, ValueError):
+            return False
+        if len(remainder) > 65_536:
+            return False
+        lines = [line for line in remainder.splitlines() if line.strip()]
+        if not lines:
+            return False
+        try:
+            payload = validate_helper_result(json.loads(lines[-1]))
+        except (json.JSONDecodeError, ValueError):
+            return False
+        return payload.get("sessionId") == request.session_id and payload.get("ok") is True and payload.get("phase") == "cleaned"
+
     def _stop_guard(self) -> None:
         """Signal the user-owned guard marker without a second authorization."""
         stop_path = f"/run/omarchy-cast/{self.request.session_id}/user/stop"
@@ -294,6 +314,7 @@ class GuardedTransportAdapter:
         lease: SessionLease | None = None
         engine_log = None
         guard_ready = False
+        guard_cleanup_confirmed = False
         try:
             helper = subprocess.Popen((*self.authorization_command, *prepare_command(self.request)), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
             trigger = self._read_ready(helper, self.request, cancelled)
@@ -408,9 +429,16 @@ class GuardedTransportAdapter:
                         helper.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         pass
+                if guard_ready:
+                    guard_cleanup_confirmed = self._cleanup_confirmed(helper, self.request)
             if engine_log is not None:
                 engine_log.close()
             cleanup_live_telemetry(self.request.session_id, self.env)
+            if guard_ready and not guard_cleanup_confirmed:
+                raise TransportError(
+                    "The networking helper could not confirm complete P2P cleanup. Re-scan before casting again.",
+                    code="guard-cleanup-incomplete",
+                )
 
 
 class DisabledTransportAdapter:

@@ -23,7 +23,7 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         version = subprocess.run(("bash", str(guard), "--version"), check=False, capture_output=True, text=True)
         self.assertEqual(version.returncode, 0, version.stderr)
-        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 6})
+        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 7})
         source = guard.read_text(encoding="utf-8")
         self.assertIn('[[ "$action" == prepare ]] || usage', source)
         self.assertNotIn('"$action" == stop', source)
@@ -49,12 +49,21 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("systemd network runtime directory is unsafe", source)
         self.assertIn('restore_networkd_state', source)
         self.assertIn('runtime_dirs_created=false', source)
-        self.assertIn("api_revision=6", source)
+        self.assertIn("api_revision=7", source)
         self.assertIn('user_root="$session_root/user"', source)
         self.assertNotIn('user_root="/run/user/', source)
         self.assertIn('install -d -m711 "$session_root"', source)
         self.assertIn("root session directory is unsafe", source)
         self.assertIn("user marker directory is unsafe", source)
+        self.assertIn('interfaces_file="$session_root/p2p-interfaces"', source)
+        self.assertIn('interfaces_armed_file="$session_root/p2p-armed"', source)
+        self.assertIn("record_session_interfaces", source)
+        self.assertIn("remove_session_interfaces", source)
+        self.assertIn("verify_clean_interface_baseline", source)
+        self.assertNotIn("remove_stale_interfaces", source)
+        active_loop = source.split('while owns_session && [[ ! -e "$stop_file" ]]; do', 1)[1].split("done", 1)[0]
+        self.assertNotIn("record_session_interfaces", active_loop)
+        self.assertNotIn("iw dev", active_loop)
         self.assertIn('[[ "${PKEXEC_UID:-}" == "$uid" ]]', source)
         self.assertNotIn("systemd-networkd is already active", source)
         self.assertIn("systemctl reload systemd-networkd.service", source)
@@ -68,6 +77,10 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn('lease_seconds="$2"', recovery_source)
         self.assertIn('heartbeat_file="$user_root/heartbeat"', recovery_source)
         self.assertIn('user_root="$root/user"', recovery_source)
+        self.assertIn('interfaces_file="$root/p2p-interfaces"', recovery_source)
+        self.assertIn('interfaces_armed_file="$root/p2p-armed"', recovery_source)
+        self.assertIn("record_session_interfaces", recovery_source)
+        self.assertIn("remove_session_interfaces", recovery_source)
         self.assertIn('heartbeat_fd=', recovery_source)
         self.assertIn('stat -Lc \'%F:%u:%a:%s\' "/proc/self/fd/$heartbeat_fd"', recovery_source)
         self.assertIn('read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd"', recovery_source)
@@ -140,6 +153,92 @@ if open_heartbeat; then exit 3; fi
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_guard_removes_only_recorded_session_p2p_clients(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+interfaces_file="$2"
+deleted_file="$3"
+interface=wlan42
+delete_attempts=0
+interface_present=true
+interface_type=P2P-client
+iw() {
+  if [[ "$#" -eq 1 && "$1" == dev ]]; then
+    printf '%s\n' 'phy#0' '  Interface p2p-wlan42-0' '  Interface p2p-wlan99-0'
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == info ]]; then
+    [[ "$interface_present" == true ]] || return 1
+    printf '%s\n' 'Interface details' "type $interface_type"
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == del ]]; then
+    delete_attempts=$((delete_attempts + 1))
+    (( delete_attempts >= 3 )) || return 1
+    interface_present=false
+    printf '%s\n' "$2" >> "$deleted_file"
+  else
+    return 2
+  fi
+}
+if (verify_clean_interface_baseline); then exit 4; fi
+: > "$interfaces_file"
+chmod 600 "$interfaces_file"
+record_session_interfaces
+remove_session_interfaces
+interface_present=true
+interface_type=managed
+printf '%s\n' p2p-wlan42-1 > "$interfaces_file"
+if remove_session_interfaces; then exit 5; fi
+printf '%s\n' p2p-wlan42-0 > "$interfaces_file"
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            interfaces = root / "interfaces"
+            deleted = root / "deleted"
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(interfaces), str(deleted)),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(interfaces.read_text(encoding="ascii"), "p2p-wlan42-0\n")
+            self.assertEqual(deleted.read_text(encoding="ascii"), "p2p-wlan42-0\n")
+
+    def test_guard_rejects_special_or_public_interface_records(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+interfaces_file="$2"
+interface=wlan42
+iw() { printf '%s\n' 'phy#0' '  Interface p2p-wlan42-0'; }
+if record_session_interfaces; then exit 3; fi
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            record = root / "interfaces"
+            target = root / "target"
+            target.write_text("untouched", encoding="ascii")
+            cases = ("fifo", "symlink", "public")
+            for case in cases:
+                with self.subTest(case=case):
+                    record.unlink(missing_ok=True)
+                    if case == "fifo":
+                        os.mkfifo(record, mode=0o600)
+                    elif case == "symlink":
+                        record.symlink_to(target)
+                    else:
+                        record.write_text("", encoding="ascii")
+                        record.chmod(0o644)
+                    result = subprocess.run(
+                        ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(record)),
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(target.read_text(encoding="ascii"), "untouched")
+
     def test_polkit_action_is_exact_and_active_local_only(self) -> None:
         policy = ET.parse(ROOT / "packaging" / "arch" / "com.omacast.guard.policy").getroot()
         action = policy.find("action")
@@ -193,6 +292,8 @@ if open_heartbeat; then exit 3; fi
         self.assertIn("anchored below the root-owned session", audit)
         self.assertIn("protected session parent", audit)
         self.assertIn("unused privileged Stop verb", audit)
+        self.assertIn("recorded P2P cleanup", audit)
+        self.assertIn("clean-baseline ownership marker", audit)
         self.assertIn("com.omacast.guard.policy", audit)
         self.assertIn("allow_active", audit)
         self.assertNotIn("--wfd-gsr-handoff", audit)

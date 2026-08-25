@@ -158,11 +158,16 @@ smoothness, continuous internet access, and audio/video sync all matter.
   own supervised cast cgroup instead. Receiver acceptance on 2026-08-25 confirmed the
   property on the live service, no PID channel, stable 720p60 playback, and
   complete owned cleanup without a privileged scheduling action.
-  Revision 40 / guard API 6 additionally pins the verified user heartbeat inode and performs
+  Revision 41 / guard API 7 additionally pins the verified user heartbeat inode and performs
   bounded reads through that descriptor, closing the adjacent special-file
   replacement race in both the guard and independent recovery process. Its
   user-writable markers live below a root-owned session parent, eliminating the
-  directory-symlink race, and the unused privileged Stop verb is removed.
+  directory-symlink race, and the unused privileged Stop verb is removed. Its
+  root-owned session record scopes teardown to P2P clients observed after the
+  guard established a clean baseline. Enumeration happens once at teardown,
+  before NetworkManager resumes, rather than polling during media delivery.
+  The controller accepts cleanup only after the exited helper returns the
+  matching session's bounded, schema-valid `cleaned` status.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the

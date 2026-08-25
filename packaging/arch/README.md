@@ -44,7 +44,7 @@ installed. The package-owned Polkit action is declarative and is removed with
 the package.
 
 The primary helper exposes an unprivileged JSON `--version` probe. Omacast
-requires guard API revision 6 and the matching FluxCast capability set before
+requires guard API revision 7 and the matching FluxCast capability set before
 enabling discovery or Cast, so independently updated marketplace UI cannot
 cross an older privileged-helper contract.
 

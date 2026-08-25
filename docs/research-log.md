@@ -1416,3 +1416,34 @@ cannot replace the child directory entry because the parent is not writable.
 The unused privileged `stop` verb and controller builder were removed; normal
 Stop continues to create the session marker without a second authorization.
 Exact-package and receiver lifecycle acceptance remain open.
+
+### Revision 40 receiver cleanup finding (2026-08-25)
+
+The revision-40 receiver test negotiated 1280x720p60 and remained healthy at
+approximately 60 fps with zero FFmpeg drops or duplicates, no radio failures,
+and an empty send queue. The new root/user runtime boundary had the intended
+0711/0700/0600 ownership and modes. UI Stop returned the controller to idle,
+removed the service, media processes, privileged runtime, policy, and network
+files, and restored infrastructure Wi-Fi.
+
+The strict post-stop check nevertheless found the session-created
+`p2p-wlp58s0-2` P2P-client netdev down but still present with link-local IPv6.
+FluxCast had issued its supplicant Disconnect and the journal recorded nl80211
+deinitialization, but the kernel device remained until it was explicitly
+removed. This supersedes the initial `cleanup_complete` result for revision 40.
+
+Revision 41 / guard API 7 creates a root-owned `p2p-interfaces` record after
+proving the pre-session P2P baseline clean. Normal and independent recovery
+cleanup enumerate the dynamically resolved `p2p-$interface-*` devices once,
+before NetworkManager resumes, then delete only recorded entries that still
+identify as P2P-client devices. Unrelated or unrecorded interfaces are ignored,
+and no interface polling runs during media delivery. Exact package and receiver
+cleanup acceptance remain open.
+
+The same audit removed a five-times-per-second `iw dev` poll from the first
+revision-41 draft; the clean baseline makes one teardown enumeration sufficient.
+It also found that the controller ignored helper output after readiness and
+therefore could still label an incomplete privileged cleanup successful. The
+controller now reads at most 64 KiB after the helper exits and requires the last
+status to be schema-valid, session-matched, successful, and explicitly
+`cleaned`; otherwise it raises `guard-cleanup-incomplete`.

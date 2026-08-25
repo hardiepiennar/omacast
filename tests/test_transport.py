@@ -151,6 +151,28 @@ class TransportTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "authorization-cancelled")
         self.assertIn("Nothing was changed", str(caught.exception))
 
+    def test_helper_cleanup_status_is_bounded_session_scoped_and_explicit(self) -> None:
+        from omarchy_cast.guard import GuardRequest
+        request = GuardRequest(1, "a" * 32, 1000, "wlan42", 60)
+
+        def process(final: str, *, exited: bool = True) -> Mock:
+            helper = Mock(stdout=io.StringIO(final))
+            helper.poll.return_value = 0 if exited else None
+            return helper
+
+        active = '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":true,"phase":"active","sessionId":"' + "a" * 32 + '","error":null}\n'
+        cleaned = '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":true,"phase":"cleaned","sessionId":"' + "a" * 32 + '","error":null}\n'
+        failed = '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":false,"phase":"error","sessionId":"' + "a" * 32 + '","error":"cleanup incomplete"}\n'
+        wrong = cleaned.replace("a" * 32, "b" * 32)
+        self.assertTrue(GuardedTransportAdapter._cleanup_confirmed(process(active + cleaned), request))
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(active + failed), request))
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(wrong), request))
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(cleaned, exited=False), request))
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process("x" * 65_537), request))
+        closed = process(cleaned)
+        closed.stdout.close()
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(closed, request))
+
     def test_root_owned_helper_cleanup_does_not_mask_setup_failure(self) -> None:
         from omarchy_cast.guard import GuardRequest
         request = GuardRequest(1, "a" * 32, 1000, "wlan42", 60)

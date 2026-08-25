@@ -23,8 +23,10 @@ not request a second authorization.
 
 The helper restores NetworkManager, temporary systemd-networkd configuration,
 D-Bus policy, and any firewall rule during normal stop, controller failure, or
-its bounded recovery timeout. Omacast also exposes a panel recovery action when
-the unprivileged session owner disappears.
+its bounded recovery timeout. It records P2P clients created after its clean
+baseline in root-owned session state and removes only those recorded devices.
+Omacast also exposes a panel recovery action when the unprivileged session owner
+disappears.
 
 The detached user service holds a logind idle/sleep inhibitor while casting,
 applies a user-owned CPU weight to its complete supervised process tree, and
