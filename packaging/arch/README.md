@@ -44,9 +44,13 @@ installed. The package-owned Polkit action is declarative and is removed with
 the package.
 
 The primary helper exposes an unprivileged JSON `--version` probe. Omacast
-requires guard API revision 4 and the matching FluxCast capability set before
+requires guard API revision 5 and the matching FluxCast capability set before
 enabling discovery or Cast, so independently updated marketplace UI cannot
 cross an older privileged-helper contract.
+
+Media scheduling does not cross the Polkit boundary. The plugin's existing
+user-owned transient service applies a CPU weight to its own supervised process
+tree; the root helper accepts no PID and does not call `renice`.
 
 To update the engine, rebuild from a clean package directory. Do not apply
 patches to a system-installed engine at runtime.

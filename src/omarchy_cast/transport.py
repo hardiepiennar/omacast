@@ -292,7 +292,6 @@ class GuardedTransportAdapter:
             paths["latency"].unlink(missing_ok=True)
             paths["packets"].unlink(missing_ok=True)
             paths["engineLog"].unlink(missing_ok=True)
-            paths["qos"].unlink(missing_ok=True)
             # Per-packet framecrc is a valuable trace, but it creates a second
             # FFmpeg output and continuous disk I/O. Keep it explicitly opt-in
             # so production monitoring cannot steal time from capture.
@@ -301,8 +300,6 @@ class GuardedTransportAdapter:
             engine_log = paths["engineLog"].open("w", encoding="utf-8")
             os.chmod(paths["engineLog"], 0o600)
             engine = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=engine_log, stderr=subprocess.STDOUT, text=True, env=self.env)
-            paths["qos"].write_text(f"{engine.pid}\n", encoding="ascii")
-            os.chmod(paths["qos"], 0o600)
             sampler = TelemetrySampler(
                 session_id=self.request.session_id,
                 engine_pid=engine.pid,

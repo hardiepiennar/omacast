@@ -1335,3 +1335,24 @@ consistent with the previously recorded delayed supplicant teardown ambiguity;
 the guard still removes such a proven-down, unaddressed stale interface before
 the next session. Do not reinterpret this smoke test as proof of immediate
 kernel-interface disappearance.
+
+### Follow-up privileged QoS review (2026-08-25)
+
+Marketplace review of exact public commit `540f578` showed that the root guard
+read a user-owned `qos.pid` and identified the requested process using owner,
+command-line, short-name, and descendant checks. An isolated reproduction
+created a same-UID process with an allowlisted `ffmpeg` short name and a command
+line containing `fluxcast`; it satisfied those identity predicates without
+belonging to Omacast. The action could therefore grant negative nice to an
+arbitrary same-user process even though it could not target another UID or run
+an arbitrary root command.
+
+The remediation removes the PID file and every privileged scheduling action
+rather than adding more spoofable process labels. Guard API 5 and companion
+revision 38 contain no `qos.pid`, `/proc` media traversal, or `renice`. The
+already supervised `omacast-session.service` instead requests
+`CPUWeight=10000`, which applies only within the user-owned service cgroup and
+requires no privilege. Offline systemd probing confirmed that the user manager
+accepts this property and has the CPU controller. Because cgroup weight is not
+identical to negative nice, receiver cadence remains a final acceptance test
+before publishing version 0.1.1.

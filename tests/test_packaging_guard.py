@@ -20,7 +20,7 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         version = subprocess.run(("bash", str(guard), "--version"), check=False, capture_output=True, text=True)
         self.assertEqual(version.returncode, 0, version.stderr)
-        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 4})
+        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 5})
         source = guard.read_text(encoding="utf-8")
         self.assertIn('"$action" == prepare || "$action" == stop', source)
         self.assertIn('if [[ "$action" == prepare ]]; then prepare; else stop; fi', source)
@@ -41,7 +41,7 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("systemd network runtime directory is unsafe", source)
         self.assertIn('restore_networkd_state', source)
         self.assertIn('runtime_dirs_created=false', source)
-        self.assertIn("api_revision=4", source)
+        self.assertIn("api_revision=5", source)
         self.assertIn('[[ "${PKEXEC_UID:-}" == "$uid" ]]', source)
         self.assertNotIn("systemd-networkd is already active", source)
         self.assertIn("systemctl reload systemd-networkd.service", source)
@@ -56,8 +56,11 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn('heartbeat_file="$user_root/heartbeat"', recovery_source)
         self.assertIn('networkd_state_file="$root/networkd-units"', recovery_source)
         self.assertIn('telemetry_root="/run/user/$uid/omarchy-cast/telemetry/$session"', recovery_source)
-        for live_name in ("current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log", "qos.pid"):
+        for live_name in ("current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log"):
             self.assertIn(f'"$telemetry_root/{live_name}"', recovery_source)
+        for removed_surface in ("qos.pid", "qos_file", "apply_media_qos", "renice", "/proc/$root_pid"):
+            self.assertNotIn(removed_surface, source)
+            self.assertNotIn(removed_surface, recovery_source)
         self.assertIn('rmdir --ignore-fail-on-non-empty "$telemetry_root"', recovery_source)
         self.assertIn("systemctl reload systemd-networkd.service", recovery_source)
         self.assertNotIn('systemctl stop systemd-networkd.service systemd-networkd.socket', recovery_source)

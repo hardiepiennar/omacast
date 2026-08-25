@@ -151,6 +151,12 @@ smoothness, continuous internet access, and audio/video sync all matter.
   `O_NONBLOCK` as well as no-follow semantics, so descriptor validation rejects
   a pipe without joining it. A subprocess regression test has its own deadline
   and proves that the public status path returns rather than hanging.
+- The same follow-up found that the root guard accepted a user-owned media PID
+  and applied negative nice after checking user-spoofable process attributes.
+  Guard API 5 removes the PID file, process traversal, and privileged `renice`
+  surface. The existing user transient service applies `CPUWeight=10000` to its
+  own supervised cast cgroup instead; companion revision 38 carries the new
+  immutable helper contract.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the
@@ -953,8 +959,8 @@ waiting in Display Mirroring and understands any temporary network change.
   base revision and applies the tracked compatibility/timing patches at build
   time. It ships no persistent D-Bus, firewall, or root networking policy.
 - **Release profile:** 1280x720p60 at 7 Mbps with the Fire-TV-proven wire pacer,
-  zero mux delay, owned-process scheduler priority, and measured 64 ms audio
-  timestamp correction. There are no alternate production profiles.
+  zero mux delay, user-service CPU weighting, and measured 64 ms audio timestamp
+  correction. There are no alternate production profiles.
 - **Brand/shortcut:** marketplace name **Omacast**, stable plugin ID
   `hardie.omarchy-cast`, and documented Super+Alt+C summon binding that leaves
   Omarchy's stock Super+C Universal Copy shortcut intact.

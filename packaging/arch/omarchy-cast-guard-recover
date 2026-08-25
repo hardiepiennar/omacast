@@ -20,7 +20,7 @@ kill -CONT "$nm_pid" 2>/dev/null || true
 if command -v ufw >/dev/null && ufw status | grep -Fq "omarchy-cast-$session"; then ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || true; fi
 remove_network_root=false; [[ -f "$network_root_marker" ]] && remove_network_root=true
 rm -f -- "$network_root/80-omarchy-cast-$session.network" "/etc/dbus-1/system.d/zz-omarchy-cast-$session.conf" "$root/ready.json" "$user_root/trigger" "$heartbeat_file" "$user_root/stop"
-rm -f -- "$telemetry_root/current.json" "$telemetry_root/ffmpeg.progress" "$telemetry_root/mux-packets.csv" "$telemetry_root/engine.jsonl" "$telemetry_root/engine.log" "$telemetry_root/qos.pid"
+rm -f -- "$telemetry_root/current.json" "$telemetry_root/ffmpeg.progress" "$telemetry_root/mux-packets.csv" "$telemetry_root/engine.jsonl" "$telemetry_root/engine.log"
 rmdir --ignore-fail-on-non-empty "$telemetry_root" 2>/dev/null || true
 systemctl reload dbus.service 2>/dev/null || true
 if [[ -f "$networkd_state_file" && ! -L "$networkd_state_file" && "$(stat -c '%u:%a' "$networkd_state_file" 2>/dev/null)" == '0:600' ]]; then

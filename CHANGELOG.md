@@ -1,12 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — 2026-08-25
 
 - Bound controller subprocess output, streaming QML collection, UI JSON
   responses, receiver/readiness/warning models, and runtime state/telemetry
   reads at their trust boundaries.
 - Open bounded runtime state and current telemetry nonblocking so a FIFO
   replacement is rejected before it can stall descriptor validation.
+- Remove the user-supplied media PID channel and privileged `renice` action.
+  The existing user-owned transient service now applies `CPUWeight=10000` to
+  its own supervised cast process tree without crossing a root boundary.
+- Advance the companion package to revision 38 and guard API revision 5 so the
+  controller rejects installations that retain the old privileged QoS path.
 - Render wireless and controller-derived labels as plain text and normalize the
   small QML models before they enter the shell UI.
 - Promote the healthy-cast Nerd Mode view to a 16:9 marketplace preview while

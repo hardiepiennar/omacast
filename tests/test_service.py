@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 
 from omarchy_cast.command import CommandResult
-from omarchy_cast.service import INHIBIT_REASON, ServiceError, UNIT_NAME, session_service_command, start_session_service, stop_pending_session_service
+from omarchy_cast.service import INHIBIT_REASON, SESSION_CPU_WEIGHT, ServiceError, UNIT_NAME, session_service_command, start_session_service, stop_pending_session_service
 
 
 class ServiceTest(unittest.TestCase):
@@ -22,6 +22,9 @@ class ServiceTest(unittest.TestCase):
             )
         self.assertEqual(command[:5], ("systemd-run", "--user", "--quiet", "--collect", f"--unit={UNIT_NAME}"))
         self.assertIn("--property=KillMode=mixed", command)
+        self.assertEqual(SESSION_CPU_WEIGHT, 10_000)
+        self.assertIn("--property=CPUWeight=10000", command)
+        self.assertFalse(any(item.startswith("--nice=") or item.startswith("--property=Nice=") for item in command))
         inhibitor = command.index("systemd-inhibit")
         self.assertEqual(command[inhibitor:inhibitor + 5], (
             "systemd-inhibit", "--what=idle:sleep", "--who=Omacast",

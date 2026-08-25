@@ -77,7 +77,7 @@ fakeroot pacman "${pacman_args[@]}" -dd -U "$candidate"
 fakeroot pacman "${pacman_args[@]}" -Qkk "$candidate_name" | grep -Fq '0 altered files' || die "candidate integrity check failed"
 
 guard="$lifecycle_root/usr/lib/omarchy-cast/omarchy-cast-guard"
-[[ "$($guard --version)" == '{"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":4}' ]] || die "upgraded helper contract is incompatible"
+[[ "$($guard --version)" == '{"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":5}' ]] || die "upgraded helper contract is incompatible"
 policy="$lifecycle_root/usr/share/polkit-1/actions/com.omacast.guard.policy"
 [[ -f "$policy" && ! -L "$policy" && "$(stat -c %a "$policy")" == 644 ]] || die "installed Polkit action is missing or unsafe"
 

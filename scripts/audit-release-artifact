@@ -96,8 +96,12 @@ bash -n "$guard"
 bash -n "$recovery"
 
 guard_version="$($guard --version)"
-python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":4}' "$guard_version" \
-  || die "guard API contract does not match revision 4"
+python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":5}' "$guard_version" \
+  || die "guard API contract does not match revision 5"
+for removed_surface in qos.pid qos_file apply_media_qos renice; do
+  ! grep -Fq "$removed_surface" "$guard" || die "guard retains removed privileged QoS surface: $removed_surface"
+  ! grep -Fq "$removed_surface" "$recovery" || die "recovery retains removed privileged QoS surface: $removed_surface"
+done
 
 site_packages="$(find "$audit_root/usr/lib" -type d -path '*/site-packages' -print -quit)"
 [[ -n "$site_packages" ]] || die "packaged Python modules are missing"

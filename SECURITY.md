@@ -14,9 +14,9 @@ updating the companion package still requires explicit administrator approval.
 The helper binds the requested UID to Polkit's authenticated `PKEXEC_UID`, then
 accepts a bounded, validated argument contract. It stores privileged
 state under `/run/omarchy-cast` and exchanges session signals through a private
-directory below `/run/user/$UID`; it does not trust PID or command data from a
-shared `/tmp` path. Stop uses the current session's user-owned marker and does
-not request a second authorization.
+directory below `/run/user/$UID`. It accepts no process identifier or scheduling
+request from the unprivileged session. Stop uses the current session's
+user-owned marker and does not request a second authorization.
 
 The helper restores NetworkManager, temporary systemd-networkd configuration,
 D-Bus policy, and any firewall rule during normal stop, controller failure, or
@@ -24,9 +24,10 @@ its bounded recovery timeout. Omacast also exposes a panel recovery action when
 the unprivileged session owner disappears.
 
 The detached user service holds a logind idle/sleep inhibitor while casting,
-and the bar widget holds the matching Wayland idle inhibitor. Both are
-process-owned rather than persistent settings and disappear on normal Stop or
-forced owner death.
+applies a user-owned CPU weight to its complete supervised process tree, and
+the bar widget holds the matching Wayland idle inhibitor. No privileged process
+scheduling action exists. The process-owned inhibitor and service weight
+disappear on normal Stop or forced owner death.
 
 ## Runtime data boundaries
 

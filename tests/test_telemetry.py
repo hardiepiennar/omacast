@@ -37,6 +37,7 @@ class TelemetryTest(unittest.TestCase):
             environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
             session_id = "a" * 32
             paths = telemetry_paths(session_id, environment)
+            self.assertNotIn("qos", paths)
             payload = {"schemaVersion": 1, "sessionId": session_id, "health": {"status": "healthy"}}
             paths["current"].write_text(json.dumps(payload))
             paths["current"].chmod(0o600)

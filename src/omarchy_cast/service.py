@@ -14,6 +14,7 @@ class ServiceError(RuntimeError):
 
 UNIT_NAME = "omacast-session.service"
 INHIBIT_REASON = "Desktop casting is active"
+SESSION_CPU_WEIGHT = 10_000
 
 
 def session_service_command(
@@ -38,6 +39,7 @@ def session_service_command(
         "--property=Type=exec",
         "--property=KillMode=mixed",
         "--property=TimeoutStopSec=20s",
+        f"--property=CPUWeight={SESSION_CPU_WEIGHT}",
         "systemd-inhibit",
         "--what=idle:sleep",
         "--who=Omacast",

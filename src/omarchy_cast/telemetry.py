@@ -20,7 +20,7 @@ from .state import runtime_directory
 
 _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _NUMBER = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
-_LIVE_FILENAMES = frozenset({"current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log", "qos.pid"})
+_LIVE_FILENAMES = frozenset({"current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log"})
 
 
 def telemetry_paths(session_id: str, environ: Mapping[str, str] | None = None) -> dict[str, Path]:
@@ -38,7 +38,6 @@ def telemetry_paths(session_id: str, environ: Mapping[str, str] | None = None) -
         "packets": live / "mux-packets.csv",
         "latency": live / "engine.jsonl",
         "engineLog": live / "engine.log",
-        "qos": live / "qos.pid",
         "samples": archive / f"{session_id}.jsonl",
     }
 

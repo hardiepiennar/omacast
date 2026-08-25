@@ -232,6 +232,12 @@
       state reader before descriptor validation. State and current telemetry
       now open nonblocking, and a deadline-bounded subprocess test proves the
       FIFO is rejected as non-regular without hanging.
+- [ ] Follow-up review at `540f578` also found that the passwordless guard could
+      apply negative nice to a same-user process selected through a user-owned
+      PID file and spoofable identity labels. Version 0.1.1 removes that channel,
+      advances companion revision 38 to guard API 5, and applies CPU weight only
+      through the user-owned transient service. Complete exact-package and
+      receiver cadence acceptance before marking this item complete.
 - [x] Proposed marketplace metadata: category `Hardware`; tags `bar`, `media`,
       and `quickshell`. These match the closest current Hardware/media peers and
       describe the user-facing plugin more precisely than duplicating Hardware

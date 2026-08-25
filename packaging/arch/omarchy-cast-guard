@@ -4,11 +4,11 @@
 set -euo pipefail
 
 readonly schema_version=1 status_kind='omarchy-cast-guard-status'
-readonly api_revision=4 version_kind='omarchy-cast-guard-version'
+readonly api_revision=5 version_kind='omarchy-cast-guard-version'
 readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network' dbus_root='/etc/dbus-1/system.d'
 readonly wait_for_trigger_seconds=300
 readonly networkd_units=(systemd-networkd.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-networkd-varlink-metrics.socket systemd-networkd-resolve-hook.socket)
-action='' session_id='' uid='' interface='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' qos_file='' network_file='' policy_file='' networkd_state_file='' network_root_marker='' token='' nm_pid='' ufw_rule_added=false runtime_dirs_created=false
+action='' session_id='' uid='' interface='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' network_file='' policy_file='' networkd_state_file='' network_root_marker='' token='' nm_pid='' ufw_rule_added=false runtime_dirs_created=false
 
 die() { printf '%s\n' "$*" >&2; exit 2; }
 status() { local ok="$1" phase="$2" error="${3:-null}"; printf '{"schemaVersion":%s,"kind":"%s","ok":%s,"phase":"%s","sessionId":"%s","error":%s}\n' "$schema_version" "$status_kind" "$ok" "$phase" "$session_id" "$error"; }
@@ -28,7 +28,7 @@ parse_request() {
   valid_session "$session_id" || die 'invalid session identifier'; valid_uid "$uid" || die 'invalid user identifier'; valid_interface "$interface" || die 'invalid Wi-Fi interface'; valid_duration "$duration" || die 'invalid session duration'
   [[ "${PKEXEC_UID:-}" == "$uid" ]] || die 'requested user does not match the Polkit caller'
   getent passwd "$uid" >/dev/null || die 'requested user does not exist'
-  user_root="/run/user/$uid/omarchy-cast/$session_id"; session_root="$run_root/$session_id"; token_file="$session_root/token"; ready_file="$session_root/ready.json"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; qos_file="/run/user/$uid/omarchy-cast/telemetry/$session_id/qos.pid"; network_file="$network_root/80-omarchy-cast-$session_id.network"; policy_file="$dbus_root/zz-omarchy-cast-$session_id.conf"; networkd_state_file="$session_root/networkd-units"; network_root_marker="$session_root/network-root-created"
+  user_root="/run/user/$uid/omarchy-cast/$session_id"; session_root="$run_root/$session_id"; token_file="$session_root/token"; ready_file="$session_root/ready.json"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; network_file="$network_root/80-omarchy-cast-$session_id.network"; policy_file="$dbus_root/zz-omarchy-cast-$session_id.conf"; networkd_state_file="$session_root/networkd-units"; network_root_marker="$session_root/network-root-created"
 }
 verify_user_runtime() { [[ -d "/run/user/$uid" && "$(stat -c '%u:%a' "/run/user/$uid")" == "$uid:700" ]] || die 'user runtime directory is unavailable or unsafe'; }
 verify_interface() { [[ -d "/sys/class/net/$interface" ]] || die 'Wi-Fi interface is unavailable'; command -v iw >/dev/null || die 'iw is required'; [[ "$(iw dev "$interface" info 2>/dev/null | awk '$1 == "type" {print $2; exit}')" == managed ]] || die 'Wi-Fi interface is not a managed station'; }
@@ -75,33 +75,12 @@ write_runtime_files() {
   systemctl reload dbus.service
 }
 owns_session() { [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; }
-cleanup() { if ! owns_session; then [[ "$runtime_dirs_created" == true ]] && rmdir --ignore-fail-on-non-empty "$session_root" "$user_root" 2>/dev/null || true; return 0; fi; local remove_network_root=false; [[ -f "$network_root_marker" ]] && remove_network_root=true; kill -CONT "$nm_pid" 2>/dev/null || true; [[ "$ufw_rule_added" == true ]] && ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || true; rm -f -- "$network_file" "$policy_file" "$ready_file" "$trigger_file" "$heartbeat_file" "$stop_file" "$qos_file"; systemctl reload dbus.service 2>/dev/null || true; restore_networkd_state || true; rm -f -- "$networkd_state_file" "$network_root_marker" "$token_file"; rmdir --ignore-fail-on-non-empty "$session_root" "$user_root" 2>/dev/null || true; [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true; }
+cleanup() { if ! owns_session; then [[ "$runtime_dirs_created" == true ]] && rmdir --ignore-fail-on-non-empty "$session_root" "$user_root" 2>/dev/null || true; return 0; fi; local remove_network_root=false; [[ -f "$network_root_marker" ]] && remove_network_root=true; kill -CONT "$nm_pid" 2>/dev/null || true; [[ "$ufw_rule_added" == true ]] && ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || true; rm -f -- "$network_file" "$policy_file" "$ready_file" "$trigger_file" "$heartbeat_file" "$stop_file"; systemctl reload dbus.service 2>/dev/null || true; restore_networkd_state || true; rm -f -- "$networkd_state_file" "$network_root_marker" "$token_file"; rmdir --ignore-fail-on-non-empty "$session_root" "$user_root" 2>/dev/null || true; [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true; }
 lease_fresh() {
   [[ -f "$heartbeat_file" && ! -L "$heartbeat_file" && "$(stat -c '%u:%a' "$heartbeat_file" 2>/dev/null)" == "$uid:600" ]] || return 1
   local renewed
   renewed="$(<"$heartbeat_file")"
   [[ "$renewed" =~ ^[0-9]+$ ]] && (( EPOCHSECONDS >= renewed && EPOCHSECONDS - renewed <= duration ))
-}
-apply_media_qos() {
-  [[ -r "$qos_file" && "$(stat -c '%u:%a' "$qos_file" 2>/dev/null)" == "$uid:600" ]] || return 0
-  local root_pid process pid owner comm cmdline child
-  local -a pending
-  root_pid="$(<"$qos_file")"; [[ "$root_pid" =~ ^[1-9][0-9]*$ && -r "/proc/$root_pid/cmdline" ]] || return 0
-  owner="$(stat -c '%u' "/proc/$root_pid")"; [[ "$owner" == "$uid" ]] || return 0
-  cmdline="$(tr '\0' ' ' < "/proc/$root_pid/cmdline")"; [[ "$cmdline" == *fluxcast* ]] || return 0
-  pending=("$root_pid")
-  while (( ${#pending[@]} )); do
-    pid="${pending[0]}"; pending=("${pending[@]:1}")
-    [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/$pid/comm" ]] || continue
-    [[ "$(stat -c '%u' "/proc/$pid")" == "$uid" ]] || continue
-    comm="$(<"/proc/$pid/comm")"
-    case "$comm" in python|python3|fluxcast|gpu-screen-reco|gpu-screen-recorder|gsr-kms-server|ffmpeg) renice -n -15 -p "$pid" >/dev/null 2>&1 || true ;; esac
-    for process in /proc/"$pid"/task/*/children; do
-      if [[ -r "$process" ]]; then
-        for child in $(<"$process"); do pending+=("$child"); done
-      fi
-    done
-  done
 }
 arm_recovery() { local startup_seconds=$((wait_for_trigger_seconds + 60)); setsid /usr/lib/omarchy-cast/omarchy-cast-guard-recover "$startup_seconds" "$duration" "$session_id" "$token" "$uid" "$interface" "$nm_pid" </dev/null >/dev/null 2>&1 & }
 activate_network() { if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then ufw allow in on "p2p-$interface+" to any port 7236 proto tcp comment "omarchy-cast-$session_id" | grep -q 'Rule added' && ufw_rule_added=true; fi; kill -STOP "$nm_pid"; if systemctl is-active --quiet systemd-networkd.service; then systemctl reload systemd-networkd.service; else systemctl start systemd-networkd.service; fi; }
@@ -123,10 +102,9 @@ prepare() {
   lease_fresh || { json_error 'Omacast session lease was not established'; exit 1; }
   activate_network
   status true active null
-  local qos_next=$SECONDS lease_next=$SECONDS
+  local lease_next=$SECONDS
   while owns_session && [[ ! -e "$stop_file" ]]; do
     if (( SECONDS >= lease_next )); then lease_fresh || break; lease_next=$((SECONDS + 1)); fi
-    if (( SECONDS >= qos_next )); then apply_media_qos; qos_next=$((SECONDS + 1)); fi
     sleep 0.2
   done
 }
