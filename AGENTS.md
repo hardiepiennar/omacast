@@ -32,3 +32,7 @@ Rules for future work:
 - Keep marketplace and review comments terse and human: state the relevant
   change, exact commit, and requested action. Do not add test-result recitals,
   promotional detail, or release-summary prose unless the reviewer requires it.
+- After pushing marketplace review fixes, update the existing submission issue
+  body to name the full current remote HEAD while preserving its required
+  headings and checked checklist. Editing the issue reruns commit-bound
+  validation; posting a review comment alone does not.
