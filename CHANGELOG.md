@@ -5,6 +5,8 @@
 - Bound controller subprocess output, streaming QML collection, UI JSON
   responses, receiver/readiness/warning models, and runtime state/telemetry
   reads at their trust boundaries.
+- Open bounded runtime state and current telemetry nonblocking so a FIFO
+  replacement is rejected before it can stall descriptor validation.
 - Render wireless and controller-derived labels as plain text and normalize the
   small QML models before they enter the shell UI.
 - Promote the healthy-cast Nerd Mode view to a 16:9 marketplace preview while

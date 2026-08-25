@@ -228,6 +228,10 @@
       removed current runtime/telemetry, left Wi-Fi connected, and released the
       user service and media processes. No subjective motion/audio verdict was
       requested during this short smoke test.
+- [x] Follow-up review at `540f578` reproduced a FIFO replacement blocking the
+      state reader before descriptor validation. State and current telemetry
+      now open nonblocking, and a deadline-bounded subprocess test proves the
+      FIFO is rejected as non-regular without hanging.
 - [x] Proposed marketplace metadata: category `Hardware`; tags `bar`, `media`,
       and `quickshell`. These match the closest current Hardware/media peers and
       describe the user-facing plugin more precisely than duplicating Hardware

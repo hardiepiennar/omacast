@@ -37,7 +37,10 @@ def read_bounded_regular_file(
     require_private: bool = False,
 ) -> bytes:
     """Read a regular file through one descriptor, never beyond ``limit``."""
-    flags = os.O_RDONLY | os.O_CLOEXEC
+    # A FIFO opened read-only can wait forever before descriptor validation.
+    # Nonblocking mode is inert for regular files and lets us reject every
+    # other file type through fstat without first joining its I/O protocol.
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)
     try:

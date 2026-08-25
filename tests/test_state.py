@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -57,6 +60,32 @@ class StateTest(unittest.TestCase):
             path.chmod(0o600)
             with self.assertRaisesRegex(StateError, "exceeds"):
                 read_state(environment)
+
+    def test_runtime_state_refuses_fifo_without_blocking_on_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            path = state_path(environment)
+            path.parent.mkdir(mode=0o700)
+            os.mkfifo(path, mode=0o600)
+            probe = (
+                "import sys\n"
+                "from omarchy_cast.state import StateError, read_state\n"
+                "try:\n"
+                "    read_state({'XDG_RUNTIME_DIR': sys.argv[1]})\n"
+                "except StateError as error:\n"
+                "    print(error)\n"
+                "else:\n"
+                "    raise SystemExit('FIFO was accepted as runtime state')\n"
+            )
+            result = subprocess.run(
+                (sys.executable, "-c", probe, temp),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("not a regular file", result.stdout)
 
     def test_runtime_state_refuses_symlinks_and_excessive_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

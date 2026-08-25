@@ -1291,6 +1291,16 @@ scan diagnostics, control characters, and markup-like receiver names. No live
 receiver or network test is required because the accepted streaming and guard
 paths are unchanged.
 
+A follow-up review at exact public commit `540f578` identified that a FIFO
+could block the initial read-only `open()` before those descriptor checks ran.
+An isolated reproduction replaced `state.json` with a private FIFO and caused
+`omacast status` to wait until an external deadline. The shared state/current-
+telemetry reader now adds `O_NONBLOCK` before opening, then retains the existing
+same-descriptor regular-file, owner, mode, and size checks. A subprocess test
+with its own two-second ceiling verifies that a FIFO reaches the regular-file
+rejection rather than hanging the suite. This changes no networking, media, or
+privileged-helper behavior; the separate follow-up QoS finding remains open.
+
 The root marketplace preview was also changed from the compact idle panel to a
 16:9 presentation of the genuine receiver-backed Nerd Mode capture. Marketplace
 desktop cards use a fixed landscape area with `object-fit: cover`, so the prior

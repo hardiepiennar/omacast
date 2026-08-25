@@ -41,10 +41,12 @@ are normalized to small allowlisted models with explicit count and string
 limits before QML displays them.
 
 The runtime `state.json` file is limited to 65,536 bytes and the current
-telemetry snapshot to 262,144 bytes. Both are opened without following symlinks,
-checked through the same descriptor for regular-file ownership and private
-permissions, read only to their limit plus one byte, and checked for bounded
-JSON depth, fan-out, node count, and string length before use. Receiver and
+telemetry snapshot to 262,144 bytes. Both are opened nonblocking without
+following symlinks, checked through the same descriptor for regular-file
+ownership and private permissions, read only to their limit plus one byte, and
+checked for bounded JSON depth, fan-out, node count, and string length before
+use. Nonblocking open ensures a FIFO or other non-regular replacement reaches
+descriptor validation instead of stalling the controller. Receiver and
 controller-derived strings use plain-text rendering in the panel.
 
 ## Data and display exposure

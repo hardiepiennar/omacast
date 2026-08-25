@@ -145,6 +145,12 @@ smoothness, continuous internet access, and audio/video sync all matter.
   fixtures cover excess output, deep/oversized JSON, links, receiver floods,
   control characters, and markup-like labels without running P2P or changing
   networking.
+- Follow-up marketplace review at public commit `540f578` found that the
+  descriptor reader could still wait while opening a FIFO before its
+  regular-file checks ran. Runtime state and current telemetry now open with
+  `O_NONBLOCK` as well as no-follow semantics, so descriptor validation rejects
+  a pipe without joining it. A subprocess regression test has its own deadline
+  and proves that the public status path returns rather than hanging.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the
