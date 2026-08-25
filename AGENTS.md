@@ -36,3 +36,28 @@ Rules for future work:
   body to name the full current remote HEAD while preserving its required
   headings and checked checklist. Editing the issue reruns commit-bound
   validation; posting a review comment alone does not.
+
+Security review checklist:
+
+- Treat wireless metadata, subprocess output, controller JSON, runtime files,
+  and every predictable same-UID path as untrusted input.
+- Bound bytes before parsing or retaining them. Also cap JSON depth, nodes,
+  collection counts, and strings; project only allowlisted fields into QML and
+  render non-constant text with `Text.PlainText`.
+- For predictable runtime files, open with `O_NOFOLLOW`, `O_NONBLOCK`, and
+  `O_CLOEXEC`; anchor child opens to validated parent directory descriptors.
+  Use `fstat` on the opened descriptor to check type, owner, mode, size, and
+  link count as applicable, then read, lock, or apply permissions only through
+  that same descriptor. Never check a path and then reopen or `chmod` it.
+- Validate a file before truncating or writing it. Prefer private atomic
+  temporary files plus replacement for state, and reject symlinks, hard links,
+  FIFOs, sockets, devices, public modes, and unexpected owners.
+- Never let a privileged helper act on a user-owned PID or path, or trust
+  process names and command lines as authorization. Root actions must use a
+  fixed-purpose API and identity/ownership established by the privileged side.
+- When one boundary bug is found, audit its sibling read, write, status,
+  cleanup, and recovery paths plus every parent component before declaring the
+  fix complete.
+- Add adversarial regressions with deadlines. Prove oversized/deep/flooded
+  input is bounded, special files cannot block, replacement races cannot
+  redirect descriptors, and unrelated targets retain their content and mode.
