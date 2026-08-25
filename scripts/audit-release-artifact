@@ -102,6 +102,11 @@ for removed_surface in qos.pid qos_file apply_media_qos renice; do
   ! grep -Fq "$removed_surface" "$guard" || die "guard retains removed privileged QoS surface: $removed_surface"
   ! grep -Fq "$removed_surface" "$recovery" || die "recovery retains removed privileged QoS surface: $removed_surface"
 done
+for helper in "$guard" "$recovery"; do
+  grep -Fq 'stat -Lc '\''%F:%u:%a:%s'\'' "/proc/self/fd/$heartbeat_fd"' "$helper" || die "helper does not validate the pinned heartbeat descriptor"
+  grep -Fq 'read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd"' "$helper" || die "helper does not bound pinned heartbeat reads"
+  ! grep -Fq 'renewed="$(<"$heartbeat_file")"' "$helper" || die "helper reopens the user heartbeat by pathname"
+done
 
 site_packages="$(find "$audit_root/usr/lib" -type d -path '*/site-packages' -print -quit)"
 [[ -n "$site_packages" ]] || die "packaged Python modules are missing"

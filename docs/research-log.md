@@ -1379,3 +1379,21 @@ NetworkManager was active, and the managed Wi-Fi station had reconnected. This
 closes the cadence and lifecycle acceptance condition for replacing privileged
 negative nice with user-owned cgroup weighting; it does not close the separate
 cold-boot or forced-failure matrix.
+
+### Pre-push privileged lease audit (2026-08-25)
+
+Reviewing adjacent variants of the FIFO finding exposed a check/open race in
+the privileged lease path. The guard and recovery process first classified the
+predictable user-owned heartbeat as a private regular file, then reopened its
+path with a normal shell read. An induced same-UID replacement after the check
+but before the read changed the path to a FIFO and held the reader until an
+external timeout.
+
+Revision 39 opens the heartbeat once, verifies the type, owner, mode, and size
+on that exact descriptor, and pins the inode for the session. Each renewal read
+reopens only `/proc/self/fd/<verified-fd>`, consumes at most 32 characters, and
+has a short read timeout. The independent recovery process uses the same
+contract. Regression probes prove that a direct FIFO is rejected without
+blocking and that replacing the pathname after verification cannot redirect
+the pinned lease read. Exact-package and receiver lifecycle acceptance remain
+open for this new package payload.

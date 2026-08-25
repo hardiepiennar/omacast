@@ -10,8 +10,11 @@
 - Remove the user-supplied media PID channel and privileged `renice` action.
   The existing user-owned transient service now applies `CPUWeight=10000` to
   its own supervised cast process tree without crossing a root boundary.
-- Advance the companion package to revision 38 and guard API revision 5 so the
+- Advance the companion package to revision 39 and guard API revision 5 so the
   controller rejects installations that retain the old privileged QoS path.
+- Pin and validate the user-owned lease heartbeat through one bounded file
+  descriptor so a same-UID special-file swap cannot block the root guard or its
+  independent recovery process.
 - Render wireless and controller-derived labels as plain text and normalize the
   small QML models before they enter the shell UI.
 - Promote the healthy-cast Nerd Mode view to a 16:9 marketplace preview while

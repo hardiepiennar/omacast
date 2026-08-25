@@ -8,7 +8,7 @@ readonly api_revision=5 version_kind='omarchy-cast-guard-version'
 readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network' dbus_root='/etc/dbus-1/system.d'
 readonly wait_for_trigger_seconds=300
 readonly networkd_units=(systemd-networkd.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-networkd-varlink-metrics.socket systemd-networkd-resolve-hook.socket)
-action='' session_id='' uid='' interface='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' network_file='' policy_file='' networkd_state_file='' network_root_marker='' token='' nm_pid='' ufw_rule_added=false runtime_dirs_created=false
+action='' session_id='' uid='' interface='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' heartbeat_fd='' network_file='' policy_file='' networkd_state_file='' network_root_marker='' token='' nm_pid='' ufw_rule_added=false runtime_dirs_created=false
 
 die() { printf '%s\n' "$*" >&2; exit 2; }
 status() { local ok="$1" phase="$2" error="${3:-null}"; printf '{"schemaVersion":%s,"kind":"%s","ok":%s,"phase":"%s","sessionId":"%s","error":%s}\n' "$schema_version" "$status_kind" "$ok" "$phase" "$session_id" "$error"; }
@@ -76,10 +76,22 @@ write_runtime_files() {
 }
 owns_session() { [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; }
 cleanup() { if ! owns_session; then [[ "$runtime_dirs_created" == true ]] && rmdir --ignore-fail-on-non-empty "$session_root" "$user_root" 2>/dev/null || true; return 0; fi; local remove_network_root=false; [[ -f "$network_root_marker" ]] && remove_network_root=true; kill -CONT "$nm_pid" 2>/dev/null || true; [[ "$ufw_rule_added" == true ]] && ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || true; rm -f -- "$network_file" "$policy_file" "$ready_file" "$trigger_file" "$heartbeat_file" "$stop_file"; systemctl reload dbus.service 2>/dev/null || true; restore_networkd_state || true; rm -f -- "$networkd_state_file" "$network_root_marker" "$token_file"; rmdir --ignore-fail-on-non-empty "$session_root" "$user_root" 2>/dev/null || true; [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true; }
+open_heartbeat() {
+  local metadata kind owner mode size
+  [[ -e "$heartbeat_file" && ! -L "$heartbeat_file" ]] || return 1
+  exec {heartbeat_fd}<>"$heartbeat_file" 2>/dev/null || return 1
+  metadata="$(stat -Lc '%F:%u:%a:%s' "/proc/self/fd/$heartbeat_fd" 2>/dev/null)" || { exec {heartbeat_fd}>&-; heartbeat_fd=''; return 1; }
+  IFS=: read -r kind owner mode size <<< "$metadata"
+  if [[ "$kind" != 'regular file' || "$owner" != "$uid" || "$mode" != 600 || ! "$size" =~ ^[0-9]+$ ]] || (( size > 32 )); then
+    exec {heartbeat_fd}>&-
+    heartbeat_fd=''
+    return 1
+  fi
+}
 lease_fresh() {
-  [[ -f "$heartbeat_file" && ! -L "$heartbeat_file" && "$(stat -c '%u:%a' "$heartbeat_file" 2>/dev/null)" == "$uid:600" ]] || return 1
   local renewed
-  renewed="$(<"$heartbeat_file")"
+  [[ -n "$heartbeat_fd" ]] || open_heartbeat || return 1
+  IFS= read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd" || return 1
   [[ "$renewed" =~ ^[0-9]+$ ]] && (( EPOCHSECONDS >= renewed && EPOCHSECONDS - renewed <= duration ))
 }
 arm_recovery() { local startup_seconds=$((wait_for_trigger_seconds + 60)); setsid /usr/lib/omarchy-cast/omarchy-cast-guard-recover "$startup_seconds" "$duration" "$session_id" "$token" "$uid" "$interface" "$nm_pid" </dev/null >/dev/null 2>&1 & }

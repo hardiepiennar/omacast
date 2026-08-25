@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 import re
 import subprocess
+import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -34,6 +37,10 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn('p2p-$interface-*', source)
         self.assertIn('omarchy-cast-guard-recover', source)
         self.assertIn('heartbeat_file="$user_root/heartbeat"', source)
+        self.assertIn('heartbeat_fd=', source)
+        self.assertIn('stat -Lc \'%F:%u:%a:%s\' "/proc/self/fd/$heartbeat_fd"', source)
+        self.assertIn('read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd"', source)
+        self.assertNotIn('renewed="$(<"$heartbeat_file")"', source)
         self.assertIn('lease_fresh', source)
         self.assertNotIn('active_deadline', source)
         self.assertIn('prepare_network_runtime', source)
@@ -54,6 +61,10 @@ class PackagingGuardTest(unittest.TestCase):
         recovery_source = recovery.read_text(encoding="utf-8")
         self.assertIn('lease_seconds="$2"', recovery_source)
         self.assertIn('heartbeat_file="$user_root/heartbeat"', recovery_source)
+        self.assertIn('heartbeat_fd=', recovery_source)
+        self.assertIn('stat -Lc \'%F:%u:%a:%s\' "/proc/self/fd/$heartbeat_fd"', recovery_source)
+        self.assertIn('read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd"', recovery_source)
+        self.assertNotIn('renewed="$(<"$heartbeat_file")"', recovery_source)
         self.assertIn('networkd_state_file="$root/networkd-units"', recovery_source)
         self.assertIn('telemetry_root="/run/user/$uid/omarchy-cast/telemetry/$session"', recovery_source)
         for live_name in ("current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log"):
@@ -76,6 +87,51 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertIn(f"'{dependency}'", depends)
         for removed in ("gstreamer", "gst-plugin-pipewire", "gst-plugins-base-libs"):
             self.assertNotIn(f"'{removed}'", depends)
+
+    def test_guard_pins_the_verified_heartbeat_descriptor(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+heartbeat_file="$2"
+uid="$3"
+duration=60
+open_heartbeat
+unlink "$heartbeat_file"
+mkfifo -m 600 "$heartbeat_file"
+lease_fresh
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            heartbeat = Path(temp) / "heartbeat"
+            heartbeat.write_text(f"{int(time.time())}\n", encoding="ascii")
+            heartbeat.chmod(0o600)
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(heartbeat), str(os.getuid())),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_guard_rejects_a_fifo_heartbeat_without_blocking(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+heartbeat_file="$2"
+uid="$3"
+if open_heartbeat; then exit 3; fi
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            heartbeat = Path(temp) / "heartbeat"
+            os.mkfifo(heartbeat, mode=0o600)
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(heartbeat), str(os.getuid())),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_polkit_action_is_exact_and_active_local_only(self) -> None:
         policy = ET.parse(ROOT / "packaging" / "arch" / "com.omacast.guard.policy").getroot()
@@ -124,6 +180,9 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("omacast-artifact-audit.", audit)
         self.assertIn("omarchy-cast-guard-version", audit)
         self.assertIn("apiRevision", audit)
+        self.assertIn("pinned heartbeat descriptor", audit)
+        self.assertIn("bound pinned heartbeat reads", audit)
+        self.assertIn("reopens the user heartbeat by pathname", audit)
         self.assertIn("com.omacast.guard.policy", audit)
         self.assertIn("allow_active", audit)
         self.assertNotIn("--wfd-gsr-handoff", audit)

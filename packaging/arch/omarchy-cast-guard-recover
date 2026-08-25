@@ -4,12 +4,29 @@ set -euo pipefail
 [[ ${EUID} -eq 0 && $# -eq 7 ]] || exit 2
 startup_seconds="$1"; lease_seconds="$2"; session="$3"; token="$4"; uid="$5"; interface="$6"; nm_pid="$7"
 [[ "$startup_seconds" =~ ^[0-9]+$ && "$lease_seconds" =~ ^[0-9]+$ && "$lease_seconds" -ge 60 && "$lease_seconds" -le 1800 && "$session" =~ ^[a-f0-9]{32}$ && "$token" =~ ^[a-f0-9]{48}$ && "$uid" =~ ^[1-9][0-9]{3,9}$ && "$interface" =~ ^[A-Za-z0-9_.-]{1,15}$ && "$nm_pid" =~ ^[0-9]+$ ]] || exit 2
-root="/run/omarchy-cast/$session"; user_root="/run/user/$uid/omarchy-cast/$session"; telemetry_root="/run/user/$uid/omarchy-cast/telemetry/$session"; token_file="$root/token"; heartbeat_file="$user_root/heartbeat"; network_root='/run/systemd/network'; networkd_state_file="$root/networkd-units"; network_root_marker="$root/network-root-created"
+root="/run/omarchy-cast/$session"; user_root="/run/user/$uid/omarchy-cast/$session"; telemetry_root="/run/user/$uid/omarchy-cast/telemetry/$session"; token_file="$root/token"; heartbeat_file="$user_root/heartbeat"; heartbeat_fd=''; network_root='/run/systemd/network'; networkd_state_file="$root/networkd-units"; network_root_marker="$root/network-root-created"
+open_heartbeat() {
+  local metadata kind owner mode size
+  [[ -e "$heartbeat_file" && ! -L "$heartbeat_file" ]] || return 1
+  exec {heartbeat_fd}<>"$heartbeat_file" 2>/dev/null || return 1
+  metadata="$(stat -Lc '%F:%u:%a:%s' "/proc/self/fd/$heartbeat_fd" 2>/dev/null)" || { exec {heartbeat_fd}>&-; heartbeat_fd=''; return 1; }
+  IFS=: read -r kind owner mode size <<< "$metadata"
+  if [[ "$kind" != 'regular file' || "$owner" != "$uid" || "$mode" != 600 || ! "$size" =~ ^[0-9]+$ ]] || (( size > 32 )); then
+    exec {heartbeat_fd}>&-
+    heartbeat_fd=''
+    return 1
+  fi
+}
+lease_fresh() {
+  local renewed
+  [[ -n "$heartbeat_fd" ]] || open_heartbeat || return 1
+  IFS= read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd" || return 1
+  [[ "$renewed" =~ ^[0-9]+$ ]] && (( EPOCHSECONDS >= renewed && EPOCHSECONDS - renewed <= lease_seconds ))
+}
 started="$EPOCHSECONDS"
 while [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; do
-  if [[ -f "$heartbeat_file" && ! -L "$heartbeat_file" && "$(stat -c '%u:%a' "$heartbeat_file" 2>/dev/null)" == "$uid:600" ]]; then
-    renewed="$(<"$heartbeat_file")"
-    if [[ ! "$renewed" =~ ^[0-9]+$ ]] || (( EPOCHSECONDS < renewed || EPOCHSECONDS - renewed > lease_seconds )); then break; fi
+  if [[ -n "$heartbeat_fd" ]] || open_heartbeat; then
+    lease_fresh || break
   elif (( EPOCHSECONDS - started > startup_seconds )); then
     break
   fi

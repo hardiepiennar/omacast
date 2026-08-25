@@ -232,16 +232,14 @@
       state reader before descriptor validation. State and current telemetry
       now open nonblocking, and a deadline-bounded subprocess test proves the
       FIFO is rejected as non-regular without hanging.
-- [x] Follow-up review at `540f578` also found that the passwordless guard could
+- [ ] Follow-up review at `540f578` also found that the passwordless guard could
       apply negative nice to a same-user process selected through a user-owned
       PID file and spoofable identity labels. Version 0.1.1 removes that channel,
-      advances companion revision 38 to guard API 5, and applies CPU weight only
-      through the user-owned transient service. The exact revision-38 package
-      passed build, audit, install, upgrade, and integrity checks. A normal
-      panel launch then confirmed guard API 5, `CPUWeight=10000`, absence of
-      `qos.pid`, healthy 720p60 cadence with zero drops/duplicates or transport
-      errors, subjective motion/audio acceptance, and cooperative cleanup with
-      normal Wi-Fi restored.
+      advances companion revision 39 to guard API 5, applies CPU weight only
+      through the user-owned transient service, and pins bounded heartbeat reads
+      to one verified descriptor. Revision 38 passed package and receiver
+      acceptance before the adjacent heartbeat race was found. Complete the
+      exact revision-39 package and receiver lifecycle before closing this item.
 - [x] Proposed marketplace metadata: category `Hardware`; tags `bar`, `media`,
       and `quickshell`. These match the closest current Hardware/media peers and
       describe the user-facing plugin more precisely than duplicating Hardware
