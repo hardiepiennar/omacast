@@ -118,3 +118,81 @@ class StateTest(unittest.TestCase):
             second.acquire()
             self.assertTrue(second.acquired)
             second.release()
+
+    def test_session_lock_rejects_symlinks_without_changing_the_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            directory = Path(temp) / "omarchy-cast"
+            directory.mkdir(mode=0o700)
+            target = Path(temp) / "unrelated-user-file"
+            target.write_text("preserve", encoding="utf-8")
+            target.chmod(0o644)
+            (directory / "session.lock").symlink_to(target)
+
+            with self.assertRaisesRegex(StateError, "unavailable or unsafe"):
+                SessionLock(environment).acquire()
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(session_lock_is_held(environment))
+
+    def test_session_lock_rejects_a_symlinked_runtime_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            target_directory = Path(temp) / "unrelated-directory"
+            target_directory.mkdir(mode=0o700)
+            target = target_directory / "session.lock"
+            target.write_text("preserve", encoding="utf-8")
+            target.chmod(0o644)
+            (Path(temp) / "omarchy-cast").symlink_to(target_directory, target_is_directory=True)
+
+            with self.assertRaisesRegex(StateError, "directory is unavailable or unsafe"):
+                SessionLock(environment).acquire()
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(session_lock_is_held(environment))
+
+    def test_session_lock_rejects_fifo_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / "omarchy-cast"
+            directory.mkdir(mode=0o700)
+            os.mkfifo(directory / "session.lock", mode=0o600)
+            probe = (
+                "import sys\n"
+                "from omarchy_cast.state import SessionLock, StateError, session_lock_is_held\n"
+                "environment = {'XDG_RUNTIME_DIR': sys.argv[1]}\n"
+                "try:\n"
+                "    SessionLock(environment).acquire()\n"
+                "except StateError as error:\n"
+                "    print(error)\n"
+                "else:\n"
+                "    raise SystemExit('FIFO was accepted as the session lock')\n"
+                "assert not session_lock_is_held(environment)\n"
+            )
+            result = subprocess.run(
+                (sys.executable, "-c", probe, temp),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("not a regular file", result.stdout)
+
+    def test_session_lock_rejects_hardlinks_without_changing_the_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            directory = Path(temp) / "omarchy-cast"
+            directory.mkdir(mode=0o700)
+            target = Path(temp) / "unrelated-user-file"
+            target.write_text("preserve", encoding="utf-8")
+            target.chmod(0o644)
+            os.link(target, directory / "session.lock")
+
+            with self.assertRaisesRegex(StateError, "unsafe link count"):
+                SessionLock(environment).acquire()
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(session_lock_is_held(environment))

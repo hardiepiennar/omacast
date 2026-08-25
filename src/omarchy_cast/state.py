@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 from typing import Any, Mapping
 
@@ -33,44 +34,119 @@ class StateError(ValueError):
     pass
 
 
+def _open_session_runtime_descriptor(environ: Mapping[str, str] | None, *, create: bool) -> int:
+    """Open the private runtime directory without following either component."""
+    environ = os.environ if environ is None else environ
+    runtime = environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        raise StateError("XDG_RUNTIME_DIR is required for cast session state")
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    if create:
+        try:
+            Path(runtime).mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise StateError("session runtime directory is unavailable or unsafe") from exc
+    try:
+        runtime_descriptor = os.open(runtime, flags)
+    except OSError as exc:
+        raise StateError("session runtime directory is unavailable or unsafe") from exc
+    try:
+        metadata = os.fstat(runtime_descriptor)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+            raise StateError("session runtime parent is unsafe")
+        if create:
+            try:
+                os.mkdir("omarchy-cast", mode=0o700, dir_fd=runtime_descriptor)
+            except FileExistsError:
+                pass
+        try:
+            directory_descriptor = os.open("omarchy-cast", flags, dir_fd=runtime_descriptor)
+        except OSError as exc:
+            raise StateError("session runtime directory is unavailable or unsafe") from exc
+    finally:
+        os.close(runtime_descriptor)
+    try:
+        metadata = os.fstat(directory_descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise StateError("session runtime path is not a directory")
+        if metadata.st_uid != os.getuid():
+            raise StateError("session runtime directory is not owned by the current user")
+        if stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise StateError("session runtime directory permissions are unsafe")
+        return directory_descriptor
+    except Exception:
+        os.close(directory_descriptor)
+        raise
+
+
+def _open_session_lock_descriptor(directory_descriptor: int, *, create: bool) -> int:
+    """Open and validate the lock inode without following its pathname."""
+    flags = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    if create:
+        flags |= os.O_CREAT
+    try:
+        descriptor = os.open("session.lock", flags, 0o600, dir_fd=directory_descriptor)
+    except OSError as exc:
+        raise StateError("session lock is unavailable or unsafe") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise StateError("session lock is not a regular file")
+        if metadata.st_uid != os.getuid():
+            raise StateError("session lock is not owned by the current user")
+        if metadata.st_nlink != 1:
+            raise StateError("session lock has an unsafe link count")
+        if create:
+            os.fchmod(descriptor, 0o600)
+            metadata = os.fstat(descriptor)
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise StateError("session lock permissions are unsafe")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
 class SessionLock:
     """An advisory, non-blocking per-user lock for the session supervisor."""
 
     def __init__(self, environ: Mapping[str, str] | None = None) -> None:
         self._environ = environ
-        self._handle: object | None = None
+        self._descriptor: int | None = None
 
     @property
     def acquired(self) -> bool:
-        return self._handle is not None
+        return self._descriptor is not None
 
     def acquire(self) -> None:
-        if self._handle is not None:
+        if self._descriptor is not None:
             raise StateError("session lock is already held by this controller")
-        directory = runtime_directory(self._environ)
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        lock_path = directory / "session.lock"
-        handle = lock_path.open("a+", encoding="utf-8")
+        directory_descriptor = _open_session_runtime_descriptor(self._environ, create=True)
         try:
-            os.chmod(lock_path, 0o600)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            descriptor = _open_session_lock_descriptor(directory_descriptor, create=True)
+        finally:
+            os.close(directory_descriptor)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            handle.close()
+            os.close(descriptor)
             raise StateError("another omarchy-cast session is already active") from exc
         except Exception:
-            handle.close()
+            os.close(descriptor)
             raise
-        self._handle = handle
+        self._descriptor = descriptor
 
     def release(self) -> None:
-        if self._handle is None:
+        if self._descriptor is None:
             return
-        handle = self._handle
-        self._handle = None
+        descriptor = self._descriptor
+        self._descriptor = None
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
-            handle.close()
+            os.close(descriptor)
 
     def __enter__(self) -> "SessionLock":
         self.acquire()
@@ -82,21 +158,24 @@ class SessionLock:
 
 def session_lock_is_held(environ: Mapping[str, str] | None = None) -> bool:
     """Report whether a live supervisor owns the lock without taking it."""
-    directory = runtime_directory(environ)
-    lock_path = directory / "session.lock"
-    if not lock_path.is_file():
+    try:
+        directory_descriptor = _open_session_runtime_descriptor(environ, create=False)
+        try:
+            descriptor = _open_session_lock_descriptor(directory_descriptor, create=False)
+        finally:
+            os.close(directory_descriptor)
+    except (OSError, StateError):
         return False
     try:
-        with lock_path.open("r", encoding="utf-8") as handle:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return True
-            else:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                return False
-    except OSError:
-        return False
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        else:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            return False
+    finally:
+        os.close(descriptor)
 
 
 def runtime_directory(environ: Mapping[str, str] | None = None) -> Path:

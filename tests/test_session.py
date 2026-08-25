@@ -28,7 +28,9 @@ class SessionTest(unittest.TestCase):
             self.assertEqual(len(list(telemetry.glob("*.jsonl"))), MAX_SESSION_LOGS)
 
     def environment(self, root: str) -> dict[str, str]:
-        return {"XDG_RUNTIME_DIR": str(Path(root) / "runtime"), "XDG_STATE_HOME": str(Path(root) / "state")}
+        runtime = Path(root) / "runtime"
+        runtime.mkdir(mode=0o700)
+        return {"XDG_RUNTIME_DIR": str(runtime), "XDG_STATE_HOME": str(Path(root) / "state")}
 
     def test_request_validation_rejects_unsafe_peer(self) -> None:
         with self.assertRaises(SessionError):

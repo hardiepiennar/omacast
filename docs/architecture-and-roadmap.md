@@ -174,6 +174,12 @@ smoothness, continuous internet access, and audio/video sync all matter.
   P2P-client interface, transient service, helper/media processes, session
   runtime children, and temporary network/DBus files while restoring the
   connected infrastructure Wi-Fi and original network-service state.
+  A subsequent marketplace follow-up found that the unprivileged
+  `session.lock` still used a path-following open and pathname `chmod`. The
+  lock and its read-only ownership probe now open through validated runtime
+  directory descriptors with no-follow/nonblocking flags, validate the lock
+  inode's type, owner, and link count with `fstat`, and apply its mode only with
+  `fchmod` on that descriptor.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the

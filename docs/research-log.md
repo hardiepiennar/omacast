@@ -1473,3 +1473,25 @@ session residue.
 This closes revision 41's normal receiver-backed cleanup acceptance. Forced
 helper death, cold-boot behavior, other adapters/receivers, and longer soak
 coverage remain separate open acceptance work.
+
+### Marketplace session-lock follow-up (2026-08-26)
+
+Review of exact commit `74e9937f2490c496f6a9635cdb0696b504ccf581`
+found that `SessionLock.acquire()` opened predictable `session.lock` with
+path-following `open("a+")` and then applied `chmod` to the pathname. A local
+reproduction pre-placed a symlink and confirmed that acquisition changed an
+unrelated user file from 0644 to 0600 while locking the wrong inode.
+
+The focused remediation opens the private runtime directory and lock relative
+to validated descriptors. Both path components use no-follow semantics; the
+lock also uses nonblocking mode so a FIFO cannot stall before classification.
+The exact lock descriptor must identify a regular, current-user-owned inode
+with one link before permissions are applied through `fchmod` and `flock` is
+taken on that same descriptor. The adjacent `session_lock_is_held()` probe uses
+the same anchored validation without creating or repairing an unsafe path.
+
+Regression tests reject lock symlinks, a symlinked runtime directory, FIFOs,
+and hard links without blocking or changing their targets. Existing
+single-owner, Stop, recovery, dry-run, simulation, and fake-transport behavior
+continues to pass. This changes no privileged helper, networking, media, or
+receiver path and therefore does not require a new Fire TV acceptance run.
