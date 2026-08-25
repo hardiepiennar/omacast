@@ -1356,3 +1356,26 @@ requires no privilege. Offline systemd probing confirmed that the user manager
 accepts this property and has the CPU controller. Because cgroup weight is not
 identical to negative nice, receiver cadence remains a final acceptance test
 before publishing version 0.1.1.
+
+### Revision 38 receiver acceptance (2026-08-25)
+
+The audited revision-38 companion upgraded the live host from revision 37 with
+all 195 package files intact and guard API 5 available at the immutable helper
+path. The installed plugin was then fast-forwarded to the matching 0.1.1
+controller, passed Omarchy validation, and reported the complete casting path
+ready. The initial compatibility warning was valid: the previously installed
+0.1.0 controller still expected guard API 4 and was not used for acceptance.
+
+A normal panel launch negotiated 1280x720p60 and entered healthy streaming. The
+live transient user service reported `CPUWeight=10000`; the current telemetry
+directory contained no `qos.pid`. Consecutive samples held approximately 60
+fps and realtime speed with zero dropped or duplicated frames, an empty send
+queue, zero transport drops/errors, and no radio retry or failure deltas. The
+user accepted both picture and audio quality.
+
+Keyboard Stop returned the controller to idle. The transient service and media
+processes exited, the current session's user and root runtime paths were gone,
+NetworkManager was active, and the managed Wi-Fi station had reconnected. This
+closes the cadence and lifecycle acceptance condition for replacing privileged
+negative nice with user-owned cgroup weighting; it does not close the separate
+cold-boot or forced-failure matrix.

@@ -156,7 +156,9 @@ smoothness, continuous internet access, and audio/video sync all matter.
   Guard API 5 removes the PID file, process traversal, and privileged `renice`
   surface. The existing user transient service applies `CPUWeight=10000` to its
   own supervised cast cgroup instead; companion revision 38 carries the new
-  immutable helper contract.
+  immutable helper contract. Receiver acceptance on 2026-08-25 confirmed the
+  property on the live service, no PID channel, stable 720p60 playback, and
+  complete owned cleanup without a privileged scheduling action.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the
