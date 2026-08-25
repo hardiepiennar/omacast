@@ -112,8 +112,8 @@ class ManifestTest(unittest.TestCase):
     def test_marketplace_root_has_preview_license_and_removal_instructions(self) -> None:
         self.assertTrue((REPO_ROOT / "LICENSE").is_file())
         security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
-        self.assertIn("/run/user/$UID", security)
-        self.assertIn("accepts no process identifier or scheduling\nrequest from the unprivileged session", security)
+        self.assertIn("root-owned session directory", security)
+        self.assertIn("accepts no process identifier,\nscheduling request, path, or privileged Stop action", security)
         self.assertIn("No privileged process\nscheduling action exists", security)
         preview = (REPO_ROOT / "preview.png").read_bytes()
         self.assertTrue(preview.startswith(b"\x89PNG\r\n\x1a\n"))

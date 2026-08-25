@@ -153,15 +153,16 @@ smoothness, continuous internet access, and audio/video sync all matter.
   and proves that the public status path returns rather than hanging.
 - The same follow-up found that the root guard accepted a user-owned media PID
   and applied negative nice after checking user-spoofable process attributes.
-  Guard API 5 removes the PID file, process traversal, and privileged `renice`
+  Guard API 5 removed the PID file, process traversal, and privileged `renice`
   surface. The existing user transient service applies `CPUWeight=10000` to its
-  own supervised cast cgroup instead; companion revision 39 carries the new
-  immutable helper contract. Receiver acceptance on 2026-08-25 confirmed the
+  own supervised cast cgroup instead. Receiver acceptance on 2026-08-25 confirmed the
   property on the live service, no PID channel, stable 720p60 playback, and
   complete owned cleanup without a privileged scheduling action.
-  Revision 39 additionally pins the verified user heartbeat inode and performs
+  Revision 40 / guard API 6 additionally pins the verified user heartbeat inode and performs
   bounded reads through that descriptor, closing the adjacent special-file
-  replacement race in both the guard and independent recovery process.
+  replacement race in both the guard and independent recovery process. Its
+  user-writable markers live below a root-owned session parent, eliminating the
+  directory-symlink race, and the unused privileged Stop verb is removed.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the

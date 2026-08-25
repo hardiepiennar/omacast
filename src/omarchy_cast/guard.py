@@ -58,13 +58,6 @@ def prepare_command(request: GuardRequest, *, helper_path: str = HELPER_PATH) ->
     )
 
 
-def stop_command(request: GuardRequest, *, helper_path: str = HELPER_PATH) -> tuple[str, ...]:
-    """Build the matching fixed stop request for an already-approved session."""
-    command = list(prepare_command(request, helper_path=helper_path))
-    command[1] = "stop"
-    return tuple(command)
-
-
 def validate_helper_result(payload: object) -> dict[str, object]:
     """Accept only the narrow status document returned by the helper."""
     if not isinstance(payload, dict) or payload.get("schemaVersion") != 1:
@@ -79,6 +72,7 @@ def validate_helper_result(payload: object) -> dict[str, object]:
     if session_id is not None and (not isinstance(session_id, str) or not _SESSION_ID.fullmatch(session_id)):
         raise GuardError("guard status has an invalid session id")
     trigger = payload.get("triggerPath")
-    if trigger is not None and (not isinstance(trigger, str) or not trigger.startswith("/run/user/")):
+    expected_trigger = f"/run/omarchy-cast/{payload.get('sessionId')}/user/trigger"
+    if trigger is not None and (not isinstance(trigger, str) or trigger != expected_trigger):
         raise GuardError("guard status has an invalid trigger path")
     return dict(payload)

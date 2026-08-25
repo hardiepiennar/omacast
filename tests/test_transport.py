@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import unittest
 from pathlib import Path
 import tempfile
@@ -107,10 +108,26 @@ class TransportTest(unittest.TestCase):
     def test_guard_stop_uses_the_unprivileged_session_marker(self) -> None:
         from omarchy_cast.guard import GuardRequest
         adapter = GuardedTransportAdapter(GuardRequest(1, "a" * 32, 1000, "wlan42", 60))
-        with patch("omarchy_cast.transport.os.open", return_value=42) as open_marker, patch("omarchy_cast.transport.os.close") as close_marker:
+        with patch.object(adapter, "_write_private_marker", return_value=True) as write_marker:
             adapter._stop_guard()
-        self.assertEqual(open_marker.call_args.args[0], "/run/user/1000/omarchy-cast/" + "a" * 32 + "/stop")
-        close_marker.assert_called_once_with(42)
+        write_marker.assert_called_once_with("/run/omarchy-cast/" + "a" * 32 + "/user/stop")
+
+    def test_stop_marker_rejects_fifo_and_hardlink_without_blocking_or_truncating(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "stop"
+            os.mkfifo(marker, mode=0o600)
+            self.assertFalse(GuardedTransportAdapter._write_private_marker(str(marker)))
+            marker.unlink()
+            target = root / "target"
+            target.write_text("preserve", encoding="utf-8")
+            target.chmod(0o600)
+            os.link(target, marker)
+            self.assertFalse(GuardedTransportAdapter._write_private_marker(str(marker)))
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+            marker.unlink()
+            self.assertTrue(GuardedTransportAdapter._write_private_marker(str(marker)))
+            self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
 
     def test_authorization_wait_observes_stop_without_touching_the_guard(self) -> None:
         from omarchy_cast.guard import GuardRequest

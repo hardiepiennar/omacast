@@ -4,7 +4,7 @@
 set -euo pipefail
 
 readonly schema_version=1 status_kind='omarchy-cast-guard-status'
-readonly api_revision=5 version_kind='omarchy-cast-guard-version'
+readonly api_revision=6 version_kind='omarchy-cast-guard-version'
 readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network' dbus_root='/etc/dbus-1/system.d'
 readonly wait_for_trigger_seconds=300
 readonly networkd_units=(systemd-networkd.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-networkd-varlink-metrics.socket systemd-networkd-resolve-hook.socket)
@@ -17,18 +17,18 @@ valid_session() { [[ "$1" =~ ^[a-f0-9]{32}$ ]]; }
 valid_uid() { [[ "$1" =~ ^[1-9][0-9]{3,9}$ ]] && (( $1 <= 2147483647 )); }
 valid_interface() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; }
 valid_duration() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 60 && $1 <= 1800 )); }
-usage() { die 'Usage: omarchy-cast-guard prepare|stop --schema-version 1 --session <32-hex> --uid <uid> --interface <ifname> --duration <60-1800>'; }
+usage() { die 'Usage: omarchy-cast-guard prepare --schema-version 1 --session <32-hex> --uid <uid> --interface <ifname> --duration <60-1800>'; }
 
 parse_request() {
   [[ ${EUID} -eq 0 ]] || die 'administrator approval is required'
   action="${1:-}"; shift || true
-  [[ "$action" == prepare || "$action" == stop ]] || usage
+  [[ "$action" == prepare ]] || usage
   [[ $# -eq 10 && "$1" == --schema-version && "$2" == 1 && "$3" == --session && "$5" == --uid && "$7" == --interface && "$9" == --duration ]] || usage
   session_id="$4"; uid="$6"; interface="$8"; duration="${10}"
   valid_session "$session_id" || die 'invalid session identifier'; valid_uid "$uid" || die 'invalid user identifier'; valid_interface "$interface" || die 'invalid Wi-Fi interface'; valid_duration "$duration" || die 'invalid session duration'
   [[ "${PKEXEC_UID:-}" == "$uid" ]] || die 'requested user does not match the Polkit caller'
   getent passwd "$uid" >/dev/null || die 'requested user does not exist'
-  user_root="/run/user/$uid/omarchy-cast/$session_id"; session_root="$run_root/$session_id"; token_file="$session_root/token"; ready_file="$session_root/ready.json"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; network_file="$network_root/80-omarchy-cast-$session_id.network"; policy_file="$dbus_root/zz-omarchy-cast-$session_id.conf"; networkd_state_file="$session_root/networkd-units"; network_root_marker="$session_root/network-root-created"
+  session_root="$run_root/$session_id"; user_root="$session_root/user"; token_file="$session_root/token"; ready_file="$session_root/ready.json"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; network_file="$network_root/80-omarchy-cast-$session_id.network"; policy_file="$dbus_root/zz-omarchy-cast-$session_id.conf"; networkd_state_file="$session_root/networkd-units"; network_root_marker="$session_root/network-root-created"
 }
 verify_user_runtime() { [[ -d "/run/user/$uid" && "$(stat -c '%u:%a' "/run/user/$uid")" == "$uid:700" ]] || die 'user runtime directory is unavailable or unsafe'; }
 verify_interface() { [[ -d "/sys/class/net/$interface" ]] || die 'Wi-Fi interface is unavailable'; command -v iw >/dev/null || die 'iw is required'; [[ "$(iw dev "$interface" info 2>/dev/null | awk '$1 == "type" {print $2; exit}')" == managed ]] || die 'Wi-Fi interface is not a managed station'; }
@@ -64,10 +64,13 @@ restore_networkd_state() {
 write_runtime_files() {
   local user_name user_group
   user_name="$(getent passwd "$uid" | cut -d: -f1)"; user_group="$(id -g "$user_name")"
-  [[ ! -e "$session_root" && ! -e "$user_root" ]] || die 'a conflicting cast session already owns this resource'
+  [[ ! -e "$session_root" ]] || die 'a conflicting cast session already owns this resource'
   [[ ! -e "$network_file" && ! -e "$policy_file" ]] || die 'a conflicting cast session already owns this resource'
-  install -d -m700 "$session_root"; install -d -m700 -o "$uid" -g "$user_group" "$user_root"
+  install -d -m711 "$session_root"
   runtime_dirs_created=true
+  install -d -m700 -o "$uid" -g "$user_group" "$user_root"
+  [[ ! -L "$session_root" && "$(stat -c '%u:%g:%a' "$session_root")" == '0:0:711' ]] || die 'root session directory is unsafe'
+  [[ ! -L "$user_root" && "$(stat -c '%u:%a' "$user_root")" == "$uid:700" ]] || die 'user marker directory is unsafe'
   umask 077; token="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"; printf '%s\n' "$token" > "$token_file"; chmod 600 "$token_file"
   prepare_network_runtime
   printf '%s\n' '[Match]' "Name=p2p-$interface-*" '' '[Network]' 'DHCP=ipv4' 'IPv6AcceptRA=no' 'LinkLocalAddressing=ipv6' '' '[DHCPv4]' 'UseDNS=no' 'UseDomains=no' 'UseRoutes=yes' 'RouteMetric=2048' > "$network_file"; chmod 644 "$network_file"
@@ -75,7 +78,7 @@ write_runtime_files() {
   systemctl reload dbus.service
 }
 owns_session() { [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; }
-cleanup() { if ! owns_session; then [[ "$runtime_dirs_created" == true ]] && rmdir --ignore-fail-on-non-empty "$session_root" "$user_root" 2>/dev/null || true; return 0; fi; local remove_network_root=false; [[ -f "$network_root_marker" ]] && remove_network_root=true; kill -CONT "$nm_pid" 2>/dev/null || true; [[ "$ufw_rule_added" == true ]] && ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || true; rm -f -- "$network_file" "$policy_file" "$ready_file" "$trigger_file" "$heartbeat_file" "$stop_file"; systemctl reload dbus.service 2>/dev/null || true; restore_networkd_state || true; rm -f -- "$networkd_state_file" "$network_root_marker" "$token_file"; rmdir --ignore-fail-on-non-empty "$session_root" "$user_root" 2>/dev/null || true; [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true; }
+cleanup() { if ! owns_session; then [[ "$runtime_dirs_created" == true ]] && rmdir --ignore-fail-on-non-empty "$user_root" "$session_root" 2>/dev/null || true; return 0; fi; local remove_network_root=false; [[ -f "$network_root_marker" ]] && remove_network_root=true; kill -CONT "$nm_pid" 2>/dev/null || true; [[ "$ufw_rule_added" == true ]] && ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || true; rm -f -- "$network_file" "$policy_file" "$ready_file" "$trigger_file" "$heartbeat_file" "$stop_file"; systemctl reload dbus.service 2>/dev/null || true; restore_networkd_state || true; rm -f -- "$networkd_state_file" "$network_root_marker" "$token_file"; rmdir --ignore-fail-on-non-empty "$user_root" "$session_root" 2>/dev/null || true; [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true; }
 open_heartbeat() {
   local metadata kind owner mode size
   [[ -e "$heartbeat_file" && ! -L "$heartbeat_file" ]] || return 1
@@ -120,12 +123,10 @@ prepare() {
     sleep 0.2
   done
 }
-stop() { verify_user_runtime; [[ -d "$user_root" && -d "$session_root" && -r "$token_file" ]] || { json_error 'no matching active cast session'; return 1; }; [[ "$(stat -c '%u:%a' "$user_root")" == "$uid:700" ]] || { json_error 'active session ownership is unsafe'; return 1; }; install -m600 /dev/null "$stop_file"; status true stopping null; }
-
 if [[ $# -eq 1 && "$1" == --version ]]; then
   printf '{"schemaVersion":%s,"kind":"%s","apiRevision":%s}\n' "$schema_version" "$version_kind" "$api_revision"
   exit 0
 fi
 
 parse_request "$@"
-if [[ "$action" == prepare ]]; then prepare; else stop; fi
+prepare

@@ -235,11 +235,13 @@
 - [ ] Follow-up review at `540f578` also found that the passwordless guard could
       apply negative nice to a same-user process selected through a user-owned
       PID file and spoofable identity labels. Version 0.1.1 removes that channel,
-      advances companion revision 39 to guard API 5, applies CPU weight only
+      advances companion revision 40 to guard API 6, applies CPU weight only
       through the user-owned transient service, and pins bounded heartbeat reads
-      to one verified descriptor. Revision 38 passed package and receiver
-      acceptance before the adjacent heartbeat race was found. Complete the
-      exact revision-39 package and receiver lifecycle before closing this item.
+      to one verified descriptor. User markers are anchored below a root-owned
+      parent and the unused privileged Stop verb is gone. Revision 38 passed
+      package and receiver acceptance before the adjacent races were found.
+      Complete the exact revision-40 package and receiver lifecycle before
+      closing this item.
 - [x] Proposed marketplace metadata: category `Hardware`; tags `bar`, `media`,
       and `quickshell`. These match the closest current Hardware/media peers and
       describe the user-facing plugin more precisely than duplicating Hardware

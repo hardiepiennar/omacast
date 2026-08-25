@@ -4,7 +4,7 @@ set -euo pipefail
 [[ ${EUID} -eq 0 && $# -eq 7 ]] || exit 2
 startup_seconds="$1"; lease_seconds="$2"; session="$3"; token="$4"; uid="$5"; interface="$6"; nm_pid="$7"
 [[ "$startup_seconds" =~ ^[0-9]+$ && "$lease_seconds" =~ ^[0-9]+$ && "$lease_seconds" -ge 60 && "$lease_seconds" -le 1800 && "$session" =~ ^[a-f0-9]{32}$ && "$token" =~ ^[a-f0-9]{48}$ && "$uid" =~ ^[1-9][0-9]{3,9}$ && "$interface" =~ ^[A-Za-z0-9_.-]{1,15}$ && "$nm_pid" =~ ^[0-9]+$ ]] || exit 2
-root="/run/omarchy-cast/$session"; user_root="/run/user/$uid/omarchy-cast/$session"; telemetry_root="/run/user/$uid/omarchy-cast/telemetry/$session"; token_file="$root/token"; heartbeat_file="$user_root/heartbeat"; heartbeat_fd=''; network_root='/run/systemd/network'; networkd_state_file="$root/networkd-units"; network_root_marker="$root/network-root-created"
+root="/run/omarchy-cast/$session"; user_root="$root/user"; telemetry_root="/run/user/$uid/omarchy-cast/telemetry/$session"; token_file="$root/token"; heartbeat_file="$user_root/heartbeat"; heartbeat_fd=''; network_root='/run/systemd/network'; networkd_state_file="$root/networkd-units"; network_root_marker="$root/network-root-created"
 open_heartbeat() {
   local metadata kind owner mode size
   [[ -e "$heartbeat_file" && ! -L "$heartbeat_file" ]] || return 1
@@ -46,5 +46,5 @@ if [[ -f "$networkd_state_file" && ! -L "$networkd_state_file" && "$(stat -c '%u
   ! systemctl is-active --quiet systemd-networkd.service || systemctl reload systemd-networkd.service
 fi
 rm -f -- "$networkd_state_file" "$network_root_marker" "$token_file"
-rmdir --ignore-fail-on-non-empty "$root" "$user_root" 2>/dev/null || true
+rmdir --ignore-fail-on-non-empty "$user_root" "$root" 2>/dev/null || true
 [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true

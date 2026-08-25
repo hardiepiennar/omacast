@@ -14,9 +14,12 @@ updating the companion package still requires explicit administrator approval.
 The helper binds the requested UID to Polkit's authenticated `PKEXEC_UID`, then
 accepts a bounded, validated argument contract. It stores privileged
 state under `/run/omarchy-cast` and exchanges session signals through a private
-directory below `/run/user/$UID`. It accepts no process identifier or scheduling
-request from the unprivileged session. Stop uses the current session's
-user-owned marker and does not request a second authorization.
+user-owned marker directory nested beneath the root-owned session directory.
+The user can write marker contents but cannot replace that directory entry or
+redirect root's ownership changes. The helper accepts no process identifier,
+scheduling request, path, or privileged Stop action from the unprivileged
+session. Stop writes the current session's user-owned marker directly and does
+not request a second authorization.
 
 The helper restores NetworkManager, temporary systemd-networkd configuration,
 D-Bus policy, and any firewall rule during normal stop, controller failure, or

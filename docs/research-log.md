@@ -1397,3 +1397,22 @@ contract. Regression probes prove that a direct FIFO is rejected without
 blocking and that replacing the pathname after verification cannot redirect
 the pinned lease read. Exact-package and receiver lifecycle acceptance remain
 open for this new package payload.
+
+### Pre-push marker-directory audit (2026-08-25)
+
+The final review of user-influenced privileged paths found that the guard
+created its user-owned marker directory beneath `/run/user/$UID`. Although it
+checked that the destination did not exist first, GNU `install -d` follows a
+directory symlink at its destination. A harmless temporary reproduction showed
+that `install -d -m700` changed the symlink target's mode. A same-UID process
+could therefore race the absence check and redirect the root helper's later
+`-o` and `-m` changes.
+
+Revision 40 / guard API 6 moves the writable marker directory to `user/`
+beneath the root-owned session directory. The parent is created root:root 0711,
+the child is created for the authenticated UID at 0700, and both are validated
+after creation. The user can write trigger, heartbeat, and Stop markers but
+cannot replace the child directory entry because the parent is not writable.
+The unused privileged `stop` verb and controller builder were removed; normal
+Stop continues to create the session marker without a second authorization.
+Exact-package and receiver lifecycle acceptance remain open.

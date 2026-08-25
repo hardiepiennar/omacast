@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from omarchy_cast.guard import GuardError, GuardRequest, HELPER_PATH, prepare_command, stop_command, validate_helper_result
+from omarchy_cast.guard import GuardError, GuardRequest, HELPER_PATH, prepare_command, validate_helper_result
 
 
 class GuardContractTest(unittest.TestCase):
@@ -15,7 +15,6 @@ class GuardContractTest(unittest.TestCase):
         command = prepare_command(self.request())
         self.assertEqual(command[:2], (HELPER_PATH, "prepare"))
         self.assertNotIn(";", " ".join(command))
-        self.assertEqual(stop_command(self.request())[1], "stop")
 
     def test_rejects_untrusted_arguments_or_helper_path(self) -> None:
         for request in (self.request(session_id="receiver-name"), self.request(interface="wlan0;id"), self.request(duration_seconds=30), self.request(uid=0)):
@@ -32,5 +31,8 @@ class GuardContractTest(unittest.TestCase):
                 validate_helper_result(payload)
 
     def test_status_rejects_non_runtime_trigger_path(self) -> None:
+        session_id = "b" * 32
+        result = validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "triggerPath": f"/run/omarchy-cast/{session_id}/user/trigger"})
+        self.assertEqual(result["triggerPath"], f"/run/omarchy-cast/{session_id}/user/trigger")
         with self.assertRaises(GuardError):
-            validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": "b" * 32, "triggerPath": "/tmp/trigger"})
+            validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "triggerPath": "/tmp/trigger"})

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import select
+import stat
 import subprocess
 import threading
 import time
@@ -156,7 +157,7 @@ class GuardedTransportAdapter:
                     raise TransportError("The networking helper status belongs to another session.", code="guard-setup-failed")
                 if payload.get("ok") is True and payload.get("phase") == "ready":
                     trigger = payload.get("triggerPath")
-                    expected = f"/run/user/{request.uid}/omarchy-cast/{request.session_id}/trigger"
+                    expected = f"/run/omarchy-cast/{request.session_id}/user/trigger"
                     if trigger != expected:
                         raise TransportError("The networking helper returned an unexpected trigger path.", code="guard-setup-failed")
                     return expected
@@ -170,13 +171,27 @@ class GuardedTransportAdapter:
 
     def _stop_guard(self) -> None:
         """Signal the user-owned guard marker without a second authorization."""
-        stop_path = f"/run/user/{self.request.uid}/omarchy-cast/{self.request.session_id}/stop"
+        stop_path = f"/run/omarchy-cast/{self.request.session_id}/user/stop"
+        self._write_private_marker(stop_path)
+
+    @staticmethod
+    def _write_private_marker(path: str) -> bool:
+        """Create one private regular marker without joining a special file."""
+        descriptor: int | None = None
         try:
-            descriptor = os.open(stop_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-            os.close(descriptor)
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NONBLOCK | os.O_NOFOLLOW, 0o600)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077 or metadata.st_nlink != 1:
+                return False
+            os.fchmod(descriptor, 0o600)
+            os.ftruncate(descriptor, 0)
+            return True
         except OSError:
             # A missing marker directory means the helper already cleaned up.
-            pass
+            return False
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     @staticmethod
     def _bounded_detail(stream: str | None, fallback: str) -> str:
