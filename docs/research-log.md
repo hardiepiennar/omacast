@@ -1447,3 +1447,29 @@ therefore could still label an incomplete privileged cleanup successful. The
 controller now reads at most 64 KiB after the helper exits and requires the last
 status to be schema-valid, session-matched, successful, and explicitly
 `cleaned`; otherwise it raises `guard-cleanup-incomplete`.
+
+### Revision 41 receiver cleanup acceptance (2026-08-25)
+
+The exact installed revision-41 plugin and companion package started the normal
+unbounded Safe cast through the same executable entry point used by the panel.
+Session `4d2b54f7e0e4451d8cdac3bc98026693` negotiated 1280x720p60 and, after
+warm-up, reported 59.5 measured fps, a 0.992 realtime ratio, zero FFmpeg drops
+or duplicates, zero radio failures, and an empty send queue. The live user
+service held `CPUWeight=10000`. The user accepted picture and audio quality.
+
+During the session, the privileged boundary had the intended root-owned 0711
+session parent, user-owned 0700 marker directory and 0600 heartbeat, plus
+root-owned 0600 `p2p-armed` and `p2p-interfaces` records. Normal UI Stop returned
+the controller to idle and the collectable service disappeared successfully.
+The session-created `p2p-wlp58s0-3` P2P-client netdev was absent from both
+`ip link` and `iw dev`; only the normal managed Wi-Fi interface and non-netdev
+P2P device remained. Infrastructure Wi-Fi was connected, NetworkManager,
+systemd-networkd, and wpa_supplicant matched their active pre-test state, no
+FluxCast, capture, mux, guard, or recovery process remained, and no session
+runtime child or temporary network/DBus file remained. The persistent empty
+root-owned `/run/omarchy-cast` container is package runtime infrastructure, not
+session residue.
+
+This closes revision 41's normal receiver-backed cleanup acceptance. Forced
+helper death, cold-boot behavior, other adapters/receivers, and longer soak
+coverage remain separate open acceptance work.

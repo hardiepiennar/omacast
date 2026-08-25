@@ -168,6 +168,12 @@ smoothness, continuous internet access, and audio/video sync all matter.
   before NetworkManager resumes, rather than polling during media delivery.
   The controller accepts cleanup only after the exited helper returns the
   matching session's bounded, schema-valid `cleaned` status.
+  Receiver acceptance on 2026-08-25 then negotiated 1280x720p60, stabilized at
+  59.5 measured fps with no dropped or duplicated frames, and passed the
+  user's picture and audio check. Normal UI Stop removed the session-created
+  P2P-client interface, transient service, helper/media processes, session
+  runtime children, and temporary network/DBus files while restoring the
+  connected infrastructure Wi-Fi and original network-service state.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the
