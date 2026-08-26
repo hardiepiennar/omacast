@@ -6,7 +6,7 @@
 
 pkgname=fluxcast-omarchy-cast
 pkgver=0.1.5.r3.omarchy
-pkgrel=56
+pkgrel=57
 pkgdesc='Pinned FluxCast WFD engine with Omacast compatibility patches'
 arch=('any')
 url='https://github.com/IlyaP358/fluxcast'
@@ -52,9 +52,7 @@ build() {
 
 check() {
   cd "$srcdir/fluxcast"
-  # Pystray otherwise probes GTK/X11 during import and fails in headless package
-  # builders before its configuration tests can run.
-  PYSTRAY_BACKEND=dummy PYTHONPATH=src python -m unittest discover -s tests
+  PYTHONPATH=src python -m unittest discover -s tests
 }
 
 package() {

@@ -527,7 +527,8 @@ network_manager_marker_valid
         self.assertIn('omarchy-cast-guard-recover"', recipe)
         self.assertIn('omarchy-cast-supplicant-broker"', recipe)
         self.assertIn('com.omacast.guard.policy"', recipe)
-        self.assertIn("PYSTRAY_BACKEND=dummy PYTHONPATH=src", recipe)
+        self.assertIn("PYTHONPATH=src python -m unittest discover -s tests", recipe)
+        self.assertNotIn("PYSTRAY_BACKEND", recipe)
         depends = recipe.split("depends=(", 1)[1].split(")", 1)[0]
         for dependency in ("ffmpeg", "networkmanager", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2", "glib2"):
             self.assertIn(f"'{dependency}'", depends)
@@ -685,11 +686,11 @@ if record_session_interfaces; then exit 3; fi
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(series), 31)
+        self.assertEqual(len(series), 32)
         expected_numbers = (
             [f"{number:04d}" for number in range(1, 7)]
             + [f"{number:04d}" for number in range(9, 23)]
-            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037"]
+            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038"]
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:
@@ -817,6 +818,11 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("packaged engine exposes a non-WFD protocol", audit)
         self.assertIn("packaged engine retains excluded module", audit)
         self.assertIn("packaged engine retains UIBC input surface", audit)
+        self.assertIn("package retains legacy integration payload", audit)
+        self.assertIn("fluxcast-install-system", audit)
+        self.assertIn("pypi_sysinstall.py", audit)
+        self.assertIn("_fluxcast_data", audit)
+        self.assertNotIn("PYSTRAY_BACKEND", audit)
         self.assertIn("package retains an unused protocol dependency", audit)
         self.assertNotIn("--wfd-portal-source", audit)
         self.assertIn('pacman -Qp "$package"', audit)
@@ -883,6 +889,8 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn('[[ "$(cat dist/SOURCE-COMMIT.txt)" == "$GITHUB_SHA" ]]', workflow)
         self.assertRegex(workflow, r"archlinux:base-devel@sha256:[0-9a-f]{64}")
         self.assertIn("archive.archlinux.org/repos/2026/08/24", workflow)
+        for removed in ("python-pillow", "python-pychromecast", "python-pystray"):
+            self.assertNotIn(removed, workflow)
         self.assertIn("BUILD-ENVIRONMENT.txt", workflow)
         self.assertIn("RELEASE-BUILDER.txt", workflow)
         for dependency in ("ffmpeg", "iproute2", "iw", "libpulse", "networkmanager", "polkit", "systemd", "wpa_supplicant"):

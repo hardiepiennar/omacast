@@ -41,8 +41,8 @@ jobs:
               pacman -Syu --needed --noconfirm \
                 fakeroot ffmpeg git gpu-screen-recorder iproute2 iw libpulse \
                 networkmanager polkit python python-build python-dbus-next \
-                python-gobject python-hatchling python-installer python-pillow \
-                python-pychromecast python-pystray shellcheck systemd wpa_supplicant
+                python-gobject python-hatchling python-installer shellcheck \
+                systemd wpa_supplicant
               useradd --create-home builder
               mkdir -p /build/source /build/dist
               cp -a /workspace/. /build/source/

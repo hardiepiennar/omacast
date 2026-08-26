@@ -29,3 +29,4 @@
 0035-Limit-Omacast-engine-to-WFD.patch
 0036-Remove-unauthenticated-UIBC-input.patch
 0037-Return-early-when-selected-receiver-is-found.patch
+0038-Remove-legacy-system-integration-payload.patch

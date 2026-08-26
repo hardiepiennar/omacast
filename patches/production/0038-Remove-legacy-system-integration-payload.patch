@@ -1,0 +1,581 @@
+From 054d66c6297534f4a10c5c141cb1afe37f41c8fc Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 23:51:38 +1200
+Subject: [PATCH] Remove legacy system integration payload
+
+---
+ pyproject.toml             |   8 --
+ src/main.py                | 196 +++-------------------------------
+ tests/test_tray.py         |  39 -------
+ tests/test_tray_config.py  | 212 -------------------------------------
+ tests/test_wfd_only_cli.py |  24 +++++
+ 5 files changed, 36 insertions(+), 443 deletions(-)
+ delete mode 100644 tests/test_tray.py
+ delete mode 100644 tests/test_tray_config.py
+
+diff --git a/pyproject.toml b/pyproject.toml
+index 4c63555..5293046 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -40,14 +40,12 @@ Issues = "https://github.com/IlyaP358/fluxcast/issues"
+ 
+ [project.scripts]
+ fluxcast = "main:main"
+-fluxcast-install-system = "pypi_sysinstall:main"
+ 
+ [tool.hatch.build.targets.wheel]
+ sources = {"src" = ""}
+ include = [
+     "src/*.py",
+     "src/**/*.py",
+-    "src/assets/*.png",
+ ]
+ exclude = [
+     "src/cast/**",
+@@ -56,15 +54,9 @@ exclude = [
+     "src/server.py",
+ ]
+ 
+-[tool.hatch.build.targets.wheel.force-include]
+-"meta/pypi/pypi_sysinstall.py"             = "pypi_sysinstall.py"
+-"meta/fluxcast.desktop"                    = "_fluxcast_data/fluxcast.desktop"
+-"meta/zz-dev.fluxcast.wpa-supplicant.conf" = "_fluxcast_data/zz-dev.fluxcast.wpa-supplicant.conf"
+-
+ [tool.hatch.build.targets.sdist]
+ include = [
+     "src/",
+-    "meta/",
+     "README.md",
+     "LICENSE",
+     "pyproject.toml",
+diff --git a/src/main.py b/src/main.py
+index f83b6ad..365d493 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -43,28 +43,14 @@ Wi-Fi Display (Miracast) Options:
+ """
+ 
+ import argparse
+-import glob
+-import os
+ import signal
+-import socket
+-import time
+ import sys
+-import termios
+ 
+ def _wfd_sigterm(_signum, _frame) -> None:
+     """Turn service-manager termination into the WFD path's normal unwind."""
+     raise KeyboardInterrupt
+ 
+ 
+-def get_local_ip() -> str:
+-    try:
+-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+-            s.connect(("8.8.8.8", 80))
+-            return s.getsockname()[0]
+-    except OSError:
+-        return "127.0.0.1"
+-
+-
+ def parse_args() -> argparse.Namespace:
+     parser = argparse.ArgumentParser(
+         description="FluxCast — stream your Linux desktop to a Smart TV"
+@@ -193,56 +179,6 @@ def parse_args() -> argparse.Namespace:
+ 
+ # ── terminal helpers ──────────────────────────────────────────────────────────
+ 
+-def _save_term():
+-    try:
+-        if sys.stdin.isatty():
+-            return termios.tcgetattr(sys.stdin.fileno())
+-    except termios.error:
+-        pass
+-    return None
+-
+-
+-def _restore_term(saved) -> None:
+-    if saved is None:
+-        return
+-    try:
+-        if sys.stdin.isatty():
+-            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
+-    except termios.error:
+-        pass
+-
+-
+-def _wait_for_hls_segments(required_segments: int = 2, timeout: float = 15.0) -> bool:
+-    from server import HLS_DIR
+-
+-    playlist = os.path.join(HLS_DIR, "stream.m3u8")
+-    start = time.monotonic()
+-
+-    while time.monotonic() - start < timeout:
+-        segments = []
+-        for path in glob.glob(os.path.join(HLS_DIR, "stream*.ts")):
+-            try:
+-                if os.path.getsize(path) > 0:
+-                    segments.append(path)
+-            except OSError:
+-                pass
+-        if os.path.exists(playlist) and os.path.getsize(playlist) > 0:
+-            try:
+-                with open(playlist, "r", encoding="utf-8", errors="replace") as file:
+-                    playlist_text = file.read()
+-            except OSError:
+-                playlist_text = ""
+-            listed_segments = playlist_text.count(".ts")
+-            if listed_segments >= required_segments and len(segments) >= required_segments:
+-                waited = time.monotonic() - start
+-                print(f" ready! ({len(segments)} segments, {waited:.1f}s)")
+-                return True
+-        time.sleep(0.2)
+-
+-    print(" [TIMEOUT]")
+-    return False
+-
+-
+ # ── main ─────────────────────────────────────────────────────────────────────
+ 
+ def main() -> None:
+@@ -267,127 +203,19 @@ def main() -> None:
+         print_scan(peers)
+         return
+ 
+-    if args.protocol == "wfd":
+-        from wfd import WFDNotReady, start_experimental_backend
+-        previous_sigterm = signal.getsignal(signal.SIGTERM)
+-        signal.signal(signal.SIGTERM, _wfd_sigterm)
++    from wfd import WFDNotReady, start_experimental_backend
++    previous_sigterm = signal.getsignal(signal.SIGTERM)
++    signal.signal(signal.SIGTERM, _wfd_sigterm)
++    try:
+         try:
+-            try:
+-                start_experimental_backend(args)
+-            except WFDNotReady as exc:
+-                print(f"[FluxCast WFD] ERROR: {exc}")
+-                sys.exit(1)
+-            except KeyboardInterrupt:
+-                pass
+-        finally:
+-            signal.signal(signal.SIGTERM, previous_sigterm)
+-        return
+-
+-    # Unreachable in the Omacast WFD-only parser. Keep upstream's legacy branch
+-    # isolated from import and package initialization while patches remain
+-    # source-compatible with the pinned base.
+-    from capture import prompt_monitor, start_capture, stop_capture
+-    from server import CorsHLSRequestHandler, HLSRequestHandler, StreamServer
+-
+-    host = args.host or get_local_ip()
+-    session_id = f"session-{int(time.time())}"
+-    if args.transport == "live-ts":
+-        stream_name = "live.ts"
+-    elif args.transport == "progressive-ts":
+-        stream_name = "progressive.ts"
+-    else:
+-        stream_name = "stream.m3u8"
+-    stream_path = f"{session_id}/{stream_name}"
+-    stream_url = f"http://{host}:{args.port}/{stream_path}"
+-
+-    _tty_state = _save_term() # save before ffmpeg corrupts it
+-
+-    ffmpeg_procs = None
+-    stream_server = None
+-    tv = None
+-
+-    def shutdown(signum=None, frame=None):
+-        print("\n[FluxCast] Stopping…")
+-        if tv is not None:
+-            try:
+-                if args.protocol == "dlna":
+-                    from dlna import stop_cast
+-                    stop_cast(tv)
+-                else:
+-                    import cast as cast_backend
+-                    cast_backend.stop_cast(tv)
+-            except Exception:
+-                pass
+-        if stream_server:
+-            stream_server.stop()
+-        stop_capture(ffmpeg_procs)
+-        _restore_term(_tty_state)
+-        print("[FluxCast] Stopped. Goodbye!")
+-        sys.exit(0)
+-
+-    signal.signal(signal.SIGINT, shutdown)
+-    signal.signal(signal.SIGTERM, shutdown)
+-
+-    protocol_label = "Chromecast" if args.protocol == "cast" else "UPnP/DLNA"
+-    print("=" * 55)
+-    print(f"  FluxCast - Desktop → Smart TV via {protocol_label}")
+-    print("=" * 55)
+-
+-    if args.monitor_name:
+-        from capture import gather_monitors
+-        all_mons = gather_monitors()
+-        monitor = next((m for m in all_mons if m.name == args.monitor_name), None)
+-        if monitor is None:
+-            available = ", ".join(m.name for m in all_mons) or "none"
+-            print(f"[FluxCast] ERROR: Monitor '{args.monitor_name}' not found. Available: {available}")
+-            shutdown()
+-    else:
+-        monitor = prompt_monitor()
+-
+-    ffmpeg_procs = start_capture(
+-        monitor=monitor,
+-        fps=args.fps,
+-        bitrate=args.bitrate,
+-        output_resolution=args.output_res,
+-        backend=args.capture_backend,
+-    )
+-    print("[FluxCast] Screen capture started.")
+-
+-    # HTTP server serves the HLS playlist and MPEG-TS segments from /tmp/fluxcast.
+-    # Cast uses a CORS-enabled handler (Chromecast needs it for HLS); dlna keeps
+-    # the plain handler so its responses stay byte-identical to before.
+-    handler_class = CorsHLSRequestHandler if args.protocol == "cast" else HLSRequestHandler
+-    stream_server = StreamServer(host="0.0.0.0", port=args.port, handler_class=handler_class)
+-    stream_server.start()
+-    print(f"[FluxCast] HTTP server: {stream_url}")
+-    print(f"[FluxCast] Session: {session_id}")
+-    print(f"[FluxCast] Transport: {args.transport}")
+-
+-    print("[FluxCast] Waiting for HLS source to start…", end="", flush=True)
+-    if not _wait_for_hls_segments(required_segments=2, timeout=30.0):
+-        print("[FluxCast] ERROR: ffmpeg produced no playable HLS segments.")
+-        shutdown()
+-    print("[FluxCast] HLS source is producing segments ✓")
+-
+-    if args.protocol == "dlna":
+-        from dlna import discover_devices, prompt_device, start_cast
+-        devices = discover_devices(timeout=args.discover_timeout)
+-        tv = prompt_device(devices, args.device_name)
+-        start_cast(tv, stream_url)
+-
+-    else:  # cast protocol
+-        from cast import discover_devices, connect_by_ip, prompt_device, start_cast
+-        if args.tv_ip:
+-            tv = connect_by_ip(args.tv_ip)
+-            start_cast(tv, stream_url)
+-        else:
+-            devices = discover_devices(timeout=args.discover_timeout)
+-            tv = prompt_device(devices, args.device_name)
+-            print(f"[FluxCast] Found: {tv.cast_info.friendly_name}")
+-            start_cast(tv, stream_url)
+-
+-    print("[FluxCast] Casting started. Press Ctrl+C to stop.")
+-    signal.pause()
++            start_experimental_backend(args)
++        except WFDNotReady as exc:
++            print(f"[FluxCast WFD] ERROR: {exc}")
++            sys.exit(1)
++        except KeyboardInterrupt:
++            pass
++    finally:
++        signal.signal(signal.SIGTERM, previous_sigterm)
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/tests/test_tray.py b/tests/test_tray.py
+deleted file mode 100644
+index ca6eaea..0000000
+--- a/tests/test_tray.py
++++ /dev/null
+@@ -1,39 +0,0 @@
+-import os
+-import sys
+-import unittest
+-
+-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+-
+-try:
+-    from ui import tray  # noqa: E402
+-except ImportError as exc:  # pystray/PIL missing on a headless builder
+-    tray = None
+-    _IMPORT_ERROR = exc
+-
+-
+-@unittest.skipIf(tray is None, "tray dependencies are unavailable")
+-class TrayResourceTest(unittest.TestCase):
+-    """The tray resolves assets/ and main.py relative to its own file, so
+-    moving the module to another directory silently breaks both without
+-    changing a character of the code (#84 refactor)."""
+-
+-    def test_icon_path_exists_and_opens(self):
+-        self.assertTrue(os.path.isfile(tray._ICON_PATH),
+-                        f"tray icon missing at {tray._ICON_PATH}")
+-        from PIL import Image
+-        with Image.open(tray._ICON_PATH) as img:
+-            self.assertGreater(min(img.size), 0)
+-
+-    def test_main_entry_point_exists(self):
+-        self.assertTrue(os.path.isfile(tray._MAIN),
+-                        f"tray launches casting via {tray._MAIN}, which is missing")
+-
+-    def test_paths_resolve_into_the_source_root(self):
+-        root = os.path.dirname(os.path.dirname(os.path.abspath(tray.__file__)))
+-        for path in (tray._ICON_PATH, tray._MAIN):
+-            self.assertEqual(os.path.dirname(os.path.commonpath([root, path])),
+-                             os.path.dirname(root))
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
+diff --git a/tests/test_tray_config.py b/tests/test_tray_config.py
+deleted file mode 100644
+index 3f968d3..0000000
+--- a/tests/test_tray_config.py
++++ /dev/null
+@@ -1,212 +0,0 @@
+-import os
+-import sys
+-import tempfile
+-import unittest
+-from pathlib import Path
+-from unittest import mock
+-
+-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+-
+-from ui import tray_config  # noqa: E402
+-
+-
+-class TrayConfigTest(unittest.TestCase):
+-    def setUp(self):
+-        self._temp_dir = tempfile.TemporaryDirectory()
+-        self.config_path = Path(self._temp_dir.name) / "config"
+-
+-    def tearDown(self):
+-        self._temp_dir.cleanup()
+-
+-    def _write(self, contents):
+-        self.config_path.write_text(contents, encoding="utf-8")
+-
+-    def test_missing_and_empty_config_preserve_defaults(self):
+-        self.assertEqual(
+-            tray_config.load_profile("wfd", config_path=self.config_path),
+-            [],
+-        )
+-        self._write("\n")
+-        self.assertEqual(
+-            tray_config.load_profile("dlna", config_path=self.config_path),
+-            [],
+-        )
+-
+-    def test_loads_only_selected_mode(self):
+-        self._write(
+-            """
+-[wfd]
+-output-res = 1920X1080
+-fps = 60
+-bitrate = 8M
+-wfd-no-audio = true
+-wfd-no-firewall = false
+-
+-[dlna]
+-fps = invalid-in-unselected-section
+-"""
+-        )
+-        warnings = []
+-
+-        args = tray_config.load_profile(
+-            "wfd", config_path=self.config_path, warn=warnings.append
+-        )
+-
+-        self.assertEqual(
+-            args,
+-            [
+-                "--output-res", "1920x1080",
+-                "--fps", "60",
+-                "--bitrate", "8M",
+-                "--wfd-no-audio",
+-            ],
+-        )
+-        self.assertEqual(warnings, [])
+-
+-    def test_does_not_inherit_options_from_default_section(self):
+-        self._write(
+-            """
+-[DEFAULT]
+-fps = 60
+-
+-[wfd]
+-bitrate = 8M
+-"""
+-        )
+-
+-        self.assertEqual(
+-            tray_config.load_profile("wfd", config_path=self.config_path),
+-            ["--bitrate", "8M"],
+-        )
+-
+-    def test_loads_dlna_stream_options(self):
+-        self._write(
+-            """
+-[dlna]
+-transport = HLS
+-capture-backend = wf-recorder
+-host = 192.168.1.20
+-port = 9090
+-discover-timeout = 10
+-"""
+-        )
+-
+-        self.assertEqual(
+-            tray_config.load_profile("dlna", config_path=self.config_path),
+-            [
+-                "--transport", "hls",
+-                "--capture-backend", "wf-recorder",
+-                "--host", "192.168.1.20",
+-                "--port", "9090",
+-                "--discover-timeout", "10",
+-            ],
+-        )
+-
+-    def test_invalid_and_unknown_options_warn_and_fall_back(self):
+-        self._write(
+-            """
+-[wfd]
+-output-res = full-hd
+-fps = 0
+-bitrate = fast
+-wfd-rtsp-port = 70000
+-wfd-no-audio = sometimes
+-wfd-peer = living-room-tv
+-"""
+-        )
+-        warnings = []
+-
+-        args = tray_config.load_profile(
+-            "wfd", config_path=self.config_path, warn=warnings.append
+-        )
+-
+-        self.assertEqual(args, [])
+-        self.assertEqual(len(warnings), 6)
+-        self.assertTrue(any("unknown option 'wfd-peer'" in item for item in warnings))
+-        self.assertTrue(any("invalid value for 'fps'" in item for item in warnings))
+-
+-    def test_malformed_config_warns_and_preserves_defaults(self):
+-        self._write("fps = 60\n")
+-        warnings = []
+-
+-        args = tray_config.load_profile(
+-            "cast", config_path=self.config_path, warn=warnings.append
+-        )
+-
+-        self.assertEqual(args, [])
+-        self.assertEqual(len(warnings), 1)
+-        self.assertIn("could not parse", warnings[0])
+-
+-    def test_monitor_key_is_not_forwarded_or_warned(self):
+-        self._write(
+-            """
+-[wfd]
+-fps = 60
+-monitor = HDMI-A-1
+-"""
+-        )
+-        warnings = []
+-
+-        args = tray_config.load_profile(
+-            "wfd", config_path=self.config_path, warn=warnings.append
+-        )
+-
+-        self.assertEqual(args, ["--fps", "60"])
+-        self.assertEqual(warnings, [])
+-
+-    def test_load_preferred_monitor_reads_per_mode(self):
+-        self._write(
+-            """
+-[wfd]
+-monitor = HDMI-A-1
+-
+-[dlna]
+-monitor = eDP-1
+-"""
+-        )
+-
+-        self.assertEqual(
+-            tray_config.load_preferred_monitor("wfd", config_path=self.config_path),
+-            "HDMI-A-1",
+-        )
+-        self.assertEqual(
+-            tray_config.load_preferred_monitor("dlna", config_path=self.config_path),
+-            "eDP-1",
+-        )
+-        self.assertIsNone(
+-            tray_config.load_preferred_monitor("cast", config_path=self.config_path),
+-        )
+-
+-    def test_load_preferred_monitor_missing_and_invalid(self):
+-        # No file at all.
+-        self.assertIsNone(
+-            tray_config.load_preferred_monitor("wfd", config_path=self.config_path),
+-        )
+-        # Present but no monitor key.
+-        self._write("[wfd]\nfps = 60\n")
+-        self.assertIsNone(
+-            tray_config.load_preferred_monitor("wfd", config_path=self.config_path),
+-        )
+-        # Invalid value (leading dash) warns and falls back to None.
+-        self._write("[wfd]\nmonitor = -bad\n")
+-        warnings = []
+-        self.assertIsNone(
+-            tray_config.load_preferred_monitor(
+-                "wfd", config_path=self.config_path, warn=warnings.append
+-            ),
+-        )
+-        self.assertEqual(len(warnings), 1)
+-        self.assertIn("invalid value for 'monitor'", warnings[0])
+-
+-    def test_uses_xdg_config_home(self):
+-        with mock.patch.dict(
+-            os.environ, {"XDG_CONFIG_HOME": "/tmp/fluxcast-test-config"}
+-        ):
+-            self.assertEqual(
+-                tray_config.get_config_path(),
+-                Path("/tmp/fluxcast-test-config/fluxcast/config"),
+-            )
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
+diff --git a/tests/test_wfd_only_cli.py b/tests/test_wfd_only_cli.py
+index 44a73c2..522bbff 100644
+--- a/tests/test_wfd_only_cli.py
++++ b/tests/test_wfd_only_cli.py
+@@ -49,6 +49,30 @@ class WFDOnlyCLITest(unittest.TestCase):
+             self.assertIn(f'"{excluded}"', metadata)
+         self.assertFalse((project.parent / "src" / "drivers" / "uibc.py").exists())
+ 
++    def test_wheel_does_not_install_legacy_system_integration(self):
++        project = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
++        metadata = project.read_text(encoding="utf-8")
++        for removed in (
++            "fluxcast-install-system",
++            "pypi_sysinstall.py",
++            "fluxcast.desktop",
++            "zz-dev.fluxcast.wpa-supplicant.conf",
++            "src/assets/*.png",
++        ):
++            self.assertNotIn(removed, metadata)
++
++    def test_main_has_no_unreachable_legacy_transport(self):
++        source = pathlib.Path(fluxcast_main.__file__).read_text(encoding="utf-8")
++        for removed in (
++            "get_local_ip",
++            "_wait_for_hls_segments",
++            "StreamServer",
++            "CorsHLSRequestHandler",
++            "from cast import",
++            "from dlna import",
++        ):
++            self.assertNotIn(removed, source)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+-- 
+2.55.0
+

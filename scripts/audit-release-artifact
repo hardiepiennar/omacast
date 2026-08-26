@@ -146,7 +146,14 @@ done
 
 site_packages="$(find "$audit_root/usr/lib" -type d -path '*/site-packages' -print -quit)"
 [[ -n "$site_packages" ]] || die "packaged Python modules are missing"
-PYTHONPATH="$site_packages" PYSTRAY_BACKEND=dummy "$engine" --help > "$audit_root/fluxcast-help.txt"
+for removed_payload in \
+  "$audit_root/usr/bin/fluxcast-install-system" \
+  "$site_packages/pypi_sysinstall.py" \
+  "$site_packages/_fluxcast_data" \
+  "$site_packages/assets"; do
+  [[ ! -e "$removed_payload" ]] || die "package retains legacy integration payload: ${removed_payload#"$audit_root"}"
+done
+PYTHONPATH="$site_packages" "$engine" --help > "$audit_root/fluxcast-help.txt"
 for flag in --wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-supplicant-broker --wfd-progress-log; do
   grep -Fq -- "$flag" "$audit_root/fluxcast-help.txt" || die "packaged engine is missing $flag"
 done
