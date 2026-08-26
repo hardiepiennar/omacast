@@ -2176,3 +2176,13 @@ output floods, 5,000-digit ports, long-session compaction, unsafe output paths,
 and unanswered keepalives. These changes do not alter the receiver-accepted
 capture, encode, pacing, or guarded networking path; a new release artifact
 must still be built from the final exact source commit.
+
+The exact revision-60 companion and version-0.1.2 plugin then completed a
+short GUI receiver run against the stock Fire TV. The user accepted the live
+picture and sound and stopped through the panel. The controller recorded
+cooperative `transport-cancelled`, returned to idle, and archived the bounded
+session telemetry. Post-stop inspection found the user service inactive with
+`Result=success`, infrastructure Wi-Fi connected, no session P2P interface,
+no engine, guard, broker, capture, or mux process, and no root-owned recovery
+state or current-session runtime directory. Older user-runtime entries dated
+2026-08-23 remain preserved because the accepted session did not own them.

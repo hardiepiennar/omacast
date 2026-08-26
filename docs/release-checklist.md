@@ -525,6 +525,11 @@
       capture, receiver media ports, latency journaling, and unanswered
       keepalive state have explicit bounds and adversarial regressions. The
       exact reconstruction passes 148 FluxCast tests.
+- [x] The installed revision-60 package and version-0.1.2 plugin completed a
+      GUI Fire TV cast with user-accepted picture and sound. Panel Stop returned
+      idle with a successful inactive service, connected infrastructure Wi-Fi,
+      no session P2P interface or process, no current runtime directory, and no
+      root-owned recovery state.
 - [x] GitHub private vulnerability reporting is enabled for the public
       repository, and `SECURITY.md` links directly to the private report form.
 
