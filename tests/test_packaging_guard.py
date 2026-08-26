@@ -686,11 +686,11 @@ if record_session_interfaces; then exit 3; fi
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(series), 32)
+        self.assertEqual(len(series), 33)
         expected_numbers = (
             [f"{number:04d}" for number in range(1, 7)]
             + [f"{number:04d}" for number in range(9, 23)]
-            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038"]
+            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039"]
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:
@@ -819,6 +819,8 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("packaged engine retains excluded module", audit)
         self.assertIn("packaged engine retains UIBC input surface", audit)
         self.assertIn("package retains legacy integration payload", audit)
+        self.assertIn("packaged engine retains unbounded subprocess capture", audit)
+        self.assertIn("packaged engine lacks bounded subprocess capture", audit)
         self.assertIn("fluxcast-install-system", audit)
         self.assertIn("pypi_sysinstall.py", audit)
         self.assertIn("_fluxcast_data", audit)

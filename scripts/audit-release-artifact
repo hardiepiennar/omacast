@@ -165,6 +165,10 @@ for module in cast dlna ui server.py drivers/uibc.py; do
   [[ ! -e "$site_packages/$module" ]] || die "packaged engine retains excluded module: $module"
 done
 ! grep -R -Fq -- 'wfd_uibc' "$site_packages" || die "packaged engine retains UIBC input surface"
+! grep -R -Fq --include='*.py' -- 'capture_output=True' "$site_packages" \
+  || die "packaged engine retains unbounded subprocess capture"
+grep -Fq 'MAX_COMMAND_OUTPUT_BYTES' "$site_packages/wfd/proc.py" \
+  || die "packaged engine lacks bounded subprocess capture"
 
 pacman -Qp "$package" >/dev/null
 printf 'Artifact audit passed: %s\n' "$package"

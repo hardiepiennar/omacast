@@ -1,0 +1,331 @@
+From 3dcd47bd460ace68304b5aefdba66f682ac1f0ae Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 23:55:34 +1200
+Subject: [PATCH] Bound internal command output
+
+---
+ src/capture/capture.py         | 31 ++++--------
+ src/diagnostics.py             | 18 ++-----
+ src/wfd/gst.py                 | 15 ++----
+ src/wfd/proc.py                | 91 ++++++++++++++++++++++++++++++++--
+ tests/test_capture_hyprland.py |  2 +-
+ tests/test_wfd_proc.py         | 38 ++++++++++++++
+ 6 files changed, 140 insertions(+), 55 deletions(-)
+ create mode 100644 tests/test_wfd_proc.py
+
+diff --git a/src/capture/capture.py b/src/capture/capture.py
+index 0f88824..13e84d4 100644
+--- a/src/capture/capture.py
++++ b/src/capture/capture.py
+@@ -8,6 +8,8 @@ import sys
+ import time
+ from typing import Any, Optional, NamedTuple
+ 
++from wfd.proc import _run
++
+ FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/sbin/ffmpeg"
+ 
+ 
+@@ -66,12 +68,7 @@ def _default_audio_monitor() -> str:
+     if not pactl:
+         return "default"
+     try:
+-        result = subprocess.run(
+-            [pactl, "get-default-sink"],
+-            capture_output=True,
+-            text=True,
+-            timeout=2.0,
+-        )
++        result = _run([pactl, "get-default-sink"], timeout=2.0)
+     except (subprocess.TimeoutExpired, OSError):
+         return "default"
+     sink = result.stdout.strip()
+@@ -82,13 +79,9 @@ def _default_audio_monitor() -> str:
+ 
+ def _gst_has_element(name: str) -> bool:
+     try:
+-        result = subprocess.run(
+-            ["gst-inspect-1.0", name],
+-            capture_output=True,
+-            timeout=10.0,
+-        )
++        result = _run(["gst-inspect-1.0", name], timeout=10.0)
+         return result.returncode == 0
+-    except (subprocess.TimeoutExpired, FileNotFoundError):
++    except (subprocess.TimeoutExpired, OSError):
+         return False
+ 
+ 
+@@ -149,11 +142,8 @@ def _parse_xrandr(display: str) -> list:
+     env = os.environ.copy()
+     env["DISPLAY"] = display
+     try:
+-        result = subprocess.run(
+-            [xrandr, "--query"],
+-            capture_output=True, text=True, timeout=4, env=env,
+-        )
+-    except (subprocess.TimeoutExpired, FileNotFoundError):
++        result = _run([xrandr, "--query"], timeout=4, env=env)
++    except (subprocess.TimeoutExpired, OSError):
+         return []
+ 
+     if result.returncode != 0:
+@@ -187,12 +177,9 @@ def _parse_hyprland_monitors() -> list:
+     if not hyprctl or not detect_session().is_hyprland:
+         return []
+     try:
+-        result = subprocess.run(
+-            [hyprctl, "monitors", "-j"],
+-            capture_output=True, text=True, timeout=4,
+-        )
++        result = _run([hyprctl, "monitors", "-j"], timeout=4)
+         payload = json.loads(result.stdout) if result.returncode == 0 else []
+-    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
++    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
+         return []
+ 
+     monitors: list = []
+diff --git a/src/diagnostics.py b/src/diagnostics.py
+index 0cd506b..0b14f55 100644
+--- a/src/diagnostics.py
++++ b/src/diagnostics.py
+@@ -9,6 +9,8 @@ import subprocess
+ from dataclasses import asdict, dataclass
+ from typing import Optional
+ 
++from wfd.proc import _run
++
+ 
+ STATUS_OK = "ok"
+ STATUS_WARN = "warn"
+@@ -49,15 +51,6 @@ class DiagnosticReport:
+         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+ 
+ 
+-def _run(args: list[str], timeout: float = 3.0) -> subprocess.CompletedProcess[str]:
+-    return subprocess.run(
+-        args,
+-        capture_output=True,
+-        text=True,
+-        timeout=timeout,
+-    )
+-
+-
+ def _find_binary(binary: str, extra_paths: Optional[list[str]] = None) -> Optional[str]:
+     path = shutil.which(binary)
+     if path:
+@@ -199,12 +192,7 @@ def _portal_process_check() -> Check:
+ 
+     def _pgrep(name: str) -> bool:
+         try:
+-            r = subprocess.run(
+-                ["pgrep", "-f", name],
+-                capture_output=True,
+-                text=True,
+-                timeout=2.0,
+-            )
++            r = _run(["pgrep", "-f", name], timeout=2.0)
+             return r.returncode == 0
+         except (OSError, subprocess.TimeoutExpired):
+             return False
+diff --git a/src/wfd/gst.py b/src/wfd/gst.py
+index 1b1ca61..2dbad14 100644
+--- a/src/wfd/gst.py
++++ b/src/wfd/gst.py
+@@ -4,6 +4,7 @@ import subprocess
+ from typing import Optional
+ 
+ from .config import WFDNotReady
++from .proc import _run
+ 
+ 
+ def _gst_has_element(name: str) -> bool:
+@@ -57,12 +58,7 @@ def _gst_pipewiresrc_properties() -> set[str]:
+     if not shutil.which("gst-inspect-1.0"):
+         return set()
+     try:
+-        result = subprocess.run(
+-            ["gst-inspect-1.0", "pipewiresrc"],
+-            capture_output=True,
+-            text=True,
+-            timeout=3.0,
+-        )
++        result = _run(["gst-inspect-1.0", "pipewiresrc"], timeout=3.0)
+     except (OSError, subprocess.TimeoutExpired):
+         return set()
+     if result.returncode != 0:
+@@ -89,12 +85,7 @@ def _gst_x264enc_properties() -> set[str]:
+         _gst_x264enc_props_cache = set()
+         return _gst_x264enc_props_cache
+     try:
+-        result = subprocess.run(
+-            ["gst-inspect-1.0", "x264enc"],
+-            capture_output=True,
+-            text=True,
+-            timeout=3.0,
+-        )
++        result = _run(["gst-inspect-1.0", "x264enc"], timeout=3.0)
+     except (OSError, subprocess.TimeoutExpired):
+         _gst_x264enc_props_cache = set()
+         return _gst_x264enc_props_cache
+diff --git a/src/wfd/proc.py b/src/wfd/proc.py
+index 779acb2..d1d181a 100644
+--- a/src/wfd/proc.py
++++ b/src/wfd/proc.py
+@@ -1,10 +1,91 @@
++import locale
++import os
++import selectors
+ import subprocess
++import time
++from collections.abc import Mapping
+ 
+ 
+-def _run(args: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess[str]:
+-    return subprocess.run(
++MAX_COMMAND_OUTPUT_BYTES = 128 * 1024
++_READ_CHUNK_BYTES = 16 * 1024
++
++
++class CommandOutputLimitExceeded(OSError):
++    pass
++
++
++def _decode_output(value: bytearray) -> str:
++    return bytes(value).decode(locale.getpreferredencoding(False), errors="replace")
++
++
++def _stop(process: "subprocess.Popen[bytes]") -> None:
++    if process.poll() is None:
++        process.kill()
++    process.wait()
++
++
++def _run(
++    args: list[str],
++    timeout: float = 5.0,
++    env: Mapping[str, str] | None = None,
++) -> subprocess.CompletedProcess[str]:
++    process = subprocess.Popen(
+         args,
+-        capture_output=True,
+-        text=True,
+-        timeout=timeout,
++        stdout=subprocess.PIPE,
++        stderr=subprocess.PIPE,
++        env=env,
++    )
++    assert process.stdout is not None and process.stderr is not None
++
++    selector = selectors.DefaultSelector()
++    streams = {process.stdout: bytearray(), process.stderr: bytearray()}
++    selector.register(process.stdout, selectors.EVENT_READ)
++    selector.register(process.stderr, selectors.EVENT_READ)
++    deadline = time.monotonic() + timeout
++
++    try:
++        while selector.get_map():
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                _stop(process)
++                raise subprocess.TimeoutExpired(
++                    args,
++                    timeout,
++                    output=_decode_output(streams[process.stdout]),
++                    stderr=_decode_output(streams[process.stderr]),
++                )
++            for key, _ in selector.select(min(remaining, 0.1)):
++                stream = key.fileobj
++                chunk = os.read(stream.fileno(), _READ_CHUNK_BYTES)
++                if not chunk:
++                    selector.unregister(stream)
++                    continue
++                retained = streams[stream]
++                available = MAX_COMMAND_OUTPUT_BYTES - len(retained)
++                retained.extend(chunk[:available])
++                if len(chunk) > available:
++                    _stop(process)
++                    raise CommandOutputLimitExceeded(
++                        f"command output exceeded {MAX_COMMAND_OUTPUT_BYTES} bytes: {args[0]}"
++                    )
++
++        remaining = deadline - time.monotonic()
++        if remaining <= 0:
++            _stop(process)
++            raise subprocess.TimeoutExpired(args, timeout)
++        returncode = process.wait(timeout=remaining)
++    except BaseException:
++        if process.poll() is None:
++            _stop(process)
++        raise
++    finally:
++        selector.close()
++        process.stdout.close()
++        process.stderr.close()
++
++    return subprocess.CompletedProcess(
++        args,
++        returncode,
++        _decode_output(streams[process.stdout]),
++        _decode_output(streams[process.stderr]),
+     )
+diff --git a/tests/test_capture_hyprland.py b/tests/test_capture_hyprland.py
+index adf4449..100c637 100644
+--- a/tests/test_capture_hyprland.py
++++ b/tests/test_capture_hyprland.py
+@@ -30,7 +30,7 @@ class HyprlandMonitorDiscoveryTest(unittest.TestCase):
+ 
+         with mock.patch.dict(os.environ, environment, clear=True), \
+              mock.patch("capture.capture.shutil.which", return_value="/usr/bin/hyprctl"), \
+-             mock.patch("capture.capture.subprocess.run", return_value=result):
++             mock.patch("capture.capture._run", return_value=result):
+             monitors = gather_monitors()
+ 
+         self.assertEqual(len(monitors), 1)
+diff --git a/tests/test_wfd_proc.py b/tests/test_wfd_proc.py
+new file mode 100644
+index 0000000..e49d932
+--- /dev/null
++++ b/tests/test_wfd_proc.py
+@@ -0,0 +1,38 @@
++import subprocess
++import sys
++import unittest
++
++from wfd.proc import CommandOutputLimitExceeded, MAX_COMMAND_OUTPUT_BYTES, _run
++
++
++class BoundedCommandTests(unittest.TestCase):
++    def test_captures_normal_output(self):
++        result = _run(
++            [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
++            timeout=2.0,
++        )
++        self.assertEqual(result.returncode, 0)
++        self.assertEqual(result.stdout, "out\n")
++        self.assertEqual(result.stderr, "err\n")
++
++    def test_rejects_oversized_stdout(self):
++        with self.assertRaises(CommandOutputLimitExceeded):
++            _run(
++                [sys.executable, "-c", f"import sys; sys.stdout.write('x' * {MAX_COMMAND_OUTPUT_BYTES + 1})"],
++                timeout=2.0,
++            )
++
++    def test_rejects_oversized_stderr(self):
++        with self.assertRaises(CommandOutputLimitExceeded):
++            _run(
++                [sys.executable, "-c", f"import sys; sys.stderr.write('x' * {MAX_COMMAND_OUTPUT_BYTES + 1})"],
++                timeout=2.0,
++            )
++
++    def test_preserves_timeout_contract(self):
++        with self.assertRaises(subprocess.TimeoutExpired):
++            _run([sys.executable, "-c", "import time; time.sleep(1)"], timeout=0.05)
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.55.0
+
