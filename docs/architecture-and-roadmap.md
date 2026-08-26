@@ -1152,6 +1152,11 @@ waiting in Display Mirroring and understands any temporary network change.
 - **Startup latency:** wait on owned readiness evidence instead of fixed sleeps,
   and end discovery early only for the exact validated receiver address. Keep
   every wait bounded and record only identifier-free timing milestones.
+- **Runtime bounds:** bound every retained command stream, protocol integer,
+  periodic pending request, and live journal before parsing or accumulation.
+- **Companion scope:** ship only the WFD engine and its owned networking
+  boundary; exclude legacy installer, tray, desktop, Chromecast, DLNA, and LAN
+  server payloads from both the wheel and release artifact.
 - **Release profile:** 1280x720p60 at 7 Mbps with the Fire-TV-proven wire pacer,
   zero mux delay, user-service CPU weighting, and measured 64 ms audio timestamp
   correction. There are no alternate production profiles.

@@ -2156,3 +2156,23 @@ dated 2026-08-23 remains under the user runtime directory; its timestamp and
 session identity predate revision 56, and the successful session neither owned
 nor altered it. It will naturally disappear with the user runtime at logout
 and is preserved rather than deleted without current ownership evidence.
+
+### Final companion boundary and long-session audit (2026-08-26)
+
+The post-acceptance line-by-line audit found four adjacent release risks. The
+wheel still carried a dormant PyPI system installer and obsolete integration
+assets; internal diagnostic commands retained unbounded output; receiver RTP
+port fields permitted oversized or out-of-range decimal input; and the live
+latency journal plus unanswered M16 keepalives could grow for the lifetime of a
+session.
+
+Production patches 38–41 remove the dormant payload, introduce a shared
+128-KiB-per-stream command runner, validate receiver ports lexically and within
+0–65535 before conversion, cap and safely compact the private latency journal
+at 256 KiB, and retain at most one unanswered keepalive. Package revision 60's
+artifact audit independently rejects the removed payload and requires each new
+bound. A clean 35-patch reconstruction passes 148 FluxCast tests, including
+output floods, 5,000-digit ports, long-session compaction, unsafe output paths,
+and unanswered keepalives. These changes do not alter the receiver-accepted
+capture, encode, pacing, or guarded networking path; a new release artifact
+must still be built from the final exact source commit.

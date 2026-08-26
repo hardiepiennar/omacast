@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2 — 2026-08-27
+
+- Reduce receiver connection time by waiting on owned network readiness and
+  ending discovery as soon as the selected receiver appears.
+- Remove the companion's dormant PyPI system installer, desktop/tray assets,
+  and obsolete Chromecast/DLNA startup code.
+- Bound internal command output, receiver-advertised port parsing, the live
+  latency journal, and unanswered RTSP keepalive state.
+- Keep the shipped companion WFD-only and add package-audit regressions for
+  every removed or bounded surface.
+
 ## 0.1.1 — 2026-08-25
 
 - Bound controller subprocess output, streaming QML collection, UI JSON

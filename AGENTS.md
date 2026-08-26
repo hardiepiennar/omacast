@@ -66,6 +66,13 @@ Security review checklist:
 - When one boundary bug is found, audit its sibling read, write, status,
   cleanup, and recovery paths plus every parent component before declaring the
   fix complete.
+- Validate protocol numbers by lexical width and numeric range before calling
+  `int`; message-size limits alone do not make numeric conversion safe.
+- Bound periodic and persistent state as well as request input: journals,
+  pending-request maps, retries, queues, and caches must remain bounded for an
+  indefinitely long cast.
+- Audit the built artifact for dormant entry points, package data, service
+  policies, and assets—not only reachable CLI options and imported modules.
 - Add adversarial regressions with deadlines. Prove oversized/deep/flooded
   input is bounded, special files cannot block, replacement races cannot
   redirect descriptors, and unrelated targets retain their content and mode.

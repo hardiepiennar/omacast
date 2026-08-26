@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "hardie.omarchy-cast",
   "name": "Omacast",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "Hardie Pienaar",
   "description": "Mirror your Omarchy desktop to Miracast with keyboard-first TV selection, live health, Nerd Mode, and safe recovery.",
   "kinds": [

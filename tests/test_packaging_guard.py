@@ -694,7 +694,9 @@ if record_session_interfaces; then exit 3; fi
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:
-            self.assertTrue((ROOT / "patches" / "production" / name).is_file(), name)
+            patch = ROOT / "patches" / "production" / name
+            self.assertTrue(patch.is_file(), name)
+            self.assertNotIn("@gmail.com", patch.read_text(encoding="utf-8"), name)
         bootstrap = (ROOT / "scripts" / "bootstrap-fluxcast").read_text(encoding="utf-8")
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
         self.assertIn('series_file="$repo_root/patches/production/series"', bootstrap)
@@ -855,6 +857,7 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("org.freedesktop.policykit.exec.argv1", policy)
         self.assertIn("same-session denial-of-service risk", security)
         self.assertIn("does not provide a general privileged command", security)
+        self.assertIn("security/advisories/new", security)
 
     def test_package_lifecycle_is_disposable_and_no_root(self) -> None:
         lifecycle = (ROOT / "scripts" / "test-package-lifecycle").read_text(encoding="utf-8")

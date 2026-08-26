@@ -32,7 +32,7 @@ Super+Alt+C  →  choose a TV  →  Enter
 
 Broad receiver and hardware support is not claimed yet. Omacast currently
 ships desktop mirroring only; window casting and alternate quality modes are
-not part of version 0.1.1.
+not part of version 0.1.2.
 
 ## Install on Omarchy
 
@@ -40,7 +40,7 @@ Omacast has two parts: the bar plugin and an Arch companion package containing
 the pinned FluxCast engine and guarded networking helper.
 
 Download the package and `SHA256SUMS` from the
-[v0.1.1 release](https://github.com/hardiepiennar/omacast/releases/tag/v0.1.1),
+[v0.1.2 release](https://github.com/hardiepiennar/omacast/releases/tag/v0.1.2),
 then verify and install it:
 
 ```bash

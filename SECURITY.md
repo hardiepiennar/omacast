@@ -66,6 +66,13 @@ Receiver, monitor, readiness, warning, diagnostic, and telemetry collections
 are normalized to small allowlisted models with explicit count and string
 limits before QML displays them.
 
+The companion engine retains at most 128 KiB from either stdout or stderr of
+each internal command and terminates a command that exceeds that limit.
+Receiver-advertised RTP ports are limited to five decimal digits and the valid
+0–65535 protocol range before integer conversion. The live latency journal is
+private, descriptor-validated, and capped at 256 KiB; an unanswered periodic
+RTSP keepalive occupies at most one pending entry.
+
 The runtime `state.json` file is limited to 65,536 bytes and the current
 telemetry snapshot to 262,144 bytes. Both are opened nonblocking without
 following symlinks, checked through the same descriptor for regular-file
@@ -103,6 +110,6 @@ moved to Trash using the explicit command in the README.
 ## Reporting a vulnerability
 
 Do not include credentials, private display content, or sensitive logs in a
-public report. Once the permanent public repository is established, use its
-private security-reporting channel. Until then, contact the maintainer through
-the same private channel used to obtain this source.
+public report. Use GitHub's
+[private vulnerability reporting form](https://github.com/hardiepiennar/omacast/security/advisories/new)
+for this repository.

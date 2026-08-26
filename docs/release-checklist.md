@@ -1,4 +1,4 @@
-# Omacast 0.1.0 marketplace checklist
+# Omacast release checklist
 
 ## Release candidate complete
 
@@ -520,6 +520,13 @@
       or interface drops, and passed user picture/sound assessment. GUI Stop
       returned idle, restored the normal radio topology, removed the current
       session runtime, and left no session process.
+- [x] Package revision 60 applies the 35-patch production stack. Dormant legacy
+      installer/tray assets and startup code are absent; internal command
+      capture, receiver media ports, latency journaling, and unanswered
+      keepalive state have explicit bounds and adversarial regressions. The
+      exact reconstruction passes 148 FluxCast tests.
+- [x] GitHub private vulnerability reporting is enabled for the public
+      repository, and `SECURITY.md` links directly to the private report form.
 
 Run this before every release:
 
