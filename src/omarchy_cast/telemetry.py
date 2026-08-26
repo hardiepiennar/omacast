@@ -8,61 +8,278 @@ import json
 import os
 from pathlib import Path
 import re
-import tempfile
+import stat
 import threading
 import time
 from typing import Any, Mapping
+from uuid import uuid4
 
 from .bounds import BoundError, MAX_TELEMETRY_BYTES, read_bounded_regular_file, validate_json_budget
 from .command import run_command
-from .state import runtime_directory
+from .state import _open_session_runtime_descriptor, runtime_directory
 
 
 _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _NUMBER = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
 _LIVE_FILENAMES = frozenset({"current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log"})
+_PATH_KEYS = {
+    "current": "current.json",
+    "progress": "ffmpeg.progress",
+    "packets": "mux-packets.csv",
+    "latency": "engine.jsonl",
+    "engineLog": "engine.log",
+}
+
+
+def _open_private_child(directory_descriptor: int, name: str, *, create: bool) -> int:
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    if create:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=directory_descriptor)
+        except FileExistsError:
+            pass
+    descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise ValueError("telemetry directory ownership or permissions are unsafe")
+        if stat.S_IMODE(metadata.st_mode) != 0o700:
+            os.fchmod(descriptor, 0o700)
+            metadata = os.fstat(descriptor)
+        if stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise ValueError("telemetry directory ownership or permissions are unsafe")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_live_parent(environ: Mapping[str, str] | None, *, create: bool) -> int:
+    runtime_descriptor = _open_session_runtime_descriptor(environ, create=create)
+    try:
+        return _open_private_child(runtime_descriptor, "telemetry", create=create)
+    finally:
+        os.close(runtime_descriptor)
+
+
+def _state_home(environ: Mapping[str, str]) -> Path:
+    return Path(environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+
+
+def _open_archive_directory(environ: Mapping[str, str], *, create: bool) -> int:
+    state_home = _state_home(environ)
+    if create:
+        state_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    state_descriptor = os.open(state_home, flags)
+    try:
+        metadata = os.fstat(state_descriptor)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o022:
+            raise ValueError("telemetry state directory ownership or permissions are unsafe")
+        product_descriptor = _open_private_child(state_descriptor, "omarchy-cast", create=create)
+    finally:
+        os.close(state_descriptor)
+    try:
+        return _open_private_child(product_descriptor, "telemetry", create=create)
+    finally:
+        os.close(product_descriptor)
+
+
+def _write_all(descriptor: int, encoded: bytes) -> None:
+    view = memoryview(encoded)
+    while view:
+        written = os.write(descriptor, view)
+        view = view[written:]
+
+
+def _read_descriptor_text(descriptor: int, limit: int) -> str:
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or metadata.st_mode & 0o077
+        or metadata.st_nlink not in (0, 1)
+    ):
+        return ""
+    size = metadata.st_size
+    try:
+        if size > limit:
+            header = os.pread(descriptor, min(4096, limit), 0)
+            tail_size = max(0, limit - len(header))
+            tail = os.pread(descriptor, tail_size, max(0, size - tail_size))
+            payload = header + (b"\n" if tail_size else b"") + tail
+        else:
+            payload = os.pread(descriptor, limit, 0)
+    except OSError:
+        return ""
+    return payload[:limit].decode("utf-8", errors="replace")
+
+
+class TelemetryWorkspace:
+    """Pinned private directories and files for one telemetry producer."""
+
+    def __init__(self, session_id: str, environ: Mapping[str, str] | None = None, *, archive: bool = True) -> None:
+        if not _SESSION_ID.fullmatch(session_id):
+            raise ValueError("telemetry requires a controller-issued session id")
+        self.session_id = session_id
+        self.environ = dict(os.environ if environ is None else environ)
+        parent_descriptor = _open_live_parent(self.environ, create=True)
+        try:
+            self.live_descriptor = _open_private_child(parent_descriptor, session_id, create=True)
+        finally:
+            os.close(parent_descriptor)
+        try:
+            self.archive_descriptor = _open_archive_directory(self.environ, create=True) if archive else None
+        except Exception:
+            os.close(self.live_descriptor)
+            self.live_descriptor = -1
+            raise
+        self._outputs: dict[str, int] = {}
+        self.paths = _telemetry_path_values(session_id, self.environ)
+
+    def close(self) -> None:
+        for descriptor in self._outputs.values():
+            os.close(descriptor)
+        self._outputs.clear()
+        if self.archive_descriptor is not None:
+            os.close(self.archive_descriptor)
+            self.archive_descriptor = None
+        if self.live_descriptor >= 0:
+            os.close(self.live_descriptor)
+            self.live_descriptor = -1
+
+    def prepare_engine_outputs(self) -> dict[str, Path]:
+        try:
+            for key in ("progress", "latency", "packets", "engineLog"):
+                name = _PATH_KEYS[key]
+                try:
+                    os.unlink(name, dir_fd=self.live_descriptor)
+                except FileNotFoundError:
+                    pass
+                flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+                flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                descriptor = os.open(name, flags, 0o600, dir_fd=self.live_descriptor)
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+                    os.close(descriptor)
+                    raise ValueError("telemetry output is unsafe")
+                os.fchmod(descriptor, 0o600)
+                self._outputs[key] = descriptor
+        except Exception:
+            for descriptor in self._outputs.values():
+                os.close(descriptor)
+            self._outputs.clear()
+            raise
+        process_fd_root = Path(f"/proc/{os.getpid()}/fd")
+        return {key: process_fd_root / str(descriptor) for key, descriptor in self._outputs.items()}
+
+    def engine_log_handle(self):
+        return os.fdopen(os.dup(self._outputs["engineLog"]), "w", encoding="utf-8")
+
+    def read_text(self, key: str, limit: int = MAX_TELEMETRY_BYTES) -> str:
+        descriptor = self._outputs.get(key)
+        if descriptor is not None:
+            return _read_descriptor_text(descriptor, limit)
+        return _bounded_read(
+            Path(_PATH_KEYS[key]),
+            limit,
+            directory_fd=self.live_descriptor,
+            require_owner=True,
+            require_private=True,
+            require_single_link=True,
+        )
+
+    def write_current(self, payload: Mapping[str, Any]) -> None:
+        _atomic_json(self.live_descriptor, _PATH_KEYS["current"], payload)
+
+    def append_sample(self, payload: Mapping[str, Any]) -> None:
+        if self.archive_descriptor is None:
+            return
+        encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(f"{self.session_id}.jsonl", flags, 0o600, dir_fd=self.archive_descriptor)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+                raise ValueError("telemetry archive is unsafe")
+            os.fchmod(descriptor, 0o600)
+            _write_all(descriptor, encoded)
+        finally:
+            os.close(descriptor)
+
+
+def _telemetry_path_values(session_id: str, environ: Mapping[str, str]) -> dict[str, Path]:
+    live = runtime_directory(environ) / "telemetry" / session_id
+    archive = _state_home(environ) / "omarchy-cast" / "telemetry"
+    return {**{key: live / name for key, name in _PATH_KEYS.items()}, "samples": archive / f"{session_id}.jsonl"}
 
 
 def telemetry_paths(session_id: str, environ: Mapping[str, str] | None = None) -> dict[str, Path]:
     if not _SESSION_ID.fullmatch(session_id):
         raise ValueError("telemetry requires a controller-issued session id")
     environ = os.environ if environ is None else environ
-    live = runtime_directory(environ) / "telemetry" / session_id
-    state_home = Path(environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
-    archive = state_home / "omarchy-cast" / "telemetry"
-    live.mkdir(mode=0o700, parents=True, exist_ok=True)
-    archive.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return {
-        "current": live / "current.json",
-        "progress": live / "ffmpeg.progress",
-        "packets": live / "mux-packets.csv",
-        "latency": live / "engine.jsonl",
-        "engineLog": live / "engine.log",
-        "samples": archive / f"{session_id}.jsonl",
-    }
-
-
-def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".telemetry-", dir=path.parent)
-    temporary = Path(temporary_name)
+    workspace = TelemetryWorkspace(session_id, environ)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
-            handle.write("\n")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+        return dict(workspace.paths)
     finally:
-        temporary.unlink(missing_ok=True)
+        workspace.close()
+
+
+def _atomic_json(directory_descriptor: int, name: str, payload: Mapping[str, Any]) -> None:
+    temporary_name = f".telemetry-{uuid4().hex}.tmp"
+    descriptor = -1
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(temporary_name, flags, 0o600, dir_fd=directory_descriptor)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+            raise ValueError("telemetry temporary file is unsafe")
+        os.fchmod(descriptor, 0o600)
+        encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        if len(encoded) > MAX_TELEMETRY_BYTES:
+            raise ValueError("telemetry snapshot exceeds the safe size limit")
+        _write_all(descriptor, encoded)
+        os.fsync(descriptor)
+        os.replace(temporary_name, name, src_dir_fd=directory_descriptor, dst_dir_fd=directory_descriptor)
+        os.fsync(directory_descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_name, dir_fd=directory_descriptor)
+        except OSError:
+            pass
 
 
 def read_telemetry(session_id: str, environ: Mapping[str, str] | None = None) -> dict[str, object] | None:
+    directory_descriptor = -1
+    parent_descriptor = -1
     try:
-        path = telemetry_paths(session_id, environ)["current"]
-        encoded = read_bounded_regular_file(path, limit=MAX_TELEMETRY_BYTES, require_owner=True, require_private=True)
+        if not _SESSION_ID.fullmatch(session_id):
+            raise ValueError("telemetry requires a controller-issued session id")
+        parent_descriptor = _open_live_parent(environ, create=False)
+        directory_descriptor = _open_private_child(parent_descriptor, session_id, create=False)
+        encoded = read_bounded_regular_file(
+            Path(_PATH_KEYS["current"]),
+            limit=MAX_TELEMETRY_BYTES,
+            require_owner=True,
+            require_private=True,
+            require_single_link=True,
+            directory_fd=directory_descriptor,
+        )
         payload = json.loads(encoded.decode("utf-8"))
         validate_json_budget(payload, max_nodes=4_096)
     except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, BoundError):
         return None
+    finally:
+        if directory_descriptor >= 0:
+            os.close(directory_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
     if not isinstance(payload, dict) or payload.get("schemaVersion") != 1 or payload.get("sessionId") != session_id:
         return None
     return payload
@@ -72,17 +289,49 @@ def cleanup_live_telemetry(session_id: str, environ: Mapping[str, str] | None = 
     """Remove only controller-owned volatile files for one finished session."""
     if not _SESSION_ID.fullmatch(session_id):
         raise ValueError("telemetry cleanup requires a controller-issued session id")
-    live = runtime_directory(environ) / "telemetry" / session_id
-    if not live.exists():
-        return True
-    if live.is_symlink() or not live.is_dir():
-        return False
+    parent_descriptor = -1
+    directory_descriptor = -1
     try:
+        parent_descriptor = _open_live_parent(environ, create=False)
+        directory_descriptor = _open_private_child(parent_descriptor, session_id, create=False)
         for name in _LIVE_FILENAMES:
-            (live / name).unlink(missing_ok=True)
-        live.rmdir()
-    except OSError:
+            try:
+                os.unlink(name, dir_fd=directory_descriptor)
+            except FileNotFoundError:
+                pass
+        pinned = os.fstat(directory_descriptor)
+        current = os.stat(session_id, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino):
+            return False
+        os.rmdir(session_id, dir_fd=parent_descriptor)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
         return False
+    finally:
+        if directory_descriptor >= 0:
+            os.close(directory_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+    return True
+
+
+def remove_archived_telemetry(session_id: str, environ: Mapping[str, str] | None = None) -> bool:
+    """Remove one allowlisted archive entry relative to its pinned directory."""
+    if not _SESSION_ID.fullmatch(session_id):
+        raise ValueError("telemetry cleanup requires a controller-issued session id")
+    environment = dict(os.environ if environ is None else environ)
+    descriptor = -1
+    try:
+        descriptor = _open_archive_directory(environment, create=False)
+        os.unlink(f"{session_id}.jsonl", dir_fd=descriptor)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     return True
 
 
@@ -121,17 +370,43 @@ def parse_iw_station(text: str) -> dict[str, int | float]:
     return fields
 
 
-def _bounded_read(path: Path, limit: int = 262_144) -> str:
+def _bounded_read(
+    path: Path,
+    limit: int = 262_144,
+    *,
+    directory_fd: int | None = None,
+    require_owner: bool = False,
+    require_private: bool = False,
+    require_single_link: bool = False,
+) -> str:
+    descriptor = -1
     try:
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            if size > limit:
-                header = handle.read(4096)
-                handle.seek(size - (limit - len(header)))
-                return (header + b"\n" + handle.read(limit - len(header))).decode("utf-8", errors="replace")
-            return handle.read(limit).decode("utf-8", errors="replace")
-    except OSError:
+        flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, dir_fd=directory_fd)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            return ""
+        if require_owner and metadata.st_uid != os.getuid():
+            return ""
+        if require_private and metadata.st_mode & 0o077:
+            return ""
+        if require_single_link and metadata.st_nlink != 1:
+            return ""
+        size = metadata.st_size
+        if size > limit:
+            header = os.pread(descriptor, min(4096, limit), 0)
+            tail_size = max(0, limit - len(header))
+            tail = os.pread(descriptor, tail_size, max(0, size - tail_size))
+            encoded = header + (b"\n" if tail_size else b"") + tail
+        else:
+            encoded = os.pread(descriptor, limit, 0)
+        return encoded[:limit].decode("utf-8", errors="replace")
+    except (OSError, ValueError):
         return ""
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _number(value: str | None, default: float = 0.0) -> float:
@@ -150,13 +425,16 @@ class TelemetrySampler:
         wifi_interface: str,
         source_port: int = 19002,
         environ: Mapping[str, str] | None = None,
+        workspace: TelemetryWorkspace | None = None,
     ) -> None:
         self.session_id = session_id
         self.engine_pid = engine_pid
         self.wifi_interface = wifi_interface
         self.source_port = source_port
         self.environ = dict(os.environ if environ is None else environ)
-        self.paths = telemetry_paths(session_id, self.environ)
+        self._workspace = workspace or TelemetryWorkspace(session_id, self.environ)
+        self._owns_workspace = workspace is None
+        self.paths = dict(self._workspace.paths)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._previous_process: dict[int, tuple[float, float, float, int, int, int, int]] = {}
@@ -183,6 +461,8 @@ class TelemetrySampler:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2)
+        if self._owns_workspace:
+            self._workspace.close()
 
     def _descendants(self) -> list[int]:
         found: list[int] = []
@@ -301,7 +581,7 @@ class TelemetrySampler:
         streams: dict[int, list[float]] = {}
         sizes: dict[int, int] = {}
         timebases: dict[int, float] = {}
-        for line in _bounded_read(self.paths["packets"]).splitlines():
+        for line in self._workspace.read_text("packets").splitlines():
             timebase = re.fullmatch(r"#tb\s+(\d+):\s+(\d+)/(\d+)", line.strip())
             if timebase and int(timebase[3]):
                 timebases[int(timebase[1])] = int(timebase[2]) / int(timebase[3])
@@ -361,7 +641,7 @@ class TelemetrySampler:
 
     def _negotiated(self) -> dict[str, object]:
         result: dict[str, object] = {}
-        for line in _bounded_read(self.paths["latency"]).splitlines():
+        for line in self._workspace.read_text("latency").splitlines():
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
@@ -375,7 +655,7 @@ class TelemetrySampler:
         return result
 
     def _output(self, now: float) -> dict[str, int | float | str]:
-        progress = parse_ffmpeg_progress(_bounded_read(self.paths["progress"]))
+        progress = parse_ffmpeg_progress(self._workspace.read_text("progress"))
         frame = int(_number(progress.get("frame")))
         out_us = int(_number(progress.get("out_time_us")))
         self._window.append((now, frame, out_us))
@@ -466,10 +746,8 @@ class TelemetrySampler:
         return payload
 
     def _record(self, payload: Mapping[str, object]) -> None:
-        _atomic_json(self.paths["current"], payload)
-        with self.paths["samples"].open("a", encoding="utf-8") as handle:
-            os.chmod(self.paths["samples"], 0o600)
-            handle.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+        self._workspace.write_current(payload)
+        self._workspace.append_sample(payload)
 
     def _run(self) -> None:
         deadline = time.monotonic()

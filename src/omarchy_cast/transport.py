@@ -14,7 +14,7 @@ import time
 from typing import Any, Callable, Mapping, Protocol
 
 from .guard import GuardRequest, prepare_command, validate_helper_result
-from .telemetry import TelemetrySampler, _bounded_read, cleanup_live_telemetry, telemetry_paths
+from .telemetry import TelemetrySampler, TelemetryWorkspace, _bounded_read, cleanup_live_telemetry
 
 
 CONNECT_TIMEOUT_SECONDS = 75
@@ -239,10 +239,14 @@ class GuardedTransportAdapter:
     @staticmethod
     def _media_started(progress_path: Path) -> bool:
         """Require a completed FFmpeg progress record with an encoded video frame."""
+        return GuardedTransportAdapter._media_started_text(_bounded_read(progress_path))
+
+    @staticmethod
+    def _media_started_text(progress: str) -> bool:
         try:
             record: dict[str, str] = {}
             completed: dict[str, str] = {}
-            for line in _bounded_read(progress_path).splitlines():
+            for line in progress.splitlines():
                 key, separator, value = line.partition("=")
                 if not separator:
                     continue
@@ -311,6 +315,7 @@ class GuardedTransportAdapter:
         helper: subprocess.Popen[str] | None = None
         engine: subprocess.Popen[str] | None = None
         sampler: TelemetrySampler | None = None
+        telemetry: TelemetryWorkspace | None = None
         lease: SessionLease | None = None
         engine_log = None
         guard_ready = False
@@ -323,24 +328,21 @@ class GuardedTransportAdapter:
             guard_ready = True
             lease = SessionLease(Path(trigger).with_name("heartbeat"))
             lease.start()
-            paths = telemetry_paths(self.request.session_id, self.env)
-            paths["progress"].unlink(missing_ok=True)
-            paths["latency"].unlink(missing_ok=True)
-            paths["packets"].unlink(missing_ok=True)
-            paths["engineLog"].unlink(missing_ok=True)
+            telemetry = TelemetryWorkspace(self.request.session_id, self.env)
+            engine_paths = telemetry.prepare_engine_outputs()
             # Per-packet framecrc is a valuable trace, but it creates a second
             # FFmpeg output and continuous disk I/O. Keep it explicitly opt-in
             # so production monitoring cannot steal time from capture.
-            command = self._engine_command(plan, paths, trigger)
+            command = self._engine_command(plan, engine_paths, trigger)
             stage("connecting")
-            engine_log = paths["engineLog"].open("w", encoding="utf-8")
-            os.chmod(paths["engineLog"], 0o600)
+            engine_log = telemetry.engine_log_handle()
             engine = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=engine_log, stderr=subprocess.STDOUT, text=True, env=self.env)
             sampler = TelemetrySampler(
                 session_id=self.request.session_id,
                 engine_pid=engine.pid,
                 wifi_interface=self.request.interface,
                 environ=self.env,
+                workspace=telemetry,
             )
             sampler.start()
             deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else float("inf")
@@ -354,7 +356,7 @@ class GuardedTransportAdapter:
                 now = time.monotonic()
                 if rtsp_ready_at is None and self._rtsp_established(engine.pid):
                     rtsp_ready_at = now
-                if not streaming and rtsp_ready_at is not None and self._media_started(paths["progress"]):
+                if not streaming and rtsp_ready_at is not None and self._media_started_text(telemetry.read_text("progress")):
                     stage("streaming")
                     streaming = True
                 if streaming:
@@ -391,7 +393,7 @@ class GuardedTransportAdapter:
                     return TransportResult("failed", "Desktop capture produced no video frames.", True, "capture-failed")
                 return TransportResult("timeout", "guarded stream duration elapsed", True)
             engine_log.flush()
-            engine_output = _bounded_read(paths["engineLog"])
+            engine_output = telemetry.read_text("engineLog")
             detail = self._bounded_detail(engine_output, "FluxCast exited" if engine.returncode == 0 else f"FluxCast exited with status {engine.returncode}")
             return TransportResult("completed", detail, True) if engine.returncode == 0 else TransportResult("failed", detail, True, self._failure_code(engine_output))
         finally:
@@ -433,6 +435,8 @@ class GuardedTransportAdapter:
                     guard_cleanup_confirmed = self._cleanup_confirmed(helper, self.request)
             if engine_log is not None:
                 engine_log.close()
+            if telemetry is not None:
+                telemetry.close()
             cleanup_live_telemetry(self.request.session_id, self.env)
             if guard_ready and not guard_cleanup_confirmed:
                 raise TransportError(

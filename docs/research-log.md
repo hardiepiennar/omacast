@@ -1570,3 +1570,36 @@ blocking, reject oversized inputs and invalid state IDs, and retain normal
 simulation, history, Stop, stale recovery, and transport behavior. This changes
 no privileged helper, network, capture, or receiver path. All 139 offline tests,
 Python compilation, and staged payload validation pass.
+
+### State and telemetry directory anchoring (2026-08-26)
+
+The exhaustive review found that hardened final-file reads were still reached
+through replaceable parent pathnames. State writes recreated
+`$XDG_RUNTIME_DIR/omarchy-cast` as a path before temporary creation and atomic
+replacement. Telemetry creation, snapshot replacement, cleanup, archive
+append/retention, and engine progress/log handling had the same weakness. The
+auxiliary telemetry reader also performed `stat()` before a path-following
+`open()`, allowing both replacement races and FIFO blocking.
+
+State reads and writes now retain the validated runtime directory descriptor.
+Writes create an unpredictable exclusive private temporary, validate and sync
+that inode, then replace and sync descriptor-relatively. Live and archived
+telemetry directories are opened component-by-component with no-follow
+semantics, current-user ownership, and private modes. Snapshot replacement,
+archive append, retention, and cleanup operate only relative to those pinned
+directories; cleanup verifies that the live session name still identifies the
+pinned directory before removing it.
+
+The media boundary required an additional measure because FluxCast and FFmpeg
+accept path arguments. The controller now preopens and validates progress,
+latency, packet, and engine-log files, keeps their descriptors for the session,
+and passes `/proc/<controller-pid>/fd/<descriptor>` paths to the engine. This
+lets FluxCast and its FFmpeg child reopen the exact inode without depending on
+the replaceable telemetry filename. Sampling reads the same pinned descriptors.
+
+Offline regressions cover symlinked directories, final-file symlinks and hard
+links, FIFOs, induced parent replacement after open, archive redirection, and a
+two-generation subprocess write through the descriptor-backed engine path.
+Unrelated targets remain unchanged. The change affects only unprivileged local
+state/telemetry handling and does not alter P2P, privileged cleanup, capture,
+encoding, or receiver negotiation, so no Fire TV run is required.

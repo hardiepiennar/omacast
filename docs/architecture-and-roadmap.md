@@ -181,6 +181,12 @@ smoothness, continuous internet access, and audio/video sync all matter.
   directory descriptors with no-follow/nonblocking flags, validate the lock
   inode's type, owner, and link count with `fstat`, and apply its mode only with
   `fchmod` on that descriptor.
+- Runtime state, live telemetry, and archived telemetry now retain validated
+  private directory descriptors for their complete operation. Atomic state and
+  snapshot replacement, cleanup, retention, and archive append are relative to
+  those descriptors. FluxCast receives paths to preopened telemetry inodes
+  through the controller's `/proc/<pid>/fd` entries, so a later pathname swap
+  cannot redirect engine output to another user file.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the
@@ -440,6 +446,10 @@ lowercase hexadecimal characters. Event logs and Stop requests are opened or
 replaced relative to validated private directory descriptors. Reads are
 nonblocking, bounded, no-follow, current-user-owned, private, regular, and
 single-link; malformed or unsafe entries never become history or control data.
+State and telemetry directory identities remain pinned across atomic writes,
+engine handoff, sampling, cleanup, and archive retention. Engine output files
+are created and validated before FluxCast starts; subprocesses address those
+exact inodes rather than reopening user-replaceable telemetry pathnames.
 
 Run the streaming supervisor outside `omarchy-shell`, preferably as a named
 transient `systemd --user` service. A shell reload must not orphan the stream;

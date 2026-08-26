@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from .bounds import BoundError, read_bounded_regular_file, validate_json_budget
 from .state import SessionLock, StateError, _open_session_runtime_descriptor, idle_state, read_state, transition, write_state
-from .telemetry import cleanup_live_telemetry
+from .telemetry import cleanup_live_telemetry, remove_archived_telemetry
 from .transport import TransportAdapter, TransportError, TransportResult, result_payload, validate_transport_plan
 
 
@@ -131,10 +131,9 @@ def _prune_session_logs(current_session_id: str, environ: Mapping[str, str] | No
                 removed.append(name)
         finally:
             os.close(directory_descriptor)
-        telemetry = _state_home(environ) / "telemetry"
         for name in removed:
-            (telemetry / name).unlink(missing_ok=True)
-    except (OSError, SessionError):
+            remove_archived_telemetry(name.removesuffix(".jsonl"), environ)
+    except (OSError, ValueError, SessionError):
         # Retention housekeeping must never interrupt a cast lifecycle.
         return
 

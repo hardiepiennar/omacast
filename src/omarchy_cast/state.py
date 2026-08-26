@@ -9,8 +9,8 @@ import os
 from pathlib import Path
 import re
 import stat
-import tempfile
 from typing import Any, Mapping
+from uuid import uuid4
 
 from .bounds import BoundError, MAX_STATE_BYTES, bounded_text, read_bounded_regular_file, validate_json_budget
 
@@ -51,6 +51,8 @@ def _open_session_runtime_descriptor(environ: Mapping[str, str] | None, *, creat
             raise StateError("session runtime directory is unavailable or unsafe") from exc
     try:
         runtime_descriptor = os.open(runtime, flags)
+    except FileNotFoundError:
+        raise
     except OSError as exc:
         raise StateError("session runtime directory is unavailable or unsafe") from exc
     try:
@@ -64,6 +66,8 @@ def _open_session_runtime_descriptor(environ: Mapping[str, str] | None, *, creat
                 pass
         try:
             directory_descriptor = os.open("omarchy-cast", flags, dir_fd=runtime_descriptor)
+        except FileNotFoundError:
+            raise
         except OSError as exc:
             raise StateError("session runtime directory is unavailable or unsafe") from exc
     finally:
@@ -239,17 +243,22 @@ def state_path(environ: Mapping[str, str] | None = None) -> Path:
 
 
 def read_state(environ: Mapping[str, str] | None = None) -> dict[str, object]:
-    path = state_path(environ)
     try:
-        encoded = read_bounded_regular_file(
-            path,
-            limit=MAX_STATE_BYTES,
-            require_owner=True,
-            require_private=True,
-        )
+        directory_descriptor = _open_session_runtime_descriptor(environ, create=False)
+        try:
+            encoded = read_bounded_regular_file(
+                Path("state.json"),
+                limit=MAX_STATE_BYTES,
+                require_owner=True,
+                require_private=True,
+                require_single_link=True,
+                directory_fd=directory_descriptor,
+            )
+        finally:
+            os.close(directory_descriptor)
     except FileNotFoundError:
         return idle_state()
-    except (OSError, BoundError) as exc:
+    except (OSError, BoundError, StateError) as exc:
         raise StateError("cannot read runtime state: " + bounded_text(str(exc), limit=240)) from exc
     try:
         loaded = json.loads(encoded.decode("utf-8"))
@@ -262,24 +271,40 @@ def read_state(environ: Mapping[str, str] | None = None) -> dict[str, object]:
 
 def write_state(state: Mapping[str, Any], environ: Mapping[str, str] | None = None) -> Path:
     checked = validate_state(state)
-    directory = runtime_directory(environ)
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / "state.json"
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".state-", dir=directory)
-    temporary = Path(temporary_name)
+    encoded = (json.dumps(checked, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    if len(encoded) > MAX_STATE_BYTES:
+        raise StateError(f"runtime state exceeds the {MAX_STATE_BYTES}-byte limit")
+    directory_descriptor = _open_session_runtime_descriptor(environ, create=True)
+    temporary_name = f".state-{uuid4().hex}.tmp"
+    descriptor = -1
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(checked, handle, sort_keys=True, separators=(",", ":"))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        directory_descriptor = os.open(directory, os.O_DIRECTORY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(temporary_name, flags, 0o600, dir_fd=directory_descriptor)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+            raise StateError("runtime state temporary file is unsafe")
+        os.fchmod(descriptor, 0o600)
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+        os.replace(
+            temporary_name,
+            "state.json",
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+        )
+        os.fsync(directory_descriptor)
+    except OSError as exc:
+        raise StateError("cannot write runtime state safely") from exc
     finally:
-        temporary.unlink(missing_ok=True)
-    return path
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_name, dir_fd=directory_descriptor)
+        except OSError:
+            pass
+        os.close(directory_descriptor)
+    return state_path(environ)

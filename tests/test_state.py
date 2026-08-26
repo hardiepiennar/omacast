@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from omarchy_cast.bounds import MAX_STATE_BYTES
 from omarchy_cast.state import SessionLock, StateError, idle_state, read_state, session_lock_is_held, state_path, transition, write_state
@@ -54,6 +55,64 @@ class StateTest(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(read_state(environment)["sessionId"], SESSION_ID)
             self.assertEqual(json.loads(path.read_text())["phase"], "checking")
+
+    def test_state_write_rejects_a_symlinked_runtime_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            target = Path(temp) / "unrelated"
+            target.mkdir(mode=0o700)
+            preserved = target / "state.json"
+            preserved.write_text("preserve", encoding="utf-8")
+            (Path(temp) / "omarchy-cast").symlink_to(target, target_is_directory=True)
+            state = transition(idle_state(), "checking", sessionId=SESSION_ID)
+
+            with self.assertRaisesRegex(StateError, "unavailable or unsafe"):
+                write_state(state, environment)
+
+            self.assertEqual(preserved.read_text(encoding="utf-8"), "preserve")
+
+    def test_state_write_replaces_links_without_changing_their_targets(self) -> None:
+        for link_kind in ("symlink", "hardlink"):
+            with self.subTest(link_kind=link_kind), tempfile.TemporaryDirectory() as temp:
+                environment = {"XDG_RUNTIME_DIR": temp}
+                directory = Path(temp) / "omarchy-cast"
+                directory.mkdir(mode=0o700)
+                target = Path(temp) / "unrelated-state"
+                target.write_text("preserve", encoding="utf-8")
+                target.chmod(0o600)
+                state_file = directory / "state.json"
+                if link_kind == "symlink":
+                    state_file.symlink_to(target)
+                else:
+                    os.link(target, state_file)
+
+                write_state(transition(idle_state(), "checking", sessionId=SESSION_ID), environment)
+
+                self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+                self.assertEqual(read_state(environment)["sessionId"], SESSION_ID)
+
+    def test_state_write_stays_on_the_pinned_directory_after_path_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            original = Path(temp) / "omarchy-cast"
+            original.mkdir(mode=0o700)
+            detached = Path(temp) / "detached-runtime"
+            replacement = Path(temp) / "replacement"
+            replacement.mkdir(mode=0o700)
+
+            class ReplacingToken:
+                @property
+                def hex(self) -> str:
+                    original.rename(detached)
+                    original.symlink_to(replacement, target_is_directory=True)
+                    return "b" * 32
+
+            state = transition(idle_state(), "checking", sessionId=SESSION_ID)
+            with patch("omarchy_cast.state.uuid4", return_value=ReplacingToken()):
+                write_state(state, environment)
+
+            self.assertFalse((replacement / "state.json").exists())
+            self.assertEqual(json.loads((detached / "state.json").read_text())["sessionId"], SESSION_ID)
 
     def test_no_runtime_state_is_idle(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

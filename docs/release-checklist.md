@@ -382,6 +382,11 @@
       unpredictable atomic Stop temporaries, and strict controller-issued
       session IDs. Adversarial and lifecycle tests pass; no privileged, media,
       or network behavior changes.
+- [x] Runtime state and live/archive telemetry stay relative to validated
+      private directory descriptors for reads, atomic replacement, cleanup,
+      retention, and append. FluxCast writes progress, latency, packet, and log
+      output through preopened descriptor-backed paths. Link, FIFO, hard-link,
+      and induced directory-replacement tests preserve unrelated targets.
 
 Run this before every release:
 

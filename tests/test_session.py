@@ -19,7 +19,8 @@ class SessionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             environment = {"XDG_RUNTIME_DIR": temp, "XDG_STATE_HOME": temp}
             telemetry = Path(temp) / "omarchy-cast" / "telemetry"
-            telemetry.mkdir(parents=True)
+            telemetry.mkdir(mode=0o700, parents=True)
+            telemetry.parent.chmod(0o700)
             for index in range(MAX_SESSION_LOGS + 4):
                 session_id = f"{index:032x}"
                 (telemetry / f"{session_id}.jsonl").write_text("{}\n")

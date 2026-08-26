@@ -9,7 +9,16 @@ import tempfile
 import unittest
 
 from omarchy_cast.bounds import MAX_TELEMETRY_BYTES
-from omarchy_cast.telemetry import TelemetrySampler, cleanup_live_telemetry, parse_ffmpeg_progress, parse_iw_station, read_telemetry, telemetry_paths
+from omarchy_cast.telemetry import (
+    TelemetrySampler,
+    TelemetryWorkspace,
+    _bounded_read,
+    cleanup_live_telemetry,
+    parse_ffmpeg_progress,
+    parse_iw_station,
+    read_telemetry,
+    telemetry_paths,
+)
 
 
 class TelemetryTest(unittest.TestCase):
@@ -81,6 +90,122 @@ class TelemetryTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_telemetry_rejects_symlinked_private_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Path(temp) / "run"
+            runtime.mkdir(mode=0o700)
+            product = runtime / "omarchy-cast"
+            product.mkdir(mode=0o700)
+            target = Path(temp) / "unrelated"
+            target.mkdir(mode=0o700)
+            (product / "telemetry").symlink_to(target, target_is_directory=True)
+            environment = {"XDG_RUNTIME_DIR": str(runtime), "XDG_STATE_HOME": str(Path(temp) / "state")}
+
+            with self.assertRaises(OSError):
+                telemetry_paths("a" * 32, environment)
+
+            self.assertEqual(list(target.iterdir()), [])
+
+    def test_existing_owned_telemetry_directories_are_tightened_by_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Path(temp) / "run"
+            runtime.mkdir(mode=0o700)
+            product = runtime / "omarchy-cast"
+            live = product / "telemetry"
+            session = live / ("a" * 32)
+            session.mkdir(mode=0o755, parents=True)
+            product.chmod(0o700)
+            live.chmod(0o755)
+            state_product = Path(temp) / "state" / "omarchy-cast"
+            archive = state_product / "telemetry"
+            archive.mkdir(mode=0o755, parents=True)
+            state_product.chmod(0o755)
+            environment = {"XDG_RUNTIME_DIR": str(runtime), "XDG_STATE_HOME": str(Path(temp) / "state")}
+
+            telemetry_paths("a" * 32, environment)
+
+            for directory in (live, session, state_product, archive):
+                self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+
+    def test_pinned_workspace_cannot_be_redirected_by_directory_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            session_id = "a" * 32
+            workspace = TelemetryWorkspace(session_id, environment)
+            live = workspace.paths["current"].parent
+            detached = live.with_name("detached")
+            replacement = Path(temp) / "replacement"
+            replacement.mkdir(mode=0o700)
+            live.rename(detached)
+            live.symlink_to(replacement, target_is_directory=True)
+            try:
+                workspace.write_current({"schemaVersion": 1, "sessionId": session_id})
+            finally:
+                workspace.close()
+
+            self.assertFalse((replacement / "current.json").exists())
+            self.assertTrue((detached / "current.json").is_file())
+
+    def test_engine_output_paths_remain_bound_to_preopened_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            workspace = TelemetryWorkspace("a" * 32, environment)
+            engine_paths = workspace.prepare_engine_outputs()
+            visible = workspace.paths["progress"]
+            target = Path(temp) / "unrelated-progress"
+            target.write_text("preserve", encoding="utf-8")
+            visible.unlink()
+            visible.symlink_to(target)
+            try:
+                child = (
+                    "import subprocess,sys\n"
+                    "result = subprocess.run((sys.executable, '-c', "
+                    "'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])', "
+                    "sys.argv[1], 'frame=1\\nprogress=continue\\n'))\n"
+                    "raise SystemExit(result.returncode)\n"
+                )
+                result = subprocess.run(
+                    (sys.executable, "-c", child, str(engine_paths["progress"])),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("frame=1", workspace.read_text("progress"))
+            finally:
+                workspace.close()
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+
+    def test_archive_append_rejects_a_symlink_without_changing_its_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            workspace = TelemetryWorkspace("a" * 32, environment)
+            target = Path(temp) / "unrelated-archive"
+            target.write_text("preserve", encoding="utf-8")
+            workspace.paths["samples"].symlink_to(target)
+            try:
+                with self.assertRaises(OSError):
+                    workspace.append_sample({"schemaVersion": 1})
+            finally:
+                workspace.close()
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+
+    def test_bounded_reader_rejects_fifo_and_hardlink_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fifo = root / "fifo"
+            os.mkfifo(fifo, mode=0o600)
+            self.assertEqual(_bounded_read(fifo), "")
+            target = root / "target"
+            target.write_text("preserve", encoding="utf-8")
+            target.chmod(0o600)
+            linked = root / "linked"
+            os.link(target, linked)
+            self.assertEqual(_bounded_read(linked, require_single_link=True), "")
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+
     def test_packet_timing_reports_audio_video_gaps_and_skew(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
@@ -90,6 +215,7 @@ class TelemetryTest(unittest.TestCase):
                 "0,0,0,33,1000,0x0\n1,0,0,1024,300,0x0\n"
                 "1,1024,1024,1024,300,0x0\n0,33,33,33,1000,0x0\n"
             )
+            sampler.paths["packets"].chmod(0o600)
             timing = sampler._packet_timing()
             self.assertEqual(timing["video"]["maxGapMs"], 33.0)
             self.assertEqual(timing["audio"]["maxGapMs"], 21.333)
