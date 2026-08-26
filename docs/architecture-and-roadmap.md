@@ -636,6 +636,9 @@ series. A fresh clone of release-candidate commit `1026b5b` passes the official
 Omarchy validator and all non-hardware controller tests without `work/`.
 Release builds clone the exact clean commit into a private randomly named build
 directory; no predictable lock or shared intermediate path is opened.
+Release files are generated in a private staging directory beneath a validated,
+pinned output directory and replace their final names by rename, so pre-planted
+symlinks, hard links, and special files cannot redirect metadata writes.
 Artifact audit and disposable lifecycle scripts are trusted-candidate tools,
 not hostile-package sandboxes. They refuse to proceed without an explicit
 `--trusted-local-artifact` acknowledgement, and release CI supplies it only for

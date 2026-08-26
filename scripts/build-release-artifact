@@ -21,7 +21,10 @@ cleanup() {
       ;;
   esac
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 command -v git >/dev/null || die "git is required"
 command -v makepkg >/dev/null || die "makepkg is required"
@@ -57,17 +60,54 @@ mapfile -t packages < <(
 )
 [[ ${#packages[@]} -eq 1 ]] || die "expected exactly one built package, found ${#packages[@]}"
 
-mkdir -p "$output_dir"
-output_dir="$(cd "$output_dir" && pwd)"
 package_name="$(basename "${packages[0]}")"
-install -m 0644 "${packages[0]}" "$output_dir/$package_name"
+if [[ -e "$output_dir" || -L "$output_dir" ]]; then
+  [[ -d "$output_dir" && ! -L "$output_dir" ]] || die "output path must be a real directory: $output_dir"
+else
+  mkdir -m 0755 -- "$output_dir" || die "could not create output directory: $output_dir"
+fi
+
+output_owner="$(stat -c %u -- "$output_dir")"
+output_mode="$(stat -c %a -- "$output_dir")"
+[[ "$output_owner" == "$UID" ]] || die "output directory is not owned by the current user"
+(( (8#$output_mode & 0022) == 0 )) || die "output directory must not be group- or world-writable"
+output_identity="$(stat -c %d:%i -- "$output_dir")"
+output_dir="$(cd -- "$output_dir" && pwd -P)"
 
 (
-  cd "$output_dir"
-  sha256sum "$package_name" > SHA256SUMS
-  pacman -Qip "$package_name" > PACKAGE-INFO.txt
-  LC_ALL=C pacman -Q | sort > BUILD-ENVIRONMENT.txt
-  printf '%s\n' "$source_commit" > SOURCE-COMMIT.txt
+  cd -- "$output_dir"
+  [[ "$(stat -c %d:%i .)" == "$output_identity" ]] || die "output directory changed during publication"
+
+  publish_root="$(mktemp -d -p . ".omacast-release-output.${UID}.XXXXXXXX")"
+  # shellcheck disable=SC2329 # Invoked by the trap below.
+  cleanup_publish() {
+    case "$publish_root" in
+      ./.omacast-release-output."${UID}".*)
+        if [[ -d "$publish_root" && ! -L "$publish_root" && "$(stat -c %u "$publish_root")" == "$UID" ]]; then
+          rm -rf -- "$publish_root"
+        fi
+        ;;
+    esac
+  }
+  trap cleanup_publish EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  install -m 0644 "${packages[0]}" "$publish_root/$package_name"
+  (
+    cd -- "$publish_root"
+    sha256sum "$package_name" > SHA256SUMS
+    pacman -Qip "$package_name" > PACKAGE-INFO.txt
+    LC_ALL=C pacman -Q | sort > BUILD-ENVIRONMENT.txt
+    printf '%s\n' "$source_commit" > SOURCE-COMMIT.txt
+  )
+
+  for artifact in "$package_name" PACKAGE-INFO.txt BUILD-ENVIRONMENT.txt SOURCE-COMMIT.txt SHA256SUMS; do
+    mv -T -- "$publish_root/$artifact" "./$artifact"
+  done
+  rmdir -- "$publish_root"
+  publish_root=""
 )
 
 printf 'Built %s from %s\n' "$output_dir/$package_name" "$source_commit"

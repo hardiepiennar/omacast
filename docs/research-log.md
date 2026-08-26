@@ -375,6 +375,15 @@ uses a private, randomly named `mktemp` directory under `/tmp`, verifies its
 owner and mode before cloning, and removes only that validated directory.
 Concurrent builds no longer share intermediate state.
 
+A closure review found the same clobber class at the release-output boundary:
+the newly added environment inventory and older checksum/metadata files were
+written directly under predictable names. A symlink in an ignored `dist/`
+directory could redirect those writes to another developer-owned file. Release
+files are now generated below a private random staging directory inside a
+validated, pinned, non-publicly-writable output directory, then renamed over
+their final entries. An adversarial regression pre-places links for the package
+and every metadata file and proves all external targets remain unchanged.
+
 The same lower-risk review made the package-tool trust boundary executable.
 The artifact audit runs the packaged helper and engine, while the disposable
 fakeroot lifecycle installs the candidate and runs its helper as the invoking

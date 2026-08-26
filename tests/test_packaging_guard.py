@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -711,6 +712,84 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn('"$(stat -c %u:%a "$build_root")" == "$UID:700"', builder)
         self.assertNotIn('omacast-release-build-${UID}.lock', builder)
         self.assertNotIn('exec 9>', builder)
+        self.assertIn('mv -T -- "$publish_root/$artifact" "./$artifact"', builder)
+        self.assertIn('output directory must not be group- or world-writable', builder)
+        self.assertIn("trap 'exit 143' TERM", builder)
+
+    def test_release_builder_replaces_output_links_without_touching_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            (source / "scripts").mkdir(parents=True)
+            (source / "packaging" / "arch").mkdir(parents=True)
+            (source / "packaging" / "arch" / ".keep").write_text("fixture\n", encoding="utf-8")
+            shutil.copy2(ROOT / "scripts" / "build-release-artifact", source / "scripts" / "build-release-artifact")
+            subprocess.run(("git", "init", "-q", str(source)), check=True)
+            subprocess.run(("git", "-C", str(source), "add", "."), check=True)
+            subprocess.run(
+                (
+                    "git", "-C", str(source), "-c", "user.name=Omacast test",
+                    "-c", "user.email=test@localhost", "commit", "-qm", "fixture",
+                ),
+                check=True,
+            )
+
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            makepkg = fake_bin / "makepkg"
+            makepkg.write_text(
+                "#!/usr/bin/env bash\nset -eu\nprintf package > fluxcast-omarchy-cast-9.9-1-any.pkg.tar.zst\n",
+                encoding="utf-8",
+            )
+            pacman = fake_bin / "pacman"
+            pacman.write_text(
+                "#!/usr/bin/env bash\nset -eu\n"
+                "case \"${1:-}\" in\n"
+                "  -Qip) printf 'Name : fluxcast-omarchy-cast\\n' ;;\n"
+                "  -Q) printf 'base 1\\n' ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            makepkg.chmod(0o755)
+            pacman.chmod(0o755)
+
+            output = root / "output"
+            output.mkdir(mode=0o700)
+            artifacts = (
+                "fluxcast-omarchy-cast-9.9-1-any.pkg.tar.zst",
+                "PACKAGE-INFO.txt",
+                "BUILD-ENVIRONMENT.txt",
+                "SOURCE-COMMIT.txt",
+                "SHA256SUMS",
+            )
+            victims = []
+            for index, artifact in enumerate(artifacts):
+                victim = root / f"victim-{index}"
+                victim.write_text(f"keep-{index}", encoding="utf-8")
+                if index % 3 == 0:
+                    (output / artifact).symlink_to(victim)
+                elif index % 3 == 1:
+                    os.link(victim, output / artifact)
+                else:
+                    os.mkfifo(output / artifact, mode=0o600)
+                victims.append(victim)
+
+            environment = os.environ.copy()
+            environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+            result = subprocess.run(
+                (str(source / "scripts" / "build-release-artifact"), str(output)),
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+                timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for index, (artifact, victim) in enumerate(zip(artifacts, victims, strict=True)):
+                self.assertEqual(victim.read_text(encoding="utf-8"), f"keep-{index}")
+                self.assertFalse((output / artifact).is_symlink())
+                self.assertTrue((output / artifact).is_file())
 
     def test_artifact_audit_is_no_root_and_checks_the_runtime_contract(self) -> None:
         audit = (ROOT / "scripts" / "audit-release-artifact").read_text(encoding="utf-8")
