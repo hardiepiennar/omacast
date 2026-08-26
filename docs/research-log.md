@@ -1894,3 +1894,35 @@ with complete helper cleanup; media processes and the session P2P interface
 were absent, NetworkManager remained active, and infrastructure Wi-Fi remained
 connected. This closes patch 31's short receiver gate without claiming a soak
 test.
+
+### Supplicant interface and group ownership (2026-08-26)
+
+The exhaustive review found that direct-supplicant discovery returned every
+supplicant interface with the selected adapter merely sorted first. Normal
+cleanup consequently sent Cancel and Disconnect to every returned interface.
+Group discovery likewise accepted the first interface with a nonempty Group
+property after Connect, without proving that the group belonged to the selected
+receiver, adapter, or current session.
+
+Production patch 32 restricts writable control operations to the exact selected
+physical interface and its `p2p-dev-<interface>` control object. The session
+resolves and retains one exact control path before Connect and uses only that
+path during failure and ordinary cleanup. Before Connect it records the
+selected peer's `Groups` property; afterward it accepts only a group that is new
+for that peer, belongs to the selected physical adapter, and is the sole
+attributable candidate. Missing ownership evidence and multiple candidates fail
+closed. Enumeration of other interface objects remains read-only.
+
+Regressions cover two adapters, a missing selected adapter, a pre-existing
+group, a foreign-adapter group, an unrelated group, two ambiguous new owned
+groups, exact-path cleanup, and failed-connect cleanup. The exact 26-patch
+reconstruction passes all 137 FluxCast tests. Package revision 51 carries the
+engine-only change with guard API 9. All 163 repository tests, staged Omarchy
+validation, production ShellCheck, Python compilation, and git whitespace
+checks pass. The exact-clean revision-51 artifact passes the no-root audit,
+candidate installation/removal, and disposable revision-50 to revision-51
+upgrade/removal lifecycle. Its SHA-256 is
+`40b82c1161d5d1878718721ba66c7d8c314218c6a6a956d90ab4e216b0a592f3`.
+Because successful supplicant group selection changed, a short GUI
+connect/stream/Stop run remains the receiver acceptance gate; no live network
+operation was run during this remediation.

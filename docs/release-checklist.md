@@ -159,6 +159,10 @@
       worse and became unwatchable despite its superior offline loopback packet
       cadence, so it remains diagnostic-only and is rejected as the default.
 - [ ] Privileged live failure injection remains pending.
+- [ ] Revision 51 must complete a short GUI connect/stream/Stop run after
+      supplicant interface and peer-group ownership were narrowed in patch 32.
+      Confirm idle state, exact helper cleanup, no session P2P/media processes,
+      active NetworkManager, and connected infrastructure Wi-Fi afterward.
 - [x] Revision 35 added patch 26's private MPEG-TS GSR handoff candidate while
       preserving Matroska as the default and excluding superseded patches
       24–25. Under sustained offline motion it reduced timestamp-change gaps at

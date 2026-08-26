@@ -1,0 +1,509 @@
+From 665a8ba6d09137d922603708d233db48f88b7207 Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Wed, 26 Aug 2026 21:27:37 +1200
+Subject: [PATCH] Scope supplicant sessions to selected interface
+
+---
+ src/wfd/p2p/device.py            |  47 +++++----
+ src/wfd/p2p/supplicant.py        |  95 ++++++++++++-----
+ src/wfd/session.py               |   8 +-
+ tests/test_wfd_p2p_ownership.py  | 176 +++++++++++++++++++++++++++++++
+ tests/test_wfd_p2p_supplicant.py |  12 ++-
+ 5 files changed, 290 insertions(+), 48 deletions(-)
+ create mode 100644 tests/test_wfd_p2p_ownership.py
+
+diff --git a/src/wfd/p2p/device.py b/src/wfd/p2p/device.py
+index aaede0d..db7bf8d 100644
+--- a/src/wfd/p2p/device.py
++++ b/src/wfd/p2p/device.py
+@@ -7,11 +7,11 @@ from .peers import _default_wifi_interface
+ 
+ 
+ def _p2p_device_iface_paths(iface: Optional[str]) -> list[str]:
+-    """Return wpa_supplicant interface object paths, best P2P candidate first.
++    """Return only supplicant paths attributable to the selected adapter.
+ 
+     The p2p-dev-<iface> control interface is preferred, then the physical
+-    interface, then anything else. Returns [] if wpa_supplicant can't be
+-    queried, so callers degrade to a warning instead of raising.
++    interface. Unrelated interfaces are never fallback candidates. Returns []
++    if wpa_supplicant cannot expose either exact interface.
+     """
+     wpa_dest = "fi.w1.wpa_supplicant1"
+     wpa_root = "/fi/w1/wpa_supplicant1"
+@@ -34,25 +34,32 @@ def _p2p_device_iface_paths(iface: Optional[str]) -> list[str]:
+     if not iface_paths:
+         return []
+ 
+-    physical = iface or _default_wifi_interface()
+-    p2p_dev = f"p2p-dev-{physical}" if physical and not physical.startswith("p2p-dev-") else physical
+-
+-    def _priority(path: str) -> int:
+-        result = _gdbus_call([
+-            "--dest", wpa_dest,
+-            "--object-path", path,
+-            "--method", "org.freedesktop.DBus.Properties.Get",
+-            wpa_iface, "Ifname",
+-        ], timeout=3.0)
+-        match = re.search(r"<['\"]([^'\"]+)['\"]>", result.stdout) if result.returncode == 0 else None
++    selected = iface or _default_wifi_interface()
++    if not selected:
++        return []
++    physical = selected.removeprefix("p2p-dev-")
++    p2p_dev = f"p2p-dev-{physical}"
++    matches: list[tuple[int, str]] = []
++    for path in iface_paths:
++        try:
++            result = _gdbus_call([
++                "--dest", wpa_dest,
++                "--object-path", path,
++                "--method", "org.freedesktop.DBus.Properties.Get",
++                wpa_iface, "Ifname",
++            ], timeout=3.0)
++        except Exception:
++            continue
++        match = (
++            re.search(r"<['\"]([^'\"]+)['\"]>", result.stdout)
++            if result.returncode == 0 else None
++        )
+         ifname = match.group(1) if match else ""
+         if ifname == p2p_dev:
+-            return 0
+-        if ifname == physical:
+-            return 1
+-        return 2
+-
+-    return sorted(iface_paths, key=_priority)
++            matches.append((0, path))
++        elif ifname == physical:
++            matches.append((1, path))
++    return [path for _priority, path in sorted(matches)]
+ 
+ def _set_p2p_device_name(iface: Optional[str], name: str = _DEVICE_NAME) -> None:
+     wpa_dest = "fi.w1.wpa_supplicant1"
+diff --git a/src/wfd/p2p/supplicant.py b/src/wfd/p2p/supplicant.py
+index 8250287..b985a9e 100644
+--- a/src/wfd/p2p/supplicant.py
++++ b/src/wfd/p2p/supplicant.py
+@@ -137,8 +137,9 @@ def _supplicant_connect(
+     frequency: int = 0,
+     persistent: bool = False,
+     dry_run: bool = False,
++    peer_path: Optional[str] = None,
+ ) -> None:
+-    peer_path = _supplicant_peer_path(interface_path, peer.address)
++    peer_path = peer_path or _supplicant_peer_path(interface_path, peer.address)
+     options = _supplicant_connect_options(
+         peer_path, mode, go_intent, persistent, frequency
+     )
+@@ -184,38 +185,72 @@ def _group_from_interface(interface_path: str) -> Optional[SupplicantGroup]:
+     return SupplicantGroup(group_path, group_interface, ifname, role)
+ 
+ 
+-def _wait_for_supplicant_group(timeout: float = 45.0) -> SupplicantGroup:
++def _selected_peer_groups(peer_path: str, *, required: bool = False) -> frozenset[str]:
++    raw = _wpa_property(peer_path, WPA_PEER, "Groups")
++    groups = frozenset(_object_paths(raw))
++    if required and not raw:
++        raise WFDNotReady("Could not establish the selected receiver's P2P group baseline.")
++    return groups
++
++
++def _physical_interface_name(interface: str) -> str:
++    return interface.removeprefix("p2p-dev-")
++
++
++def _group_belongs_to_interface(group: SupplicantGroup, interface: str) -> bool:
++    physical = _physical_interface_name(interface)
++    return group.ifname == physical or group.ifname.startswith(f"p2p-{physical}-")
++
++
++def _wait_for_supplicant_group(
++    interface: str,
++    peer_path: str,
++    baseline_groups: frozenset[str],
++    timeout: float = 45.0,
++) -> SupplicantGroup:
+     print("[FluxCast WFD] Waiting for direct supplicant P2P group...")
+     deadline = time.monotonic() + timeout
+     while time.monotonic() < deadline:
++        new_peer_groups = _selected_peer_groups(peer_path) - baseline_groups
+         interfaces_raw = _wpa_property(WPA_ROOT, WPA_DEST, "Interfaces")
++        candidates: dict[str, SupplicantGroup] = {}
+         for interface_path in _object_paths(interfaces_raw):
+             try:
+                 group = _group_from_interface(interface_path)
+             except Exception:
+                 group = None
+-            if group:
+-                print(
+-                    f"[FluxCast WFD] Direct P2P group: role={group.role or 'unknown'}, "
+-                    f"interface={group.ifname or group.interface_path}."
+-                )
+-                return group
++            if (
++                group
++                and group.group_path in new_peer_groups
++                and _group_belongs_to_interface(group, interface)
++            ):
++                candidates[group.group_path] = group
++        if len(candidates) > 1:
++            raise WFDNotReady(
++                "Selected receiver joined multiple new P2P groups; "
++                "refusing ambiguous ownership."
++            )
++        if candidates:
++            group = next(iter(candidates.values()))
++            print(
++                f"[FluxCast WFD] Direct P2P group: role={group.role or 'unknown'}, "
++                f"interface={group.ifname or group.interface_path}."
++            )
++            return group
+         time.sleep(0.5)
+     raise WFDNotReady("Timed out waiting for a direct supplicant P2P group.")
+ 
+ 
+-def _supplicant_cancel_and_disconnect(interface: Optional[str]) -> None:
+-    paths = _p2p_device_iface_paths(interface)
+-    for interface_path in paths:
+-        for member in ("Cancel", "Disconnect"):
+-            try:
+-                _gdbus_call([
+-                    "--dest", WPA_DEST,
+-                    "--object-path", interface_path,
+-                    "--method", f"{WPA_P2P}.{member}",
+-                ], timeout=3.0)
+-            except Exception:
+-                pass
++def _supplicant_cancel_and_disconnect(interface_path: str) -> None:
++    for member in ("Cancel", "Disconnect"):
++        try:
++            _gdbus_call([
++                "--dest", WPA_DEST,
++                "--object-path", interface_path,
++                "--method", f"{WPA_P2P}.{member}",
++            ], timeout=3.0)
++        except Exception:
++            pass
+     try:
+         _gdbus_call([
+             "--dest", WPA_DEST,
+@@ -227,8 +262,12 @@ def _supplicant_cancel_and_disconnect(interface: Optional[str]) -> None:
+         pass
+ 
+ 
+-def connect_supplicant_group(args, peer: WFDPeer) -> SupplicantGroup:
+-    interface_path = _supplicant_interface_path(args.wfd_interface)
++def connect_supplicant_group(
++    args,
++    peer: WFDPeer,
++    interface_path: Optional[str] = None,
++) -> SupplicantGroup:
++    interface_path = interface_path or _supplicant_interface_path(args.wfd_interface)
+     mode = getattr(args, "wfd_supplicant_mode", "connect")
+     rtsp_port = getattr(args, "wfd_rtsp_port", 7236)
+     go_intent = getattr(args, "wfd_go_intent", 0)
+@@ -260,6 +299,8 @@ def connect_supplicant_group(args, peer: WFDPeer) -> SupplicantGroup:
+         )
+         time.sleep(preconnect_delay)
+ 
++    peer_path = _supplicant_peer_path(interface_path, peer.address)
++    baseline_groups = _selected_peer_groups(peer_path, required=True)
+     _supplicant_connect(
+         interface_path,
+         peer,
+@@ -268,18 +309,22 @@ def connect_supplicant_group(args, peer: WFDPeer) -> SupplicantGroup:
+         rtsp_port=rtsp_port,
+         frequency=frequency,
+         dry_run=dry_run,
++        peer_path=peer_path,
+     )
+     if dry_run:
+         raise WFDNotReady("A dry-run does not create a supplicant P2P group.")
+ 
+     return _wait_for_supplicant_group(
++        args.wfd_interface,
++        peer_path,
++        baseline_groups,
+         timeout=float(getattr(args, "wfd_supplicant_hold", 45))
+     )
+ 
+ 
+ def run_supplicant_role_test(args, peer: WFDPeer) -> None:
++    interface_path = _supplicant_interface_path(args.wfd_interface)
+     if getattr(args, "wfd_dry_run", False):
+-        interface_path = _supplicant_interface_path(args.wfd_interface)
+         _supplicant_connect(
+             interface_path,
+             peer,
+@@ -292,11 +337,11 @@ def run_supplicant_role_test(args, peer: WFDPeer) -> None:
+         return
+ 
+     try:
+-        connect_supplicant_group(args, peer)
++        connect_supplicant_group(args, peer, interface_path)
+         hold = max(1, int(getattr(args, "wfd_supplicant_hold", 45)))
+         print(f"[FluxCast WFD] Holding role-test group for {hold}s. Press Ctrl+C to stop.")
+         time.sleep(hold)
+     except KeyboardInterrupt:
+         print("\n[FluxCast WFD] Stopping direct supplicant role test...")
+     finally:
+-        _supplicant_cancel_and_disconnect(args.wfd_interface)
++        _supplicant_cancel_and_disconnect(interface_path)
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 1ff3563..049925c 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -16,6 +16,7 @@ from .p2p.nm import (
+ from .p2p.peers import _scan_and_select
+ from .p2p.supplicant import (
+     _supplicant_cancel_and_disconnect,
++    _supplicant_interface_path,
+     connect_supplicant_group,
+     run_supplicant_role_test,
+ )
+@@ -146,6 +147,9 @@ def start_experimental_backend(args) -> None:
+     uibc_firewall_opened = False
+     active_path = ""
+     previous_go_intent = None
++    supplicant_interface_path = ""
++    if p2p_backend == "supplicant":
++        supplicant_interface_path = _supplicant_interface_path(args.wfd_interface)
+     try:
+         if p2p_backend == "networkmanager":
+             # Clear stale P2P device state from previous runs before activation.
+@@ -155,7 +159,7 @@ def start_experimental_backend(args) -> None:
+                 pass
+         rtsp.start()
+         if p2p_backend == "supplicant":
+-            connect_supplicant_group(args, peer)
++            connect_supplicant_group(args, peer, supplicant_interface_path)
+         else:
+             # Lower our GO intent before negotiation so the TV becomes the group
+             # owner; most Miracast sinks only start the RTSP session in that role.
+@@ -206,7 +210,7 @@ def start_experimental_backend(args) -> None:
+         if p2p_backend == "supplicant":
+             _cleanup_step(
+                 "direct P2P disconnect",
+-                lambda: _supplicant_cancel_and_disconnect(args.wfd_interface),
++                lambda: _supplicant_cancel_and_disconnect(supplicant_interface_path),
+             )
+         else:
+             _cleanup_step("P2P device disconnect", lambda: _disconnect_device(device_path))
+diff --git a/tests/test_wfd_p2p_ownership.py b/tests/test_wfd_p2p_ownership.py
+new file mode 100644
+index 0000000..9db33f1
+--- /dev/null
++++ b/tests/test_wfd_p2p_ownership.py
+@@ -0,0 +1,176 @@
++import subprocess
++import unittest
++from types import SimpleNamespace
++from unittest import mock
++
++from wfd.config import WFDNotReady
++from wfd.ie import WFDPeer
++from wfd.p2p.device import _p2p_device_iface_paths
++from wfd.p2p.supplicant import (
++    SupplicantGroup,
++    _selected_peer_groups,
++    _supplicant_cancel_and_disconnect,
++    _wait_for_supplicant_group,
++)
++
++
++def _result(stdout="", returncode=0):
++    return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr="")
++
++
++class SelectedSupplicantInterfaceTest(unittest.TestCase):
++    def test_only_exact_selected_adapter_paths_are_returned(self):
++        ifnames = {
++            "/wlan0": "wlan0",
++            "/p2p0": "p2p-dev-wlan0",
++            "/wlan1": "wlan1",
++            "/p2p1": "p2p-dev-wlan1",
++            "/group0": "p2p-wlan0-0",
++        }
++
++        def call(args, timeout=3.0):
++            path = args[args.index("--object-path") + 1]
++            if path == "/fi/w1/wpa_supplicant1":
++                return _result("(" + ", ".join(f"objectpath '{item}'" for item in ifnames) + ",)")
++            return _result(f"(<'{ifnames[path]}'>,)")
++
++        with mock.patch("wfd.p2p.device._gdbus_call", side_effect=call):
++            self.assertEqual(_p2p_device_iface_paths("wlan0"), ["/p2p0", "/wlan0"])
++            self.assertEqual(
++                _p2p_device_iface_paths("p2p-dev-wlan0"), ["/p2p0", "/wlan0"]
++            )
++
++    def test_missing_selected_adapter_does_not_fall_back_to_another_radio(self):
++        def call(args, timeout=3.0):
++            path = args[args.index("--object-path") + 1]
++            if path == "/fi/w1/wpa_supplicant1":
++                return _result("([objectpath '/wlan1'],)")
++            return _result("(<'wlan1'>,)")
++
++        with mock.patch("wfd.p2p.device._gdbus_call", side_effect=call):
++            self.assertEqual(_p2p_device_iface_paths("wlan0"), [])
++
++
++class SupplicantGroupOwnershipTest(unittest.TestCase):
++    def test_group_baseline_fails_closed_when_peer_property_is_unavailable(self):
++        with mock.patch("wfd.p2p.supplicant._wpa_property", return_value=""):
++            with self.assertRaisesRegex(WFDNotReady, "group baseline"):
++                _selected_peer_groups("/peer", required=True)
++
++        with mock.patch(
++            "wfd.p2p.supplicant._wpa_property", return_value="(@ao [],)"
++        ):
++            self.assertEqual(
++                _selected_peer_groups("/peer", required=True), frozenset()
++            )
++
++    def test_wait_ignores_preexisting_and_foreign_adapter_groups(self):
++        groups = {
++            "/old-iface": SupplicantGroup("/old", "/old-iface", "p2p-wlan0-0", "client"),
++            "/foreign-iface": SupplicantGroup(
++                "/foreign", "/foreign-iface", "p2p-wlan1-0", "client"
++            ),
++            "/owned-iface": SupplicantGroup(
++                "/owned", "/owned-iface", "p2p-wlan0-1", "client"
++            ),
++            "/unrelated-iface": SupplicantGroup(
++                "/unrelated", "/unrelated-iface", "p2p-wlan0-2", "client"
++            ),
++        }
++
++        def prop(path, interface, name):
++            if path == "/peer" and name == "Groups":
++                return "([objectpath '/old', '/foreign', '/owned'],)"
++            if name == "Interfaces":
++                return "(" + ", ".join(f"objectpath '{item}'" for item in groups) + ",)"
++            return ""
++
++        with mock.patch("wfd.p2p.supplicant._wpa_property", side_effect=prop), mock.patch(
++            "wfd.p2p.supplicant._group_from_interface",
++            side_effect=lambda path: groups[path],
++        ), mock.patch("wfd.p2p.supplicant.time.monotonic", side_effect=[0.0, 0.0]):
++            group = _wait_for_supplicant_group(
++                "wlan0", "/peer", frozenset({"/old"}), timeout=1.0
++            )
++
++        self.assertEqual(group.group_path, "/owned")
++
++    def test_wait_fails_closed_when_two_new_owned_groups_are_attributable(self):
++        groups = {
++            "/one-iface": SupplicantGroup("/one", "/one-iface", "p2p-wlan0-0", "client"),
++            "/two-iface": SupplicantGroup("/two", "/two-iface", "p2p-wlan0-1", "client"),
++        }
++
++        def prop(path, interface, name):
++            if path == "/peer" and name == "Groups":
++                return "([objectpath '/one', '/two'],)"
++            if name == "Interfaces":
++                return "([objectpath '/one-iface', '/two-iface'],)"
++            return ""
++
++        with mock.patch("wfd.p2p.supplicant._wpa_property", side_effect=prop), mock.patch(
++            "wfd.p2p.supplicant._group_from_interface",
++            side_effect=lambda path: groups[path],
++        ), mock.patch("wfd.p2p.supplicant.time.monotonic", side_effect=[0.0, 0.0]):
++            with self.assertRaisesRegex(WFDNotReady, "ambiguous ownership"):
++                _wait_for_supplicant_group(
++                    "wlan0", "/peer", frozenset(), timeout=1.0
++                )
++
++    def test_cleanup_calls_only_the_recorded_control_path(self):
++        with mock.patch("wfd.p2p.supplicant._gdbus_call", return_value=_result()) as call:
++            _supplicant_cancel_and_disconnect("/owned-control")
++
++        control_calls = [
++            entry.args[0]
++            for entry in call.call_args_list
++            if "--object-path" in entry.args[0]
++            and entry.args[0][entry.args[0].index("--object-path") + 1]
++            != "/fi/w1/wpa_supplicant1"
++        ]
++        self.assertEqual(len(control_calls), 2)
++        self.assertTrue(all("/owned-control" in args for args in control_calls))
++
++
++class SupplicantSessionCleanupTest(unittest.TestCase):
++    def test_failed_connection_cleans_only_the_preselected_control_path(self):
++        args = SimpleNamespace(
++            wfd_no_firewall=True,
++            wfd_test_pattern=True,
++            wfd_dry_run=False,
++            wfd_interface="wlan0",
++            wfd_timeout=1,
++            wfd_p2p_backend="supplicant",
++            fps=60,
++            bitrate="4M",
++            output_res="1280x720",
++        )
++        report = SimpleNamespace(wfd_candidate=True)
++        peer = WFDPeer(address="00:11:22:33:44:55", name="TV")
++        rtsp = mock.Mock()
++
++        with mock.patch("wfd.session.run_diagnostics", return_value=report), mock.patch(
++            "wfd.session.print_report"
++        ), mock.patch("wfd.session._set_p2p_device_name"), mock.patch(
++            "wfd.session._scan_and_select", return_value=peer
++        ), mock.patch(
++            "wfd.session._supplicant_interface_path", return_value="/owned-control"
++        ), mock.patch(
++            "wfd.session.WFDRTSPServer", return_value=rtsp
++        ), mock.patch(
++            "wfd.session.connect_supplicant_group",
++            side_effect=WFDNotReady("connect failed"),
++        ) as connect, mock.patch(
++            "wfd.session._supplicant_cancel_and_disconnect"
++        ) as cleanup, mock.patch("wfd.session.report_ts_dump"):
++            with self.assertRaisesRegex(WFDNotReady, "connect failed"):
++                from wfd.session import start_experimental_backend
++
++                start_experimental_backend(args)
++
++        connect.assert_called_once_with(args, peer, "/owned-control")
++        cleanup.assert_called_once_with("/owned-control")
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_wfd_p2p_supplicant.py b/tests/test_wfd_p2p_supplicant.py
+index 001a10c..14ebd0e 100644
+--- a/tests/test_wfd_p2p_supplicant.py
++++ b/tests/test_wfd_p2p_supplicant.py
+@@ -64,12 +64,18 @@ class SupplicantP2POptionsTest(unittest.TestCase):
+             with mock.patch(
+                 "wfd.p2p.supplicant._supplicant_interface_path",
+                 return_value="/interface",
++            ), mock.patch(
++                "wfd.p2p.supplicant._supplicant_peer_path",
++                return_value="/peer",
++            ), mock.patch(
++                "wfd.p2p.supplicant._selected_peer_groups",
++                return_value=frozenset({"/old-group"}),
+             ), mock.patch(
+                 "wfd.p2p.supplicant._supplicant_connect"
+             ) as connect, mock.patch(
+                 "wfd.p2p.supplicant._wait_for_supplicant_group",
+                 return_value=group,
+-            ):
++            ) as wait:
+                 self.assertEqual(
+                     connect_supplicant_group(args, WFDPeer(address="00:11:22:33:44:55")),
+                     group,
+@@ -77,3 +83,7 @@ class SupplicantP2POptionsTest(unittest.TestCase):
+ 
+             self.assertTrue(os.path.isfile(trigger))
+             connect.assert_called_once()
++            self.assertEqual(connect.call_args.kwargs["peer_path"], "/peer")
++            wait.assert_called_once_with(
++                "wlan0", "/peer", frozenset({"/old-group"}), timeout=45.0
++            )
+-- 
+2.55.0
+
