@@ -1,0 +1,1077 @@
+From 773ca1ac0580dfeda31a179d031ae708f55d7bd8 Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 22:51:16 +1200
+Subject: [PATCH] Remove unauthenticated UIBC input
+
+---
+ src/drivers/uibc.py         | 623 ------------------------------------
+ src/main.py                 |   5 -
+ src/wfd/__init__.py         |   5 +-
+ src/wfd/config.py           |   1 -
+ src/wfd/constants.py        |   1 -
+ src/wfd/rtsp/handler.py     |  52 +--
+ src/wfd/rtsp/message.py     |   8 -
+ src/wfd/rtsp/rtsp_server.py |   4 -
+ src/wfd/session.py          |   8 +-
+ tests/test_uibc.py          | 128 --------
+ tests/test_wfd_only_cli.py  |   6 +-
+ 11 files changed, 10 insertions(+), 831 deletions(-)
+ delete mode 100644 src/drivers/uibc.py
+ delete mode 100644 tests/test_uibc.py
+
+diff --git a/src/drivers/uibc.py b/src/drivers/uibc.py
+deleted file mode 100644
+index 88ed0e3..0000000
+--- a/src/drivers/uibc.py
++++ /dev/null
+@@ -1,623 +0,0 @@
+-"""
+-UIBC (User Input Back Channel), WFD *source* side. Issue #37.
+-
+-This module is fully self-contained and opt-in: nothing here runs unless
+-`UIBCServer` is explicitly started. It never touches the streaming path, so it
+-cannot regress any working device.
+-
+-Pipeline:
+-    sink --TCP--> UIBCServer --parse--> CoordinateMapper --> UinputPointer --> /dev/uinput
+-
+-Wire format (Wi-Fi Display spec, cross-checked against miraclecast
+-`src/uibc/miracle-uibcctl.c`):
+-
+-    Common packet header (4 bytes)
+-        byte 0 : version(3b) | T timestamp flag(1b) | reserved(4b)   -> 0x00
+-        byte 1 : reserved(4b, high nibble) | input category(4b, low nibble)  -> 0x00 = GENERIC
+-        byte 2-3 : total packet length, big-endian (header + body)
+-      (if T=1: 2 extra timestamp bytes follow the header, i skip them)
+-
+-    Generic input body
+-        byte 4   : input type id (see GENERIC_* below)
+-        byte 5-6 : generic body length, big-endian
+-        byte 7.. : type-specific body
+-
+-    Touch / mouse body
+-        byte 7 : number of pointers
+-        per pointer (5 bytes): id(1) | X(2 BE) | Y(2 BE)
+-        X/Y are pixels in the *negotiated* video resolution, origin top-left.
+-
+-    Key body
+-        byte 7     : reserved
+-        byte 8-9   : key code 1 (BE)
+-        byte 10-11 : key code 2 (BE)
+-"""
+-
+-import ctypes
+-import fcntl
+-import os
+-import socket
+-import struct
+-import threading
+-import time
+-from dataclasses import dataclass
+-from typing import Optional
+-
+-UIBC_CATEGORY_GENERIC = 0x0
+-
+-GENERIC_TOUCH_DOWN = 0
+-GENERIC_TOUCH_UP = 1
+-GENERIC_TOUCH_MOVE = 2
+-GENERIC_KEY_DOWN = 3
+-GENERIC_KEY_UP = 4
+-GENERIC_ZOOM = 5
+-GENERIC_VSCROLL = 6
+-GENERIC_HSCROLL = 7
+-GENERIC_ROTATE = 8
+-
+-_HEADER_LEN = 4
+-_GENERIC_BODY_HEADER_LEN = 3  # input-type(1) + length(2)
+-
+-
+-def build_uibc_capability(port: int) -> str:
+-    """`wfd_uibc_capability` value (M3/M4). The sink only sends input types
+-    listed here, so keyboard must be advertised to receive key events."""
+-    return (
+-        "input_category_list=GENERIC;"
+-        "generic_cap_list=Keyboard, Mouse, SingleTouch;"
+-        "hidc_cap_list=none;"
+-        f"port={port}"
+-    )
+-
+-
+-# ── parsed events ───────────────────────────────────────────────────────────
+-
+-@dataclass
+-class PointerEvent:
+-    kind: int          # GENERIC_TOUCH_DOWN / _UP / _MOVE
+-    x: int             # sink-space pixel coordinate (negotiated resolution)
+-    y: int
+-
+-
+-@dataclass
+-class KeyEvent:
+-    kind: int          # GENERIC_KEY_DOWN / _UP
+-    code1: int
+-    code2: int
+-    raw: bytes = b""   # full body bytes, for inspecting modifier encoding
+-
+-
+-def parse_packets(buf: bytes) -> tuple[list, int]:
+-    """Parse as many complete UIBC packets as "buf" contains.
+-
+-    Returns (events, consumed_bytes). Leftover bytes (a partial packet) stay in
+-    the caller's buffer for the next read. Malformed packets are skipped by
+-    resyncing one byte at a time rather than crashing.
+-    """
+-    events: list = []
+-    offset = 0
+-    n = len(buf)
+-
+-    while n - offset >= _HEADER_LEN:
+-        b0 = buf[offset]
+-        category = buf[offset + 1] & 0x0F  # Input Category = low nibble (spec WIFI ALLIANCE Fig.20, bits 12-15)
+-        total_len = (buf[offset + 2] << 8) | buf[offset + 3]
+-
+-        # Sanity: length must at least cover the header, and not be ABSURD.
+-        if total_len < _HEADER_LEN or total_len > 4096:
+-            offset += 1  # resync
+-            continue
+-        if n - offset < total_len:
+-            break  # wait for the rest of this packet
+-
+-        packet = buf[offset:offset + total_len]
+-        offset += total_len
+-
+-        if category != UIBC_CATEGORY_GENERIC:
+-            continue  # HIDC not supported yet
+-
+-        has_ts = bool((b0 >> 4) & 0x1)
+-        body_start = _HEADER_LEN + (2 if has_ts else 0)
+-        _parse_generic_body(packet, body_start, events)
+-
+-    return events, offset
+-
+-
+-def _parse_generic_body(packet: bytes, start: int, events: list) -> None:
+-    if len(packet) < start + _GENERIC_BODY_HEADER_LEN:
+-        return
+-    type_id = packet[start]
+-    body = packet[start + _GENERIC_BODY_HEADER_LEN:]
+-
+-    if type_id in (GENERIC_TOUCH_DOWN, GENERIC_TOUCH_UP, GENERIC_TOUCH_MOVE):
+-        if not body:
+-            return
+-        count = body[0]
+-        pos = 1
+-        for _ in range(count):
+-            if pos + 5 > len(body):
+-                break
+-            # pointer id at body[pos]
+-            x = (body[pos + 1] << 8) | body[pos + 2]
+-            y = (body[pos + 3] << 8) | body[pos + 4]
+-            events.append(PointerEvent(type_id, x, y))
+-            pos += 5
+-    elif type_id in (GENERIC_KEY_DOWN, GENERIC_KEY_UP):
+-        if len(body) >= 5:
+-            code1 = (body[1] << 8) | body[2]
+-            code2 = (body[3] << 8) | body[4]
+-            events.append(KeyEvent(type_id, code1, code2, bytes(body[:16])))
+-    # zoom/scroll/rotate ignored for now =/
+-
+-
+-# ── coordinate mapping ──────────────────────────────────────────────────────
+-
+-class CoordinateMapper:
+-    """Sink pixels -> captured monitor's LOCAL pixels [0, mon_w) x [0, mon_h).
+-
+-    Local, not desktop-global: the injector is a per-monitor touchscreen, so
+-    adding the desktop offset overflows its range and clamps to the edge (the
+-    "stuck at the edge" bug on offset/virtual monitors).
+-    """
+-
+-    def __init__(self, sink_w: int, sink_h: int, mon_w: int, mon_h: int):
+-        self._sink_w = max(1, sink_w)
+-        self._sink_h = max(1, sink_h)
+-        self._mon_w = mon_w
+-        self._mon_h = mon_h
+-
+-    def to_screen(self, x: int, y: int) -> tuple[int, int]:
+-        sx = round(x * self._mon_w / self._sink_w)
+-        sy = round(y * self._mon_h / self._sink_h)
+-        sx = min(max(sx, 0), self._mon_w - 1)
+-        sy = min(max(sy, 0), self._mon_h - 1)
+-        return sx, sy
+-
+-
+-# ── uinput injection (raw ctypes, no external dependency) ────────────────────
+-
+-# Event types / codes (linux/input-event-codes.h)
+-_EV_SYN, _EV_KEY, _EV_ABS = 0x00, 0x01, 0x03
+-_SYN_REPORT = 0x00
+-_ABS_X, _ABS_Y = 0x00, 0x01
+-_BTN_LEFT, _BTN_TOUCH = 0x110, 0x14A
+-_ABS_CNT = 0x40
+-# Multitouch (protocol B) axes + direct-device property, so the compositor treats
+-# us as a real touchscreen (native touch, swipe-scroll in touch-aware apps) instead
+-# of a "relative" mouse.
+-_ABS_MT_SLOT = 0x2F
+-_ABS_MT_POSITION_X = 0x35
+-_ABS_MT_POSITION_Y = 0x36
+-_ABS_MT_TRACKING_ID = 0x39
+-_INPUT_PROP_DIRECT = 0x01
+-
+-_IOC_WRITE = 1
+-
+-
+-def _ioc(direction: int, type_ch: str, nr: int, size: int) -> int:
+-    return (direction << 30) | (size << 16) | (ord(type_ch) << 8) | nr
+-
+-
+-def _io(type_ch: str, nr: int) -> int:
+-    return _ioc(0, type_ch, nr, 0)
+-
+-
+-def _iow(type_ch: str, nr: int, size: int) -> int:
+-    return _ioc(_IOC_WRITE, type_ch, nr, size)
+-
+-
+-_UI_SET_EVBIT = _iow("U", 100, ctypes.sizeof(ctypes.c_int))
+-_UI_SET_KEYBIT = _iow("U", 101, ctypes.sizeof(ctypes.c_int))
+-_UI_SET_ABSBIT = _iow("U", 103, ctypes.sizeof(ctypes.c_int))
+-_UI_SET_PROPBIT = _iow("U", 110, ctypes.sizeof(ctypes.c_int))
+-_UI_DEV_CREATE = _io("U", 1)
+-_UI_DEV_DESTROY = _io("U", 2)
+-
+-
+-class UinputPointer:
+-# Virtual single-touch touchscreen (uinput multitouch protocol B)
+-    def __init__(self, screen_w: int, screen_h: int):
+-        self._w = max(1, screen_w)
+-        self._h = max(1, screen_h)
+-        self._fd: Optional[int] = None
+-        self.available = False
+-        self._pressed = False
+-        self._tracking_id = 0
+-
+-    def open(self) -> bool:
+-        try:
+-            fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+-        except OSError as exc:
+-            print(f"[FluxCast UIBC] uinput unavailable ({exc}); input will not be "
+-                  "injected. Add your user to the 'input' group or install a "
+-                  "udev rule for /dev/uinput.")
+-            return False
+-        try:
+-            fcntl.ioctl(fd, _UI_SET_EVBIT, _EV_SYN)
+-            fcntl.ioctl(fd, _UI_SET_EVBIT, _EV_KEY)
+-            fcntl.ioctl(fd, _UI_SET_EVBIT, _EV_ABS)
+-            fcntl.ioctl(fd, _UI_SET_KEYBIT, _BTN_TOUCH)
+-            for axis in (_ABS_X, _ABS_Y, _ABS_MT_SLOT, _ABS_MT_POSITION_X,
+-                         _ABS_MT_POSITION_Y, _ABS_MT_TRACKING_ID):
+-                fcntl.ioctl(fd, _UI_SET_ABSBIT, axis)
+-            # Mark it a direct/touchscreen device (NOT a relative mouse).
+-            fcntl.ioctl(fd, _UI_SET_PROPBIT, _INPUT_PROP_DIRECT)
+-
+-            absmin = [0] * _ABS_CNT
+-            absmax = [0] * _ABS_CNT
+-            absfuzz = [0] * _ABS_CNT
+-            absflat = [0] * _ABS_CNT
+-            absmax[_ABS_X] = absmax[_ABS_MT_POSITION_X] = self._w - 1
+-            absmax[_ABS_Y] = absmax[_ABS_MT_POSITION_Y] = self._h - 1
+-            absmax[_ABS_MT_SLOT] = 9            # up to 10 simultaneous contacts
+-            absmax[_ABS_MT_TRACKING_ID] = 0xFFFF
+-
+-            # struct uinput_user_dev: name[80], input_id{4 x u16}, ff_effects_max(u32),
+-            # then absmax/absmin/absfuzz/absflat each [ABS_CNT] s32.
+-            dev = struct.pack(
+-                "<80s4HI",
+-                b"FluxCast UIBC touchscreen",
+-                0x03, 0x1209, 0x0001, 0x0001,  # bustype=USB, vendor, product, version
+-                0,
+-            )
+-            dev += struct.pack(f"<{_ABS_CNT}i", *absmax)
+-            dev += struct.pack(f"<{_ABS_CNT}i", *absmin)
+-            dev += struct.pack(f"<{_ABS_CNT}i", *absfuzz)
+-            dev += struct.pack(f"<{_ABS_CNT}i", *absflat)
+-            os.write(fd, dev)
+-            fcntl.ioctl(fd, _UI_DEV_CREATE)
+-        except OSError as exc:
+-            print(f"[FluxCast UIBC] Could not set up uinput device ({exc}); "
+-                  "input will not be injected.")
+-            os.close(fd)
+-            return False
+-
+-        self._fd = fd
+-        self.available = True
+-        time.sleep(0.1)  # let udev create the device node
+-        print("[FluxCast UIBC] Virtual touchscreen ready; sink input will be injected.")
+-        return True
+-
+-    def _emit(self, etype: int, code: int, value: int) -> None:
+-        if self._fd is None:
+-            return
+-        # struct input_event { timeval(2 x s64); u16 type; u16 code; s32 value; }
+-        ev = struct.pack("<qqHHi", 0, 0, etype, code, value)
+-        try:
+-            os.write(self._fd, ev)
+-        except OSError:
+-            pass
+-
+-    def _sync(self) -> None:
+-        self._emit(_EV_SYN, _SYN_REPORT, 0)
+-
+-    def _emit_pos(self, x: int, y: int) -> None:
+-        self._emit(_EV_ABS, _ABS_MT_POSITION_X, x)
+-        self._emit(_EV_ABS, _ABS_MT_POSITION_Y, y)
+-        # legacy single-touch axes too, for the compositor`s touch -> pointer emulation
+-        self._emit(_EV_ABS, _ABS_X, x)
+-        self._emit(_EV_ABS, _ABS_Y, y)
+-
+-    def move(self, x: int, y: int) -> None:
+-        if not self.available:
+-            return
+-        self._emit(_EV_ABS, _ABS_MT_SLOT, 0)
+-        self._emit_pos(x, y)
+-        self._sync()
+-
+-    def press(self, x: int, y: int) -> None:
+-        if not self.available:
+-            return
+-        self._emit(_EV_ABS, _ABS_MT_SLOT, 0)
+-        if not self._pressed:
+-            self._tracking_id = self._tracking_id % 0xFFFF + 1
+-            self._emit(_EV_ABS, _ABS_MT_TRACKING_ID, self._tracking_id)
+-            self._emit(_EV_KEY, _BTN_TOUCH, 1)
+-            self._pressed = True
+-        self._emit_pos(x, y)
+-        self._sync()
+-
+-    def release(self, x: int, y: int) -> None:
+-        if not self.available:
+-            return
+-        self._emit(_EV_ABS, _ABS_MT_SLOT, 0)
+-        if self._pressed:
+-            self._emit(_EV_ABS, _ABS_MT_TRACKING_ID, -1)
+-            self._emit(_EV_KEY, _BTN_TOUCH, 0)
+-            self._pressed = False
+-        self._sync()
+-
+-    def close(self) -> None:
+-        if self._fd is not None:
+-            try:
+-                fcntl.ioctl(self._fd, _UI_DEV_DESTROY)
+-            except OSError:
+-                pass
+-            try:
+-                os.close(self._fd)
+-            except OSError:
+-                pass
+-            self._fd = None
+-            self.available = False
+-
+-
+-# ── keyboard injection (base characters only) ───────────────────────────────
+-# Base character -> Linux key code (US layout). Non-US layouts may mistype.
+-_CHAR_KEYCODES = {
+-    "1": 2, "2": 3, "3": 4, "4": 5, "5": 6, "6": 7, "7": 8, "8": 9, "9": 10, "0": 11,
+-    "-": 12, "=": 13,
+-    "q": 16, "w": 17, "e": 18, "r": 19, "t": 20, "y": 21, "u": 22, "i": 23, "o": 24, "p": 25,
+-    "[": 26, "]": 27,
+-    "a": 30, "s": 31, "d": 32, "f": 33, "g": 34, "h": 35, "j": 36, "k": 37, "l": 38,
+-    ";": 39, "'": 40, "`": 41,
+-    "\\": 43,
+-    "z": 44, "x": 45, "c": 46, "v": 47, "b": 48, "n": 49, "m": 50,
+-    ",": 51, ".": 52, "/": 53,
+-    " ": 57,
+-}
+-# Control codes: Backspace, Tab, Enter (CR/LF).
+-_CONTROL_KEYCODES = {
+-    8: 14,    # \b -> KEY_BACKSPACE
+-    9: 15,    # \t -> KEY_TAB
+-    10: 28,   # \n -> KEY_ENTER
+-    13: 28,   # \r -> KEY_ENTER
+-}
+-
+-
+-def _keycode_for(code1: int) -> Optional[int]:
+-    """Map a sink key code (unicode / control) to a Linux key code, or None."""
+-    if code1 in _CONTROL_KEYCODES:
+-        return _CONTROL_KEYCODES[code1]
+-    if 32 <= code1 <= 126:
+-        ch = chr(code1)
+-        return _CHAR_KEYCODES.get(ch) or _CHAR_KEYCODES.get(ch.lower())
+-    return None
+-
+-
+-class UinputKeyboard:
+-    """Virtual keyboard (uinput) for UIBC base-character injection. """
+-    def __init__(self):
+-        self._fd: Optional[int] = None
+-        self.available = False
+-
+-    def open(self) -> bool:
+-        try:
+-            fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+-        except OSError as exc:
+-            print(f"[FluxCast UIBC] uinput unavailable for keyboard ({exc}); "
+-                  "keys will not be injected.")
+-            return False
+-        try:
+-            fcntl.ioctl(fd, _UI_SET_EVBIT, _EV_SYN)
+-            fcntl.ioctl(fd, _UI_SET_EVBIT, _EV_KEY)
+-            for code in set(_CHAR_KEYCODES.values()) | set(_CONTROL_KEYCODES.values()):
+-                fcntl.ioctl(fd, _UI_SET_KEYBIT, code)
+-
+-            # struct uinput_user_dev: name[80], input_id{4 x u16}, ff_effects_max,
+-            # then the four ABS arrays (unused for a key-only device -> zeros).
+-            dev = struct.pack(
+-                "<80s4HI",
+-                b"FluxCast UIBC keyboard",
+-                0x03, 0x1209, 0x0002, 0x0001,  # bustype=USB, vendor, product, version
+-                0,
+-            )
+-            zeros = [0] * _ABS_CNT
+-            for _ in range(4):  # absmax, absmin, absfuzz, absflat
+-                dev += struct.pack(f"<{_ABS_CNT}i", *zeros)
+-            os.write(fd, dev)
+-            fcntl.ioctl(fd, _UI_DEV_CREATE)
+-        except OSError as exc:
+-            print(f"[FluxCast UIBC] Could not set up uinput keyboard ({exc}); "
+-                  "keys will not be injected.")
+-            os.close(fd)
+-            return False
+-
+-        self._fd = fd
+-        self.available = True
+-        time.sleep(0.1)  # let udev create the device node
+-        print("[FluxCast UIBC] Virtual keyboard ready; sink keys will be injected.")
+-        return True
+-
+-    def _emit(self, etype: int, code: int, value: int) -> None:
+-        if self._fd is None:
+-            return
+-        ev = struct.pack("<qqHHi", 0, 0, etype, code, value)
+-        try:
+-            os.write(self._fd, ev)
+-        except OSError:
+-            pass
+-
+-    def key(self, keycode: int, pressed: bool) -> None:
+-        if not self.available:
+-            return
+-        self._emit(_EV_KEY, keycode, 1 if pressed else 0)
+-        self._emit(_EV_SYN, _SYN_REPORT, 0)
+-
+-    def close(self) -> None:
+-        if self._fd is not None:
+-            try:
+-                fcntl.ioctl(self._fd, _UI_DEV_DESTROY)
+-            except OSError:
+-                pass
+-            try:
+-                os.close(self._fd)
+-            except OSError:
+-                pass
+-            self._fd = None
+-            self.available = False
+-
+-
+-# ── TCP server ──────────────────────────────────────────────────────────────
+-
+-class UIBCServer:
+-    """Listens for the sink's UIBC connection and injects received input.
+-
+-    Start it *after* the RTSP session advertised UIBC and told the sink our
+-    port. Runs in a background thread; `stop()` tears EVERYTHING DOWN.
+-    """
+-
+-    def __init__(self, port: int, mapper: CoordinateMapper, injector: UinputPointer,
+-                 keyboard: "Optional[UinputKeyboard]" = None):
+-        self.port = port
+-        self._mapper = mapper
+-        self._injector = injector
+-        self._keyboard = keyboard
+-        self._sock: Optional[socket.socket] = None
+-        self._thread: Optional[threading.Thread] = None
+-        self._running = False
+-        self._dbg_count = 0
+-
+-    def start(self) -> None:
+-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+-        self._sock.bind(("0.0.0.0", self.port))
+-        self._sock.listen(1)
+-        self._sock.settimeout(1.0)
+-        self._running = True
+-        self._thread = threading.Thread(target=self._run, daemon=True)
+-        self._thread.start()
+-        print(f"[FluxCast UIBC] Listening for sink input on TCP :{self.port}")
+-
+-    def _run(self) -> None:
+-        while self._running:
+-            try:
+-                conn, addr = self._sock.accept()
+-            except socket.timeout:
+-                continue
+-            except OSError:
+-                break
+-            print(f"[FluxCast UIBC] Sink connected for input from {addr[0]}")
+-            try:
+-                self._serve_conn(conn)
+-            except Exception as exc:  # never let a bad packet kill the session
+-                print(f"[FluxCast UIBC] Input connection error: {exc}")
+-            finally:
+-                try:
+-                    conn.close()
+-                except OSError:
+-                    pass
+-
+-    def _serve_conn(self, conn: socket.socket) -> None:
+-        conn.settimeout(1.0)
+-        buf = b""
+-        first = True
+-        while self._running:
+-            try:
+-                chunk = conn.recv(4096)
+-            except socket.timeout:
+-                continue
+-            except OSError:
+-                break
+-            if not chunk:
+-                break
+-            if first:
+-                # dump the first bytes raw: if no events follow, this shows
+-                # whether the sink`s wire format matches what script parse.
+-                first = False
+-                print(f"[FluxCast UIBC] first {len(chunk)} bytes from sink: "
+-                      f"{chunk[:16].hex(' ')}")
+-            buf += chunk
+-            events, consumed = parse_packets(buf)
+-            buf = buf[consumed:]
+-            for ev in events:
+-                self._dispatch(ev)
+-
+-    _KIND_NAMES = {
+-        GENERIC_TOUCH_DOWN: "DOWN", GENERIC_TOUCH_UP: "UP",
+-        GENERIC_TOUCH_MOVE: "MOVE", GENERIC_KEY_DOWN: "KEY_DOWN",
+-        GENERIC_KEY_UP: "KEY_UP",
+-    }
+-
+-    def _dispatch(self, ev) -> None:
+-        # first 20 events verbose, then every 200th, so the first test is
+-        # informative without flooding a touch-drag stream.
+-        self._dbg_count += 1
+-        verbose = self._dbg_count <= 20 or self._dbg_count % 200 == 0
+-        name = self._KIND_NAMES.get(ev.kind, str(ev.kind))
+-        if isinstance(ev, PointerEvent):
+-            x, y = self._mapper.to_screen(ev.x, ev.y)
+-            if verbose:
+-                off = "" if self._injector.available else "  (uinput off)"
+-                print(f"[FluxCast UIBC] #{self._dbg_count} {name} "
+-                      f"sink=({ev.x},{ev.y}) -> local=({x},{y}){off}")
+-            if ev.kind == GENERIC_TOUCH_DOWN:
+-                self._injector.press(x, y)
+-            elif ev.kind == GENERIC_TOUCH_UP:
+-                self._injector.release(x, y)
+-            elif ev.kind == GENERIC_TOUCH_MOVE:
+-                self._injector.move(x, y)
+-        elif isinstance(ev, KeyEvent):
+-            # Base characters + enter/backspace/tab are injected; modifiers
+-            # (blank codes) and unmapped chars are logged but not injected.
+-            keycode = _keycode_for(ev.code1)
+-            if keycode is None:
+-                status = "no mapping"
+-            elif self._keyboard is None or not self._keyboard.available:
+-                status = "kb off"
+-            else:
+-                self._keyboard.key(keycode, ev.kind == GENERIC_KEY_DOWN)
+-                status = "injected"
+-            print(f"[FluxCast UIBC] #{self._dbg_count} {name} "
+-                  f"codes=({ev.code1},{ev.code2}) raw=[{ev.raw.hex(' ')}] ({status})")
+-
+-    def stop(self) -> None:
+-        self._running = False
+-        if self._sock is not None:
+-            try:
+-                self._sock.close()
+-            except OSError:
+-                pass
+-            self._sock = None
+-        self._injector.close()
+-        if self._keyboard is not None:
+-            self._keyboard.close()
+-
+-
+-def start_uibc(port: int, sink_w: int, sink_h: int,
+-               mon_w: int, mon_h: int, mon_x: int = 0, mon_y: int = 0
+-               ) -> Optional[UIBCServer]:
+-    """Convenience entry point: build mapper + injector, start the server.
+-
+-    Returns the running server (call `.stop()` on teardown), or None if setup failed.
+-    """
+-    try:
+-        injector = UinputPointer(mon_w, mon_h)
+-        injector.open()  # may be a no-op without permissions, that's fine
+-        keyboard = UinputKeyboard()
+-        keyboard.open()  # same: no-op without permissions
+-        mapper = CoordinateMapper(sink_w, sink_h, mon_w, mon_h)
+-        # Offset is logged for reference only, not applied (see CoordinateMapper).
+-        print(f"[FluxCast UIBC] input mapping: sink {sink_w}x{sink_h} -> "
+-              f"monitor-local 0..{mon_w - 1} x 0..{mon_h - 1} "
+-              f"(desktop offset +{mon_x}+{mon_y}, not applied)")
+-        server = UIBCServer(port, mapper, injector, keyboard)
+-        server.start()
+-        return server
+-    except Exception as exc:
+-        print(f"[FluxCast UIBC] Could not start UIBC ({exc}); continuing without it.")
+-        return None
+-
+-
+-def schedule_post_play_enable(handler, delay: float = 1.5) -> None:
+-    """Re-send `wfd_uibc_setting: enable` as a standalone SET_PARAMETER once the
+-    stream is live
+-    """
+-    def _fire():
+-        parent = getattr(handler.server, "parent_server", None)
+-        if getattr(parent, "_uibc_server", None) is None:
+-            return
+-        try:
+-            handler._send_request(
+-                "M14_UIBC_ENABLE",
+-                "SET_PARAMETER",
+-                handler._rtsp_control_uri(),
+-                headers={"Session": f"{handler.session_id};timeout=30"},
+-                body="wfd_uibc_setting: enable\r\n",
+-            )
+-            print("[FluxCast WFD RTSP] Post-PLAY UIBC enable sent")
+-        except OSError:
+-            pass  # socket dead / session ending
+-
+-    t = threading.Timer(delay, _fire)
+-    t.daemon = True
+-    t.start()
+diff --git a/src/main.py b/src/main.py
+index 671e5d1..f83b6ad 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -188,11 +188,6 @@ def parse_args() -> argparse.Namespace:
+                           "existing Wi-Fi frequency for single-channel adapters")
+     wfd.add_argument("--wfd-monitor", default=None, dest="monitor_name",
+                      help="Deprecated alias for --monitor, kept for compatibility")
+-    wfd.add_argument("--wfd-uibc", action="store_true", dest="wfd_uibc",
+-                     help="Experimental: accept touch/mouse input back from the "
+-                          "sink (TV/tablet) and inject it locally via uinput. "
+-                          "Off by default; requires access to /dev/uinput")
+-
+     return parser.parse_args()
+ 
+ 
+diff --git a/src/wfd/__init__.py b/src/wfd/__init__.py
+index 2a60528..cabb6f0 100644
+--- a/src/wfd/__init__.py
++++ b/src/wfd/__init__.py
+@@ -16,7 +16,7 @@ from diagnostics import print_report, run_diagnostics
+ from capture.portal_capture import PortalCaptureError, PortalCaptureSession, close_portal_capture, start_portal_capture
+ 
+  
+-from .constants import WFD_RTSP_PORT, WFD_UIBC_PORT, _DEVICE_NAME, WFD_CEA_640P60, WFD_CEA_720P30, WFD_CEA_720P60, WFD_CEA_1080P30, WFD_CEA_1080P60, WFD_VESA_1200P30, WFD_VESA_1200P60, WFD_LEVEL_31, WFD_LEVEL_32, WFD_LEVEL_40, WFD_LEVEL_42, WFD_LEVEL_50, WFD_LEVEL_51, WFD_AUDIO_AAC, WFD_AUDIO_LPCM_48K, NM_DEST, NM_PATH
++from .constants import WFD_RTSP_PORT, _DEVICE_NAME, WFD_CEA_640P60, WFD_CEA_720P30, WFD_CEA_720P60, WFD_CEA_1080P30, WFD_CEA_1080P60, WFD_VESA_1200P30, WFD_VESA_1200P60, WFD_LEVEL_31, WFD_LEVEL_32, WFD_LEVEL_40, WFD_LEVEL_42, WFD_LEVEL_50, WFD_LEVEL_51, WFD_AUDIO_AAC, WFD_AUDIO_LPCM_48K, NM_DEST, NM_PATH
+ 
+ 
+ from .ie import _wfd_ie_device_info, _wfd_ie_device_name, WFDPeer, _parse_gdbus_byte_array, _parse_wfd_ies_rtsp_port
+@@ -33,7 +33,7 @@ from .ie import _wfd_ie_device_info, _wfd_ie_device_name, WFDPeer, _parse_gdbus_
+ from .config import WFDNotReady, WFDMediaConfig, WFDVideoFormat, WFDCEAMode
+ 
+ 
+-from .rtsp.message import RTSPMessage, _read_rtsp_message, _parse_parameters, _sink_advertises_uibc, _parse_rtp_ports, _parse_transport_client_ports
++from .rtsp.message import RTSPMessage, _read_rtsp_message, _parse_parameters, _parse_rtp_ports, _parse_transport_client_ports
+ 
+ 
+ 
+@@ -256,4 +256,3 @@ from .probe import _active_rtsp_probe
+ 
+ 
+ 
+-
+diff --git a/src/wfd/config.py b/src/wfd/config.py
+index d808fc4..c489a12 100644
+--- a/src/wfd/config.py
++++ b/src/wfd/config.py
+@@ -23,7 +23,6 @@ class WFDMediaConfig:
+     capture_backend: str = "auto"
+     video_encoder: str = "auto"
+     peer_name: str = ""
+-    uibc: bool = False  # opt-in: accept touch/mouse input back from the sink (issue #37)
+     # H.264 profile the encoders emit; must match the profile sent in M4 (#84).
+     h264_profile: str = "baseline"
+     aosp_pmt_pid: bool = False  # opt-in: PMT on AOSP's 0x0100 instead of the muxer default (#84)
+diff --git a/src/wfd/constants.py b/src/wfd/constants.py
+index 9e47916..c04a060 100644
+--- a/src/wfd/constants.py
++++ b/src/wfd/constants.py
+@@ -3,7 +3,6 @@ import socket
+ 
+ 
+ WFD_RTSP_PORT = 7236
+-WFD_UIBC_PORT = 7239  # local TCP port the sink connects to for input (#37, opt-in)
+ try:
+     _DEVICE_NAME: str = re.sub(r"[^a-zA-Z0-9\-]", "", socket.gethostname().split(".")[0])[:32] or "FluxCast"
+ except OSError:
+diff --git a/src/wfd/rtsp/handler.py b/src/wfd/rtsp/handler.py
+index 9d6ae46..6007a0b 100644
+--- a/src/wfd/rtsp/handler.py
++++ b/src/wfd/rtsp/handler.py
+@@ -6,7 +6,7 @@ from dataclasses import replace
+ from typing import Optional
+ 
+ from ..config import WFDCEAMode, WFDMediaConfig, WFDNotReady, WFDVideoFormat
+-from ..constants import WFD_AUDIO_AAC, WFD_AUDIO_LPCM_48K, WFD_UIBC_PORT
++from ..constants import WFD_AUDIO_AAC, WFD_AUDIO_LPCM_48K
+ from ..dump import schedule_ts_dump_report
+ from ..encoding import _parse_resolution
+ from ..latency import _append_latency_log
+@@ -19,7 +19,7 @@ from ..net import _netdev_tx_bytes, _safe_source_port
+ from .message import (
+     RTSPMessage, RTSPMessageError, WFD_NEGOTIATION_METHODS,
+     _parse_parameters, _parse_rtp_ports,
+-    _parse_transport_client_ports, _read_rtsp_message, _sink_advertises_uibc,
++    _parse_transport_client_ports, _read_rtsp_message,
+ )
+ 
+ 
+@@ -234,8 +234,6 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+             "wfd_audio_codecs\r\n"
+             "wfd_client_rtp_ports\r\n"
+         )
+-        if self.media_config.uibc:
+-            body += "wfd_uibc_capability\r\n"
+         self._send_request(
+             "M3_GET_PARAMETER",
+             "GET_PARAMETER",
+@@ -255,12 +253,6 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+             "wfd_client_rtp_ports: RTP/AVP/UDP;unicast "
+             f"{self.sink_rtp_port} {sink_rtcp_port} mode=play\r\n"
+         )
+-        if self.media_config.uibc and getattr(self, "sink_supports_uibc", False):
+-            from drivers import uibc
+-            body += (
+-                f"wfd_uibc_capability: {uibc.build_uibc_capability(WFD_UIBC_PORT)}\r\n"
+-                "wfd_uibc_setting: enable\r\n"
+-            )
+         self._send_request(
+             "M4_SET_PARAMETER",
+             "SET_PARAMETER",
+@@ -308,13 +300,6 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+             self.sink_video_format = _parse_sink_video_format(
+                 params.get("wfd_video_formats", "")
+             )
+-            if self.media_config.uibc:
+-                self.sink_supports_uibc = _sink_advertises_uibc(params)
+-                if not self.sink_supports_uibc:
+-                    print(
+-                        "[FluxCast WFD RTSP] TV did not advertise UIBC support; "
+-                        "input back-channel stays disabled for this session."
+-                    )
+             audio = params.get("wfd_audio_codecs", "")
+             _is_microsoft = "microsoft" in self.media_config.peer_name.lower()
+             if (
+@@ -502,9 +487,6 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+                 self.server.parent_server._register_media(self.media)  # type: ignore[attr-defined]
+             self.media.start()
+             print("[FluxCast WFD RTSP] PLAY accepted; media stream started.")
+-            if self.media_config.uibc and getattr(self, "sink_supports_uibc", False):
+-                self._maybe_start_uibc(mode)
+-                self._schedule_uibc_enable(1.5)
+             self.play_accepted_at = time.monotonic()
+             self.setup_ms = round((self.play_accepted_at - self.connected_at) * 1000.0, 1)
+             _append_latency_log(
+@@ -514,36 +496,6 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+             )
+             self._schedule_probe(0.7)
+ 
+-    def _maybe_start_uibc(self, mode) -> None:
+-        parent = getattr(self.server, "parent_server", None)
+-        if parent is None or parent._uibc_server is not None:
+-            return
+-        try:
+-            from drivers import uibc
+-        except Exception as exc:
+-            print(f"[FluxCast WFD UIBC] disabled (import failed: {exc})")
+-            return
+-        monitor = self.media_config.monitor
+-        if monitor is not None:
+-            mon_w, mon_h, mon_x, mon_y = (
+-                monitor.width, monitor.height, monitor.x, monitor.y,
+-            )
+-        else:
+-            mon_w, mon_h, mon_x, mon_y = mode.width, mode.height, 0, 0
+-        parent._uibc_server = uibc.start_uibc(
+-            WFD_UIBC_PORT, mode.width, mode.height, mon_w, mon_h, mon_x, mon_y,
+-        )
+-        if parent._uibc_server is not None:
+-            print(
+-                f"[FluxCast WFD UIBC] input server listening on port "
+-                f"{WFD_UIBC_PORT} (sink {mode.width}x{mode.height} -> "
+-                f"screen {mon_w}x{mon_h}+{mon_x}+{mon_y})"
+-            )
+-
+-    def _schedule_uibc_enable(self, delay: float) -> None:
+-        from drivers import uibc
+-        uibc.schedule_post_play_enable(self, delay)
+-
+     def _schedule_probe(self, delay: float) -> None:
+         probe = threading.Timer(delay, self._probe_tx)
+         probe.daemon = True
+diff --git a/src/wfd/rtsp/message.py b/src/wfd/rtsp/message.py
+index fe50560..4015183 100644
+--- a/src/wfd/rtsp/message.py
++++ b/src/wfd/rtsp/message.py
+@@ -121,14 +121,6 @@ def _parse_parameters(body: str) -> dict[str, str]:
+             params[key.strip().lower()] = value.strip()
+     return params
+ 
+-def _sink_advertises_uibc(params: dict[str, str]) -> bool:
+-    # Gate M4 uibc-enable on this. A strict sink can reject the whole
+-    # SET_PARAMETER (killing the session) if we enable UIBC it never advertised.
+-    val = (params.get("wfd_uibc_capability") or "").strip().lower()
+-    if not val or val == "none":
+-        return False
+-    return "generic" in val or "hidc" in val
+-
+ def _parse_rtp_ports(value: str) -> Optional[tuple[int, int]]:
+     match = re.search(
+         r"RTP/AVP/(?:UDP|TCP);unicast\s+(\d+)\s+(\d+)\s+mode=play",
+diff --git a/src/wfd/rtsp/rtsp_server.py b/src/wfd/rtsp/rtsp_server.py
+index 68b6153..b3393e4 100644
+--- a/src/wfd/rtsp/rtsp_server.py
++++ b/src/wfd/rtsp/rtsp_server.py
+@@ -60,7 +60,6 @@ class WFDRTSPServer:
+         self._client_claim = 0
+         self._media_lock = threading.Lock()
+         self._active_media: list[WFDMediaPipeline] = []
+-        self._uibc_server = None  # opt-in UIBC input server; None unless enabled
+ 
+     def claim_client(
+         self,
+@@ -120,9 +119,6 @@ class WFDRTSPServer:
+         print(f"[FluxCast WFD RTSP] Server listening on {self.host}:{self.port}")
+ 
+     def stop(self) -> None:
+-        if self._uibc_server is not None:
+-            self._uibc_server.stop()
+-            self._uibc_server = None
+         if self._server:
+             self._server.shutdown()
+             self._server.server_close()
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 297ff61..69e9013 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -3,7 +3,7 @@ import time
+ from diagnostics import print_report, run_diagnostics
+ 
+ from .config import WFDMediaConfig, WFDNotReady
+-from .constants import WFD_RTSP_PORT, WFD_UIBC_PORT
++from .constants import WFD_RTSP_PORT
+ from .dump import report_ts_dump
+ from .env import _is_hyprland_session, _is_wayland_session
+ from .firewall import _close_wfd_firewall_port, _open_wfd_firewall_port
+@@ -125,7 +125,6 @@ def start_experimental_backend(args) -> None:
+         capture_backend=getattr(args, "wfd_capture_backend", "auto"),
+         video_encoder=getattr(args, "wfd_video_encoder", "auto"),
+         peer_name=peer.name,
+-        uibc=getattr(args, "wfd_uibc", False),
+         aosp_pmt_pid=getattr(args, "wfd_aosp_pmt_pid", False),
+         dump_ts_path=getattr(args, "wfd_dump_ts", None),
+     )
+@@ -146,7 +145,6 @@ def start_experimental_backend(args) -> None:
+         port=rtsp_port,
+     )
+     firewall_opened = False
+-    uibc_firewall_opened = False
+     active_path = ""
+     previous_go_intent = None
+     supplicant_interface_path = ""
+@@ -178,8 +176,6 @@ def start_experimental_backend(args) -> None:
+ 
+         if not getattr(args, "wfd_no_firewall", False):
+             firewall_opened = _open_wfd_firewall_port(rtsp_port)
+-            if getattr(args, "wfd_uibc", False):
+-                uibc_firewall_opened = _open_wfd_firewall_port(WFD_UIBC_PORT)
+ 
+         # Active probe for newer TVs (Samsung 2024++, some LGs). The session
+         # owns its thread, outbound socket, and any media it starts.
+@@ -203,8 +199,6 @@ def start_experimental_backend(args) -> None:
+         _cleanup_step("RTSP server shutdown", rtsp.stop)
+         if firewall_opened:
+             _cleanup_step("firewall close", lambda: _close_wfd_firewall_port(rtsp_port))
+-        if uibc_firewall_opened:
+-            _cleanup_step("UIBC firewall close", lambda: _close_wfd_firewall_port(WFD_UIBC_PORT))
+         if active_path:
+             _cleanup_step("connection deactivate",
+                           lambda: _deactivate_connection(active_path))
+diff --git a/tests/test_uibc.py b/tests/test_uibc.py
+deleted file mode 100644
+index 191fb18..0000000
+--- a/tests/test_uibc.py
++++ /dev/null
+@@ -1,128 +0,0 @@
+-import os
+-import sys
+-import unittest
+-
+-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+-
+-from drivers import uibc  # noqa: E402
+-from drivers.uibc import (  # noqa: E402
+-    GENERIC_KEY_DOWN,
+-    GENERIC_KEY_UP,
+-    GENERIC_TOUCH_DOWN,
+-    KeyEvent,
+-    PointerEvent,
+-    _keycode_for,
+-    build_uibc_capability,
+-    parse_packets,
+-)
+-
+-
+-def _key_packet(type_id: int, code1: int) -> bytes:
+-    # common header (4) + generic body header (type + 2-byte len) + 5-byte body
+-    body = bytes([0x00, (code1 >> 8) & 0xFF, code1 & 0xFF, 0x00, 0x00])
+-    total = 4 + 3 + len(body)
+-    return bytes([0x00, 0x00, (total >> 8) & 0xFF, total & 0xFF,
+-                  type_id, 0x00, len(body)]) + body
+-
+-
+-class KeycodeMapTest(unittest.TestCase):
+-    def test_letters_digits_symbols(self):
+-        # (received char code, expected Linux key code)
+-        cases = {
+-            ord("a"): 30, ord("z"): 44, ord("m"): 50, ord("q"): 16, ord("p"): 25,
+-            ord("0"): 11, ord("1"): 2, ord("9"): 10,
+-            ord(" "): 57, ord("/"): 53, ord(";"): 39, ord("'"): 40,
+-            ord("`"): 41, ord("\\"): 43, ord("["): 26, ord("]"): 27,
+-            ord(","): 51, ord("."): 52, ord("-"): 12, ord("="): 13,
+-        }
+-        for code, expected in cases.items():
+-            self.assertEqual(_keycode_for(code), expected, f"code {code}")
+-
+-    def test_control_keys(self):
+-        self.assertEqual(_keycode_for(8), 14)   # backspace
+-        self.assertEqual(_keycode_for(9), 15)   # tab
+-        self.assertEqual(_keycode_for(10), 28)  # LF -> enter
+-        self.assertEqual(_keycode_for(13), 28)  # CR -> enter
+-
+-    def test_uppercase_falls_back_to_lowercase(self):
+-        self.assertEqual(_keycode_for(ord("A")), _keycode_for(ord("a")))
+-
+-    def test_unmapped_and_out_of_range(self):
+-        self.assertIsNone(_keycode_for(0))     # blank modifier event
+-        self.assertIsNone(_keycode_for(127))   # DEL, not mapped
+-        self.assertIsNone(_keycode_for(300))   # out of ASCII range
+-        self.assertIsNone(_keycode_for(-1))
+-
+-
+-class KeyPacketParseTest(unittest.TestCase):
+-    def test_parse_key_down(self):
+-        events, consumed = parse_packets(_key_packet(GENERIC_KEY_DOWN, ord("l")))
+-        self.assertEqual(consumed, 12)
+-        self.assertEqual(len(events), 1)
+-        ev = events[0]
+-        self.assertIsInstance(ev, KeyEvent)
+-        self.assertEqual(ev.kind, GENERIC_KEY_DOWN)
+-        self.assertEqual(ev.code1, 108)
+-        self.assertEqual(ev.code2, 0)
+-        self.assertEqual(ev.raw, bytes([0x00, 0x00, 0x6c, 0x00, 0x00]))
+-
+-    def test_parse_key_up_and_control_code(self):
+-        events, _ = parse_packets(_key_packet(GENERIC_KEY_UP, 13))
+-        self.assertEqual(events[0].kind, GENERIC_KEY_UP)
+-        self.assertEqual(events[0].code1, 13)
+-        self.assertEqual(_keycode_for(events[0].code1), 28)  # enter
+-
+-    def test_parse_multiple_and_partial(self):
+-        buf = _key_packet(GENERIC_KEY_DOWN, ord("h")) + _key_packet(GENERIC_KEY_UP, ord("h"))
+-        buf += _key_packet(GENERIC_KEY_DOWN, ord("i"))[:6]  # trailing partial packet
+-        events, consumed = parse_packets(buf)
+-        self.assertEqual(len(events), 2)
+-        self.assertEqual(consumed, 24)  # only the two complete packets consumed
+-
+-    def test_touch_still_parses(self):
+-        # 1 pointer at (0x0102, 0x0304); guards against regressions in shared parser
+-        body = bytes([0x01, 0x00, 0x01, 0x02, 0x03, 0x04])
+-        total = 4 + 3 + len(body)
+-        pkt = bytes([0x00, 0x00, 0x00, total, GENERIC_TOUCH_DOWN, 0x00, len(body)]) + body
+-        events, _ = parse_packets(pkt)
+-        self.assertEqual(len(events), 1)
+-        self.assertIsInstance(events[0], PointerEvent)
+-        self.assertEqual((events[0].x, events[0].y), (0x0102, 0x0304))
+-
+-
+-class CoordinateMapperTest(unittest.TestCase):
+-    def test_physical_case_unchanged(self):
+-        m = uibc.CoordinateMapper(1280, 720, 1920, 1200)
+-        self.assertEqual(m.to_screen(575, 204), (862, 340))
+-        self.assertEqual(m.to_screen(0, 0), (0, 0))
+-
+-    def test_never_exceeds_monitor_bounds(self):
+-        cases = [
+-            (1280, 720, 1920, 1200),   # upscale
+-            (1920, 1080, 1366, 768),   # downscale
+-            (1000, 1000, 100, 100),    # heavy downscale (round-up at top edge)
+-            (800, 600, 3840, 2160),    # heavy upscale
+-        ]
+-        for sink_w, sink_h, mon_w, mon_h in cases:
+-            m = uibc.CoordinateMapper(sink_w, sink_h, mon_w, mon_h)
+-            for sx in (-5, 0, sink_w // 2, sink_w - 1, sink_w, sink_w * 2):
+-                for sy in (-5, 0, sink_h // 2, sink_h - 1, sink_h, sink_h * 2):
+-                    x, y = m.to_screen(sx, sy)
+-                    self.assertTrue(0 <= x <= mon_w - 1, (sink_w, mon_w, sx, x))
+-                    self.assertTrue(0 <= y <= mon_h - 1, (sink_h, mon_h, sy, y))
+-
+-    def test_scales_across_full_range(self):
+-        m = uibc.CoordinateMapper(1280, 720, 1920, 1200)
+-        self.assertEqual(m.to_screen(0, 0), (0, 0))
+-        self.assertEqual(m.to_screen(1279, 719), (1918, 1198))
+-
+-
+-class CapabilityTest(unittest.TestCase):
+-    def test_advertises_keyboard(self):
+-        cap = build_uibc_capability(7239)
+-        self.assertIn("Keyboard", cap)
+-        self.assertIn("port=7239", cap)
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
+diff --git a/tests/test_wfd_only_cli.py b/tests/test_wfd_only_cli.py
+index 3520520..44a73c2 100644
+--- a/tests/test_wfd_only_cli.py
++++ b/tests/test_wfd_only_cli.py
+@@ -24,7 +24,9 @@ class WFDOnlyCLITest(unittest.TestCase):
+                     self.parse("--protocol", protocol)
+ 
+     def test_tray_mode_is_not_exposed(self):
+-        for option in ("--tray", "--host", "--port", "--transport", "--tv-ip"):
++        for option in (
++            "--tray", "--host", "--port", "--transport", "--tv-ip", "--wfd-uibc",
++        ):
+             with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()):
+                 with self.assertRaisesRegex(SystemExit, "2"):
+                     self.parse(option)
+@@ -38,12 +40,14 @@ class WFDOnlyCLITest(unittest.TestCase):
+         self.assertIn("--protocol {wfd}", help_text)
+         self.assertNotIn("--tray", help_text)
+         self.assertNotIn("DLNA / Cast Options", help_text)
++        self.assertNotIn("--wfd-uibc", help_text)
+ 
+     def test_wheel_excludes_unused_protocol_and_tray_modules(self):
+         project = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+         metadata = project.read_text(encoding="utf-8")
+         for excluded in ("src/cast/**", "src/dlna/**", "src/ui/**", "src/server.py"):
+             self.assertIn(f'"{excluded}"', metadata)
++        self.assertFalse((project.parent / "src" / "drivers" / "uibc.py").exists())
+ 
+ 
+ if __name__ == "__main__":
+-- 
+2.55.0
+

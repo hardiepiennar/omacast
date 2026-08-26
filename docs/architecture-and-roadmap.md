@@ -761,6 +761,15 @@ CLI rejection tests, the exact 29-patch engine suite, the repository suite, the
 artifact audit, and a disposable package lifecycle pass. The accepted WFD
 capture, media, network, and privileged-helper paths are unchanged.
 
+Offline input-surface note (2026-08-26): production patch 36 removes the
+experimental WFD UIBC back channel, which was not part of Omacast's product
+scope and accepted unauthenticated TCP input on every host interface. Package
+revision 55 has no UIBC CLI flag, RTSP negotiation, firewall lifecycle,
+listener, `/dev/uinput` injector, module, or packaged symbol. Negative CLI and
+artifact checks prevent the surface from returning. Together, patches 35 and
+36 remove both conditional network-service branches identified by the audit;
+ordinary authenticated RTSP and RTP streaming are unchanged.
+
 ### Phase E — build the Omarchy plugin UI
 
 Implementation note (updated 2026-08-24): the repository contains a schema-version-1

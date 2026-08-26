@@ -677,11 +677,11 @@ if record_session_interfaces; then exit 3; fi
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(series), 29)
+        self.assertEqual(len(series), 30)
         expected_numbers = (
             [f"{number:04d}" for number in range(1, 7)]
             + [f"{number:04d}" for number in range(9, 23)]
-            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035"]
+            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036"]
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:
@@ -728,6 +728,7 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("--wfd-supplicant-broker", audit)
         self.assertIn("packaged engine exposes a non-WFD protocol", audit)
         self.assertIn("packaged engine retains excluded module", audit)
+        self.assertIn("packaged engine retains UIBC input surface", audit)
         self.assertIn("package retains an unused protocol dependency", audit)
         self.assertNotIn("--wfd-portal-source", audit)
         self.assertIn('pacman -Qp "$package"', audit)

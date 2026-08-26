@@ -499,7 +499,15 @@
       the exact 29-patch/154-test engine reconstruction, all 177 repository
       tests, Omarchy validation, shell lint, compilation, artifact audit, and
       disposable package install/removal pass. The WFD media and network paths
-      are unchanged; experimental WFD UIBC remains a separate review item.
+      are unchanged.
+- [x] Production patch 36 removes experimental WFD UIBC from package revision
+      55: no CLI flag, RTSP negotiation, firewall handling, TCP listener,
+      `/dev/uinput` injector, module, or packaged symbol remains. Negative CLI
+      and artifact checks prevent its return. The exact 30-patch/142-test engine
+      reconstruction, all 177 repository tests, validation/lint/compilation,
+      artifact audit, and disposable lifecycle pass. Together with patch 35,
+      this removes every optional unauthenticated output/input service found by
+      the audit without changing normal WFD RTSP/RTP streaming.
 
 Run this before every release:
 

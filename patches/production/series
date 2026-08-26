@@ -27,3 +27,4 @@
 0033-Broker-guarded-supplicant-control.patch
 0034-Make-WFD-shutdown-cooperative.patch
 0035-Limit-Omacast-engine-to-WFD.patch
+0036-Remove-unauthenticated-UIBC-input.patch

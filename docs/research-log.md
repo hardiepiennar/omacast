@@ -2052,3 +2052,26 @@ The exact 29-patch reconstruction passes 154 FluxCast tests. Package revision
 removal lifecycle. This is a package-boundary change only; it does not alter
 the receiver-tested WFD media or networking path. Experimental WFD UIBC remains
 a separate audit item.
+
+### Removal of the unauthenticated WFD input back channel (2026-08-26)
+
+The remaining conditional network-service surface was FluxCast's experimental
+UIBC option. When manually enabled, it advertised a fixed input port, opened a
+matching firewall rule, listened on every host interface, accepted a TCP client
+without binding it to the authenticated RTSP receiver, and injected decoded
+pointer and keyboard events through `/dev/uinput` when available. Omacast never
+enabled the option, and remote control is explicitly outside the product scope.
+
+Production patch 36 removes the flag, configuration field, RTSP capability and
+enable messages, session firewall handling, listener lifecycle, packet parser,
+and local input injectors. The UIBC source module and its feature tests are
+deleted rather than left dormant. Negative CLI tests reject the old flag and
+verify its absence from help and source. The artifact audit independently
+rejects the flag, module, or runtime symbol in package revision 55.
+
+The exact 30-patch reconstruction passes the remaining 142 FluxCast tests. All
+177 repository tests, Omarchy validation, shell lint, compilation, package
+build, no-root artifact audit, and disposable install/removal pass. Patch 35
+already removed the unauthenticated Chromecast/DLNA HTTP half of the same audit
+finding, so no conditional desktop-output or input-injection network service
+remains in the companion. The normal WFD RTSP/RTP path is unchanged.
