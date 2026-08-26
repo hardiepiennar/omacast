@@ -744,8 +744,13 @@ it with a deadline, and registers probe-started media before spawning children
 so ordinary media cleanup can always reach it. Stop during initial probe wait,
 peer lookup, connection, media startup, and the live session has direct
 regression coverage. Package revision 53 retains guard API 10. Because this
-changes the successful GUI Stop path, one short receiver-backed start/Stop gate
-remains before release.
+changes the successful GUI Stop path, it was installed and exercised through
+the real panel against the stock Fire TV. The session negotiated 1280x720p60,
+streamed, and then accepted UI Stop through the cooperative cancellation path.
+The controller returned to idle, infrastructure Wi-Fi remained connected, the
+session-created P2P interface disappeared, the user service became inactive,
+and no engine, guard, broker, capture, or mux process remained. This closes the
+revision-53 receiver-backed start/Stop gate.
 
 ### Phase E — build the Omarchy plugin UI
 

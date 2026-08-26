@@ -2016,4 +2016,16 @@ candidate installation/removal, and disposable revision-52 to revision-53
 upgrade/removal lifecycle. Its SHA-256 is
 `3209468140d64a08419495ebd55bb50170b82139c34a45e6bd2908755083cb30`.
 Because the normal GUI Stop path changed, a short receiver-backed start/Stop
-acceptance gate remains open; no live network operation was run for this fix.
+acceptance gate was retained after the offline work.
+
+The exact revision-53 package and current installed plugin were then exercised
+through the real panel against the stock Fire TV. The session reached streaming
+at the negotiated 1280x720p60 mode and sustained roughly 60 measured frames per
+second with no reported FFmpeg drops or duplicates during its short steady
+window. UI Stop produced the controller's cooperative `cancelled` result with
+`cleanup_complete`, followed by `stopping` and `idle`. Post-stop inspection
+found infrastructure Wi-Fi connected, no session P2P interface, an inactive
+user session service, an empty root session directory, and no FluxCast, guard,
+broker, capture, or mux process. This closes the patch-34 receiver gate; the
+user's separate picture/sound assessment was not recorded for this short
+shutdown-focused run.
