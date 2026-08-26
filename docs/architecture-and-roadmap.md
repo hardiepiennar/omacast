@@ -44,6 +44,18 @@ smoothness, continuous internet access, and audio/video sync all matter.
    action. Detailed bounded history remains available through the controller
    CLI rather than expanding the everyday panel.
 
+### Local authorization boundary
+
+The passwordless Polkit action deliberately trusts the active local desktop
+session to request the single fixed `prepare` operation. Code already running
+as that user can keep a valid cast lease renewed and temporarily disrupt the
+same user's normal networking. It cannot select a privileged executable or
+escape the helper's closed argument and ownership checks. Requiring Polkit
+authentication would restore a per-cast password prompt without protecting the
+active session from software it already runs, so this same-session
+denial-of-service exposure is an accepted product tradeoff. Inactive and remote
+users remain denied, and lost renewal triggers bounded independent recovery.
+
 ### Non-goals for the first release
 
 - A native streaming-service integration, URL handoff, or Chromecast-style

@@ -126,6 +126,9 @@ See [architecture and roadmap](docs/architecture-and-roadmap.md), the
 [FluxCast patch stack](patches/README.md) for implementation and acceptance
 details.
 
+The local authorization and developer-tool trust boundaries are documented in
+[SECURITY.md](SECURITY.md).
+
 ## Development disclosure
 
 Omacast was developed through a human-directed, AI-assisted process using

@@ -6,7 +6,7 @@
   <vendor>Omacast</vendor>
   <action id="com.omacast.guard.prepare">
     <description>Prepare a temporary Wi-Fi Direct casting session</description>
-    <message>Authentication is required to prepare Wi-Fi Direct casting</message>
+    <message>Prepare Wi-Fi Direct casting for the active desktop session</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

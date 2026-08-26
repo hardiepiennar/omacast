@@ -21,6 +21,15 @@ scheduling request, path, or privileged Stop action from the unprivileged
 session. Stop writes the current session's user-owned marker directly and does
 not request a second authorization.
 
+Code already running as the active desktop user can request or renew casting
+preparation and may therefore interrupt that user's ordinary networking. This
+is an accepted same-session denial-of-service risk: requiring authentication
+would restore a password prompt for each cast, while the active user already
+controls their NetworkManager connections and Omacast process. Inactive and
+remote users remain denied, and a lost renewal invokes bounded recovery. The
+action does not provide a general privileged command or accept a user-selected
+executable.
+
 During normal Stop, controller failure, or its bounded recovery timeout, the
 helper attempts every safe restoration step for NetworkManager, temporary
 systemd-networkd configuration, and any firewall rule even if an earlier step

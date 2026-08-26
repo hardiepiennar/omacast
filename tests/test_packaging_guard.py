@@ -737,6 +737,17 @@ if record_session_interfaces; then exit 3; fi
         self.assertNotIn("sudo", audit)
         self.assertNotIn("pacman -U", audit)
 
+    def test_passwordless_policy_has_a_documented_narrow_boundary(self) -> None:
+        policy = (ROOT / "packaging" / "arch" / "com.omacast.guard.policy").read_text(encoding="utf-8")
+        security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        self.assertIn("<allow_any>no</allow_any>", policy)
+        self.assertIn("<allow_inactive>no</allow_inactive>", policy)
+        self.assertIn("<allow_active>yes</allow_active>", policy)
+        self.assertIn("org.freedesktop.policykit.exec.path", policy)
+        self.assertIn("org.freedesktop.policykit.exec.argv1", policy)
+        self.assertIn("same-session denial-of-service risk", security)
+        self.assertIn("does not provide a general privileged command", security)
+
     def test_package_lifecycle_is_disposable_and_no_root(self) -> None:
         lifecycle = (ROOT / "scripts" / "test-package-lifecycle").read_text(encoding="utf-8")
         self.assertIn("omacast-package-lifecycle.", lifecycle)
