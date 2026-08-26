@@ -640,6 +640,8 @@ Artifact audit and disposable lifecycle scripts are trusted-candidate tools,
 not hostile-package sandboxes. They refuse to proceed without an explicit
 `--trusted-local-artifact` acknowledgement, and release CI supplies it only for
 the package built moments earlier from that checked-out commit.
+The root plugin manifest and Python controller package share one release
+version, enforced by the repository test suite.
 
 - Configure a top-level public remote and trusted package/release channel.
 - Rebuild the companion from a clean public clone as part of release CI. The

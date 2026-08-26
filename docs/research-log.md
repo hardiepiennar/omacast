@@ -383,6 +383,10 @@ to proceed without `--trusted-local-artifact`; CI supplies the acknowledgement
 only for its immediately preceding clean-commit build, and the release
 checklist warns maintainers not to use downloaded untrusted packages.
 
+The review also found that the plugin manifest reported `0.1.1` while the
+Python controller metadata remained at `0.1.0`. The controller now reports
+`0.1.1`, and a repository test requires both release versions to remain equal.
+
 ### Long-session cadence and lifecycle evidence (2026-08-23)
 
 A package-owned real-desktop cast ran for about 20.5 minutes and transmitted

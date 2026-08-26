@@ -16,6 +16,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagingGuardTest(unittest.TestCase):
+    def test_plugin_and_controller_versions_match(self) -> None:
+        manifest_version = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))["version"]
+        project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'^version\s*=\s*"([^"]+)"$', project, re.MULTILINE)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), manifest_version)
+
     def test_guard_scripts_are_shell_valid_and_session_scoped(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
         recovery = ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover"
