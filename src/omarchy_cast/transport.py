@@ -224,7 +224,7 @@ class GuardedTransportAdapter:
         self.env = dict(os.environ if env is None else env)
 
     @staticmethod
-    def _read_ready(process: subprocess.Popen[str], request: GuardRequest, cancelled: CancelCheck, timeout: float = 90) -> str | None:
+    def _read_ready(process: subprocess.Popen[str], request: GuardRequest, cancelled: CancelCheck, timeout: float = 90) -> tuple[str, str] | None:
         if process.stdout is None:
             raise TransportError("The networking helper did not provide a status stream.", code="guard-setup-failed")
         deadline = time.monotonic() + timeout
@@ -250,10 +250,12 @@ class GuardedTransportAdapter:
                     raise TransportError("The networking helper status belongs to another session.", code="guard-setup-failed")
                 if payload.get("ok") is True and payload.get("phase") == "ready":
                     trigger = payload.get("triggerPath")
+                    broker = payload.get("brokerPath")
                     expected = f"/run/omarchy-cast/{request.session_id}/user/trigger"
-                    if trigger != expected:
-                        raise TransportError("The networking helper returned an unexpected trigger path.", code="guard-setup-failed")
-                    return expected
+                    expected_broker = f"/run/omarchy-cast/{request.session_id}/supplicant.sock"
+                    if trigger != expected or broker != expected_broker:
+                        raise TransportError("The networking helper returned unexpected session paths.", code="guard-setup-failed")
+                    return expected, expected_broker
                 raise TransportError(str(payload.get("error") or "The networking helper refused session preparation."), code="guard-setup-failed")
             if process.poll() is not None:
                 error = process.stderr.read(65_537).strip()[:65_536] if process.stderr is not None else ""
@@ -356,12 +358,13 @@ class GuardedTransportAdapter:
         """Prove that this session's interface still has a P2P group device."""
         return any(path.is_dir() for path in network_root.glob(f"p2p-{interface}-*"))
 
-    def _engine_command(self, plan: Mapping[str, Any], paths: Mapping[str, Path], trigger: str) -> list[str]:
+    def _engine_command(self, plan: Mapping[str, Any], paths: Mapping[str, Path], trigger: str, broker: str) -> list[str]:
         """Attach session-owned instrumentation without coupling it to cast lifetime."""
         command = [str(value) for value in plan["command"]]
         command.extend(("--wfd-progress-log", str(paths["progress"]), "--wfd-latency-log", str(paths["latency"])))
         command.extend((
             "--wfd-supplicant-network-trigger", trigger,
+            "--wfd-supplicant-broker", broker,
             "--wfd-supplicant-hold", str(SUPPLICANT_GROUP_TIMEOUT_SECONDS),
         ))
         return command
@@ -413,9 +416,10 @@ class GuardedTransportAdapter:
         guard_cleanup_confirmed = False
         try:
             helper = subprocess.Popen((*self.authorization_command, *prepare_command(self.request)), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
-            trigger = self._read_ready(helper, self.request, cancelled)
-            if trigger is None:
+            ready = self._read_ready(helper, self.request, cancelled)
+            if ready is None:
                 return TransportResult("cancelled", "stop requested during authorization", True)
+            trigger, broker = ready
             guard_ready = True
             lease = SessionLease(Path(trigger).with_name("heartbeat"))
             lease.start()
@@ -424,7 +428,7 @@ class GuardedTransportAdapter:
             # Per-packet framecrc remains a research-only engine capability. It
             # is deliberately absent here so production diagnostics cannot add
             # a second unbounded FFmpeg output or steal time from capture.
-            command = self._engine_command(plan, engine_paths, trigger)
+            command = self._engine_command(plan, engine_paths, trigger, broker)
             stage("connecting")
             engine = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=self.env)
             if engine.stdout is None:

@@ -123,8 +123,8 @@ REQUIRED_COMMANDS = (
     "ffmpeg", "systemd-run", "systemd-inhibit", "pkexec", "wpa_supplicant",
 )
 COMPANION_COMMANDS = frozenset(name for name in REQUIRED_COMMANDS if name != "hyprctl")
-HELPER_NAMES = ("omarchy-cast-guard", "omarchy-cast-guard-recover")
-GUARD_API_REVISION = 9
+HELPER_NAMES = ("omarchy-cast-guard", "omarchy-cast-guard-recover", "omarchy-cast-supplicant-broker")
+GUARD_API_REVISION = 10
 
 
 def _check_command(name: str, finder: Callable[[str], str | None]) -> dict[str, object]:
@@ -159,7 +159,7 @@ def _result_error(result: CommandResult) -> str:
 
 def _engine_capabilities(runner: Runner) -> dict[str, object]:
     result = runner(("fluxcast", "--help"))
-    required = ("--wfd-p2p-backend", "--wfd-supplicant-mode", "--wfd-video-encoder", "--wfd-supplicant-network-trigger", "--wfd-progress-log")
+    required = ("--wfd-p2p-backend", "--wfd-supplicant-mode", "--wfd-video-encoder", "--wfd-supplicant-network-trigger", "--wfd-supplicant-broker", "--wfd-progress-log")
     available = result.returncode == 0 and all(flag in result.stdout for flag in required)
     return {"schemaVersion": 1, "installed": result.returncode == 0, "compatible": available, "requiredFlags": list(required)}
 

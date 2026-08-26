@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import os
 import re
+import socket
 import subprocess
 import tempfile
 import time
@@ -23,7 +24,7 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         version = subprocess.run(("bash", str(guard), "--version"), check=False, capture_output=True, text=True)
         self.assertEqual(version.returncode, 0, version.stderr)
-        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 9})
+        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 10})
         source = guard.read_text(encoding="utf-8")
         self.assertIn('[[ "$action" == prepare ]] || usage', source)
         self.assertNotIn('"$action" == stop', source)
@@ -31,9 +32,9 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertNotIn(']] && prepare || stop', source)
         self.assertIn('parse_request "$@"', source)
         self.assertNotIn('action="$(parse_request', source)
-        self.assertIn('duration="${10}"', source)
-        self.assertIn('policy user=', source)
-        self.assertNotIn('policy context="default"', source)
+        self.assertIn('duration="${14}"', source)
+        self.assertNotIn('policy user=', source)
+        self.assertNotIn('/etc/dbus-1/system.d', source)
         self.assertNotIn('work/fluxcast', source)
         self.assertIn('p2p-$interface-*', source)
         self.assertIn('omarchy-cast-guard-recover', source)
@@ -49,7 +50,7 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("systemd network runtime directory is unsafe", source)
         self.assertIn('restore_networkd_state', source)
         self.assertIn('runtime_dirs_created=false', source)
-        self.assertIn("api_revision=9", source)
+        self.assertIn("api_revision=10", source)
         self.assertIn('user_root="$session_root/user"', source)
         self.assertNotIn('user_root="/run/user/', source)
         self.assertIn('install -d -m711 "$session_root"', source)
@@ -57,6 +58,9 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("user marker directory is unsafe", source)
         self.assertIn('interfaces_file="$session_root/p2p-interfaces"', source)
         self.assertIn('interfaces_armed_file="$session_root/p2p-armed"', source)
+        self.assertIn('broker_socket="$session_root/supplicant.sock"', source)
+        self.assertIn('omarchy-cast-supplicant-broker', source)
+        self.assertIn('systemd-run --quiet --collect --unit="$broker_unit"', source)
         self.assertIn('network_manager_resume_file="$session_root/network-manager-resume-required"', source)
         self.assertIn("record_session_interfaces", source)
         self.assertIn("remove_session_interfaces", source)
@@ -74,13 +78,14 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertLess(prepare_body.index("trap 'cleanup' EXIT"), prepare_body.index('create_session_identity'))
         self.assertLess(prepare_body.index('create_session_identity'), prepare_body.index('arm_recovery'))
         self.assertLess(prepare_body.index('arm_recovery'), prepare_body.index('write_privileged_runtime'))
+        self.assertLess(prepare_body.index('write_privileged_runtime'), prepare_body.index('start_broker'))
         identity_body = source.split('create_session_identity() {', 1)[1].split('\n}', 1)[0]
         self.assertLess(identity_body.index('[[ ! -e "$session_root"'), identity_body.index('install -d -m711 "$session_root"'))
         self.assertNotIn('systemctl', identity_body)
         self.assertNotIn('prepare_network_runtime', identity_body)
         privileged_body = source.split('write_privileged_runtime() {', 1)[1].split('\n}', 1)[0]
         self.assertIn('prepare_network_runtime', privileged_body)
-        self.assertIn('systemctl reload dbus.service', privileged_body)
+        self.assertNotIn('dbus.service', privileged_body)
         recovery_source = recovery.read_text(encoding="utf-8")
         self.assertIn('lease_seconds="$2"', recovery_source)
         self.assertIn('heartbeat_file="$user_root/heartbeat"', recovery_source)
@@ -88,6 +93,8 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn('interfaces_file="$root/p2p-interfaces"', recovery_source)
         self.assertIn('interfaces_armed_file="$root/p2p-armed"', recovery_source)
         self.assertIn('network_manager_resume_file="$root/network-manager-resume-required"', recovery_source)
+        self.assertIn('broker_unit="omarchy-cast-supplicant-$session.service"', recovery_source)
+        self.assertIn('clear_owned_wfd_ies', recovery_source)
         self.assertIn("record_session_interfaces", recovery_source)
         self.assertIn("remove_session_interfaces", recovery_source)
         self.assertIn('heartbeat_fd=', recovery_source)
@@ -140,6 +147,47 @@ if arm_recovery; then exit 3; fi
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_broker_socket_cleanup_is_exact_type_owner_and_mode_only(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+broker_socket="$2"
+uid="$3"
+remove_broker_socket
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "supplicant.sock"
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                listener.bind(str(path))
+                path.chmod(0o600)
+                result = subprocess.run(
+                    ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(path), str(os.getuid())),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(path.exists())
+            finally:
+                listener.close()
+
+            target = root / "target"
+            target.write_text("preserve", encoding="ascii")
+            path.symlink_to(target)
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(path), str(os.getuid())),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(path.is_symlink())
+            self.assertEqual(target.read_text(encoding="ascii"), "preserve")
+
     def test_recovery_publishes_readiness_only_for_protected_identity(self) -> None:
         recovery = ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover"
         harness = r'''
@@ -188,7 +236,6 @@ trigger_file="$user_root/trigger"
 heartbeat_file="$user_root/heartbeat"
 stop_file="$user_root/stop"
 network_file="$network_root/session.network"
-policy_file="$2/session.conf"
 networkd_state_file="$root/networkd-units"
 networkd_state_pending_file="$root/networkd-units.pending"
 network_root_marker="$root/network-root-created"
@@ -196,30 +243,34 @@ interfaces_file="$root/p2p-interfaces"
 interfaces_armed_file="$root/p2p-armed"
 network_manager_resume_file="$root/network-manager-resume-required"
 recovery_ready_file="$root/recovery-ready"
+broker_unit="omarchy-cast-supplicant-$session.service"
+broker_socket="$root/supplicant.sock"
+broker_wfd_file="$root/supplicant-wfd-owned"
 recovery_cleanup_ok=true
 mkdir -p "$user_root" "$network_root"
 touch "$token_file" "$recovery_ready_file"
 case "$phase" in
   minimal) ;;
-  policy) touch "$policy_file" ;;
+  wfd) touch "$broker_wfd_file"; chmod 600 "$broker_wfd_file" ;;
   pending) touch "$networkd_state_pending_file" ;;
   state) touch "$networkd_state_file" ;;
   *) exit 4 ;;
 esac
 resume_network_manager() { return 0; }
 restore_networkd_state() { printf '%s\n' restore-networkd >> "$calls"; return 0; }
-systemctl() { printf '%s\n' "$*" >> "$calls"; }
+systemctl() { [[ "$1" == is-active ]] && return 1; printf '%s\n' "$*" >> "$calls"; }
+gdbus() { printf '%s\n' clear-wfd >> "$calls"; }
 ufw() { return 1; }
 recover_session
 [[ "$recovery_cleanup_ok" == true ]]
 [[ ! -e "$token_file" && ! -e "$recovery_ready_file" && ! -e "$networkd_state_pending_file" ]]
 case "$phase" in
-  minimal|pending) [[ ! -e "$calls" ]] ;;
-  policy) grep -Fxq 'reload dbus.service' "$calls"; ! grep -Fq restore-networkd "$calls" ;;
-  state) grep -Fxq restore-networkd "$calls"; ! grep -Fq 'reload dbus.service' "$calls" ;;
+  minimal|pending) ! grep -Fq restore-networkd "$calls"; ! grep -Fq clear-wfd "$calls" ;;
+  wfd) grep -Fxq clear-wfd "$calls"; [[ ! -e "$broker_wfd_file" ]]; ! grep -Fq restore-networkd "$calls" ;;
+  state) grep -Fxq restore-networkd "$calls"; ! grep -Fq clear-wfd "$calls" ;;
 esac
 '''
-        for phase in ("minimal", "policy", "pending", "state"):
+        for phase in ("minimal", "wfd", "pending", "state"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temp:
                 calls = Path(temp) / "calls"
                 result = subprocess.run(
@@ -244,7 +295,6 @@ trigger_file="$user_root/trigger"
 heartbeat_file="$user_root/heartbeat"
 stop_file="$user_root/stop"
 network_file="$2/session.network"
-policy_file="$2/session.conf"
 networkd_state_file="$session_root/networkd-units"
 networkd_state_pending_file="$session_root/networkd-units.pending"
 network_root_marker="$session_root/network-root-created"
@@ -252,22 +302,25 @@ interfaces_file="$session_root/p2p-interfaces"
 interfaces_armed_file="$session_root/p2p-armed"
 network_manager_resume_file="$session_root/network-manager-resume-required"
 recovery_ready_file="$session_root/recovery-ready"
+broker_socket="$session_root/supplicant.sock"
+broker_unit="omarchy-cast-supplicant-deadbeef.service"
+broker_wfd_file="$session_root/supplicant-wfd-owned"
+broker_started=false
 token=owned
 runtime_dirs_created=true
 mkdir -p "$user_root" "$user_root/$4"
 printf '%s\n' "$token" > "$token_file"
-touch "$ready_file" "$network_file" "$policy_file" "$networkd_state_file" "$interfaces_file"
+touch "$ready_file" "$network_file" "$networkd_state_file" "$interfaces_file"
 for marker in trigger heartbeat stop; do [[ "$marker" == "$4" ]] || touch "$user_root/$marker"; done
 resume_network_manager() { printf '%s\n' resume >> "$calls"; }
 restore_networkd_state() { printf '%s\n' restore-networkd >> "$calls"; }
-systemctl() { printf '%s\n' "$*" >> "$calls"; }
+systemctl() { [[ "$1" == is-active ]] && return 1; printf '%s\n' "$*" >> "$calls"; }
 cleanup
 [[ "$cleanup_ok" == false ]]
 [[ -d "$user_root/$4" ]]
 [[ -f "$token_file" ]]
-[[ ! -e "$network_file" && ! -e "$policy_file" ]]
+[[ ! -e "$network_file" ]]
 for marker in trigger heartbeat stop; do [[ "$marker" == "$4" || ! -e "$user_root/$marker" ]]; done
-grep -Fxq 'reload dbus.service' "$calls"
 grep -Fxq restore-networkd "$calls"
 '''
         for marker in ("trigger", "heartbeat", "stop"):
@@ -298,7 +351,6 @@ trigger_file="$user_root/trigger"
 heartbeat_file="$user_root/heartbeat"
 stop_file="$user_root/stop"
 network_file="$network_root/session.network"
-policy_file="$2/session.conf"
 networkd_state_file="$root/networkd-units"
 networkd_state_pending_file="$root/networkd-units.pending"
 network_root_marker="$root/network-root-created"
@@ -306,9 +358,12 @@ interfaces_file="$root/p2p-interfaces"
 interfaces_armed_file="$root/p2p-armed"
 network_manager_resume_file="$root/network-manager-resume-required"
 recovery_ready_file="$root/recovery-ready"
+broker_unit="omarchy-cast-supplicant-$session.service"
+broker_socket="$root/supplicant.sock"
+broker_wfd_file="$root/supplicant-wfd-owned"
 recovery_cleanup_ok=true
 mkdir -p "$user_root" "$network_root" "$user_root/$4"
-touch "$token_file" "$ready_file" "$network_file" "$policy_file" "$networkd_state_file" "$interfaces_file"
+touch "$token_file" "$ready_file" "$network_file" "$networkd_state_file" "$interfaces_file"
 for marker in trigger heartbeat stop; do [[ "$marker" == "$4" ]] || touch "$user_root/$marker"; done
 resume_network_manager() { printf '%s\n' resume >> "$calls"; return 1; }
 restore_networkd_state() { printf '%s\n' restore-networkd >> "$calls"; return 1; }
@@ -318,10 +373,9 @@ recover_session
 [[ "$recovery_cleanup_ok" == false ]]
 [[ -d "$user_root/$4" ]]
 [[ -f "$token_file" && -f "$networkd_state_file" ]]
-[[ ! -e "$network_file" && ! -e "$policy_file" ]]
+[[ ! -e "$network_file" ]]
 for marker in trigger heartbeat stop; do [[ "$marker" == "$4" || ! -e "$user_root/$marker" ]]; done
 grep -Fxq resume "$calls"
-grep -Fxq 'reload dbus.service' "$calls"
 grep -Fxq restore-networkd "$calls"
 '''
         for marker in ("trigger", "heartbeat", "stop"):
@@ -381,6 +435,41 @@ if pause_network_manager; then exit 4; fi
                 ],
             )
 
+    def test_recovery_preserves_broker_ownership_if_unit_cannot_stop(self) -> None:
+        recovery = ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover"
+        harness = r'''
+source <(sed -n '/^record_session_interfaces()/,/^publish_recovery_ready ||/p' "$1" | sed '$d')
+root="$2/session"; user_root="$root/user"; network_root="$2/network"; calls="$3"
+session=deadbeef; interface=wlan0; uid="$4"
+token_file="$root/token"; ready_file="$root/ready.json"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; stop_file="$user_root/stop"
+network_file="$network_root/session.network"; networkd_state_file="$root/networkd-units"; networkd_state_pending_file="$root/networkd-units.pending"; network_root_marker="$root/network-root-created"
+interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"; recovery_ready_file="$root/recovery-ready"
+broker_unit="omarchy-cast-supplicant-$session.service"; broker_socket="$root/supplicant.sock"; broker_wfd_file="$root/supplicant-wfd-owned"; recovery_cleanup_ok=true
+mkdir -p "$user_root" "$network_root"; touch "$token_file" "$network_file" "$networkd_state_file" "$interfaces_file" "$broker_wfd_file"; chmod 600 "$broker_wfd_file"
+resume_network_manager() { printf '%s\n' resume >> "$calls"; return 0; }
+restore_networkd_state() { printf '%s\n' restore-networkd >> "$calls"; return 0; }
+systemctl() { if [[ "$1" == is-active && "${3:-}" == "$broker_unit" ]]; then return 0; fi; [[ "$1" == stop && "${2:-}" == "$broker_unit" ]] && return 1; return 0; }
+gdbus() { printf '%s\n' unexpected-wfd-clear >> "$calls"; return 0; }
+ufw() { return 1; }
+recover_session
+[[ "$recovery_cleanup_ok" == false ]]
+[[ -f "$token_file" && -f "$broker_wfd_file" ]]
+[[ ! -e "$network_file" ]]
+grep -Fxq resume "$calls"
+grep -Fxq restore-networkd "$calls"
+! grep -Fq unexpected-wfd-clear "$calls"
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            calls = Path(temp) / "calls"
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(recovery), temp, str(calls), str(os.getuid())),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_network_manager_resume_failure_retains_recovery_ownership(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
         harness = r'''
@@ -428,10 +517,11 @@ network_manager_marker_valid
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
         self.assertIn('omarchy-cast-guard"', recipe)
         self.assertIn('omarchy-cast-guard-recover"', recipe)
+        self.assertIn('omarchy-cast-supplicant-broker"', recipe)
         self.assertIn('com.omacast.guard.policy"', recipe)
         self.assertIn("PYSTRAY_BACKEND=dummy PYTHONPATH=src", recipe)
         depends = recipe.split("depends=(", 1)[1].split(")", 1)[0]
-        for dependency in ("ffmpeg", "networkmanager", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2"):
+        for dependency in ("ffmpeg", "networkmanager", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2", "glib2"):
             self.assertIn(f"'{dependency}'", depends)
         for removed in ("gstreamer", "gst-plugin-pipewire", "gst-plugins-base-libs"):
             self.assertNotIn(f"'{removed}'", depends)
@@ -587,11 +677,11 @@ if record_session_interfaces; then exit 3; fi
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(series), 26)
+        self.assertEqual(len(series), 27)
         expected_numbers = (
             [f"{number:04d}" for number in range(1, 7)]
             + [f"{number:04d}" for number in range(9, 23)]
-            + ["0027", "0028", "0029", "0030", "0031", "0032"]
+            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033"]
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:
@@ -618,6 +708,8 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("omacast-artifact-audit.", audit)
         self.assertIn("omarchy-cast-guard-version", audit)
         self.assertIn("apiRevision", audit)
+        self.assertIn("omarchy-cast-supplicant-broker", audit)
+        self.assertIn("temporary system-bus policy", audit)
         self.assertIn("pinned heartbeat descriptor", audit)
         self.assertIn("bound pinned heartbeat reads", audit)
         self.assertIn("reopens the user heartbeat by pathname", audit)
@@ -633,6 +725,7 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("allow_active", audit)
         self.assertNotIn("--wfd-gsr-handoff", audit)
         self.assertIn("--wfd-supplicant-network-trigger", audit)
+        self.assertIn("--wfd-supplicant-broker", audit)
         self.assertNotIn("--wfd-portal-source", audit)
         self.assertIn('pacman -Qp "$package"', audit)
         self.assertNotIn("pacman -Qkp", audit)
@@ -648,6 +741,7 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("-Rdd", lifecycle)
         self.assertIn("0 altered files", lifecycle)
         self.assertIn("com.omacast.guard.policy", lifecycle)
+        self.assertIn("supplicant broker", lifecycle)
         self.assertNotIn("sudo", lifecycle)
 
     def test_release_workflow_pins_actions_and_attests_tagged_packages(self) -> None:

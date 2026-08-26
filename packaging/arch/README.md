@@ -25,7 +25,7 @@ wpa_supplicant, iw, PipeWire's PulseAudio client, polkit, systemd, and iproute2.
 `upnpclient` is not in the official Arch repositories; it remains optional
 because it is used only for FluxCast's unrelated DLNA discovery path.
 
-The package provides the patched streaming engine, two immutable helper
+The package provides the patched streaming engine, three immutable helper
 executables under `/usr/lib/omarchy-cast/`, and an exact-purpose Polkit action.
 The action permits only the helper's `prepare` command for the active local
 user; the helper additionally requires the requested UID to match Polkit's
@@ -33,10 +33,14 @@ authenticated caller. The controller supplies a controller-issued session ID,
 a discovered interface, the calling UID, and a 60-second renewable safety lease. A healthy controller
 renews that lease while the cast runs; a missed lease triggers the independent
 cleanup path, so normal sessions can run until explicitly stopped without
-making privileged network state unbounded. The helpers generate a per-session
-runtime DHCP match and D-Bus policy, open only P2P TCP 7236 if UFW is active,
-and remove those files, restore NetworkManager, and restore the exact prior
-systemd-networkd service/socket state on every exit path. If the volatile
+making privileged network state unbounded. The guard generates a per-session
+runtime DHCP match, opens only P2P TCP 7236 if UFW is active, and starts a
+root-owned broker whose user-accessible socket accepts only fixed `connect` and
+`cleanup` operations for the selected adapter, receiver, and frequency. It
+does not grant the desktop user's UID general wpa_supplicant D-Bus access. The
+helpers remove their runtime state, restore NetworkManager, and restore the
+exact prior systemd-networkd service/socket state on every exit path. If the
+volatile
 `/run/systemd/network` directory is absent after boot, the helper creates it
 with fixed root ownership and removes it again only if Omacast created it. No
 persistent network, D-Bus, or firewall rule or workstation-specific setting is
@@ -44,14 +48,15 @@ installed. The package-owned Polkit action is declarative and is removed with
 the package.
 
 The primary helper exposes an unprivileged JSON `--version` probe. Omacast
-requires guard API revision 9 and the matching FluxCast capability set before
+requires guard API revision 10 and the matching FluxCast capability set before
 enabling discovery or Cast, so independently updated marketplace UI cannot
 cross an older privileged-helper contract.
 
-API revision 9 creates only the protected session identity first. Independent
+API revision 10 creates only the protected session identity first. Independent
 recovery validates that identity and publishes a root-owned readiness marker;
-the primary helper refuses to create temporary network or D-Bus state until
-that acknowledgement arrives within its bounded startup window.
+the primary helper refuses to create temporary network state or start the
+supplicant broker until that acknowledgement arrives within its bounded
+startup window.
 
 Media scheduling does not cross the Polkit boundary. The plugin's existing
 user-owned transient service applies a CPU weight to its own supervised process

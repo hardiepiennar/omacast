@@ -238,7 +238,16 @@ def main(argv: list[str] | None = None) -> int:
             session_id = uuid4().hex
             if args.duration != 0 and not 60 <= args.duration <= 86_400:
                 raise SessionError("a bounded guarded session must run between 60 seconds and 24 hours")
-            request = GuardRequest(1, session_id, os.getuid(), selection["wifiInterface"], GUARD_LEASE_SECONDS)
+            frequency = selection.get("wifiFrequencyMhz")
+            request = GuardRequest(
+                1,
+                session_id,
+                os.getuid(),
+                selection["wifiInterface"],
+                args.peer,
+                frequency if isinstance(frequency, int) else 0,
+                GUARD_LEASE_SECONDS,
+            )
             result = TransportTestSupervisor(GuardedTransportAdapter(request)).run(peer=args.peer, mode=mode, profile=profile, plan=executable_plan(preview), timeout_seconds=args.duration or None, session_id=session_id, executable=True, production=True)
             _emit(result)
             return 0 if result["ok"] else 1

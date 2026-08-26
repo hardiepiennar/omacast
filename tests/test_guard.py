@@ -7,17 +7,19 @@ from omarchy_cast.guard import GuardError, GuardRequest, HELPER_PATH, prepare_co
 
 class GuardContractTest(unittest.TestCase):
     def request(self, **changes: object) -> GuardRequest:
-        values: dict[str, object] = {"schema_version": 1, "session_id": "a" * 32, "uid": 1000, "interface": "wlan42", "duration_seconds": 300}
+        values: dict[str, object] = {"schema_version": 1, "session_id": "a" * 32, "uid": 1000, "interface": "wlan42", "peer": "00:11:22:33:44:55", "frequency_mhz": 2437, "duration_seconds": 300}
         values.update(changes)
         return GuardRequest(**values)  # type: ignore[arg-type]
 
     def test_prepare_command_is_fixed_and_shell_free(self) -> None:
         command = prepare_command(self.request())
         self.assertEqual(command[:2], (HELPER_PATH, "prepare"))
+        self.assertEqual(command[command.index("--peer") + 1], "00:11:22:33:44:55")
+        self.assertEqual(command[command.index("--frequency") + 1], "2437")
         self.assertNotIn(";", " ".join(command))
 
     def test_rejects_untrusted_arguments_or_helper_path(self) -> None:
-        for request in (self.request(session_id="receiver-name"), self.request(interface="wlan0;id"), self.request(duration_seconds=30), self.request(uid=0)):
+        for request in (self.request(session_id="receiver-name"), self.request(interface="wlan0;id"), self.request(peer="receiver"), self.request(frequency_mhz=9999), self.request(duration_seconds=30), self.request(uid=0)):
             with self.assertRaises(GuardError):
                 prepare_command(request)
         with self.assertRaises(GuardError):
@@ -36,3 +38,11 @@ class GuardContractTest(unittest.TestCase):
         self.assertEqual(result["triggerPath"], f"/run/omarchy-cast/{session_id}/user/trigger")
         with self.assertRaises(GuardError):
             validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "triggerPath": "/tmp/trigger"})
+
+    def test_status_rejects_non_session_broker_path(self) -> None:
+        session_id = "b" * 32
+        broker = f"/run/omarchy-cast/{session_id}/supplicant.sock"
+        result = validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "brokerPath": broker})
+        self.assertEqual(result["brokerPath"], broker)
+        with self.assertRaises(GuardError):
+            validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "brokerPath": "/tmp/broker"})

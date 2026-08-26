@@ -24,3 +24,4 @@
 0030-Clean-up-partial-WFD-media-startup.patch
 0031-Keep-active-RTSP-fallback-available.patch
 0032-Scope-supplicant-sessions-to-selected-interface.patch
+0033-Broker-guarded-supplicant-control.patch

@@ -1926,3 +1926,44 @@ upgrade/removal lifecycle. Its SHA-256 is
 Because successful supplicant group selection changed, a short GUI
 connect/stream/Stop run remains the receiver acceptance gate; no live network
 operation was run during this remediation.
+
+### Session-scoped supplicant authorization (2026-08-26)
+
+The production guard previously installed a temporary system-bus policy that
+allowed the active user's entire UID to call supplicant `Properties.Get`,
+`Properties.Set`, `Connect`, `Cancel`, and `Disconnect`. D-Bus policy rules can
+match a destination, object path, interface, and member, but cannot constrain a
+`Properties.Set` rule by its property-name argument. Narrowing the XML alone
+therefore could not express the required session ownership.
+
+Guard API revision 10 removes that policy and its D-Bus reload entirely. It
+starts a root-owned transient broker after independent recovery is armed. The
+broker socket is owned by the authenticated user with mode 0600, but its
+protocol has only two exact, versioned operations: one `connect` and one
+`cleanup`. Adapter, receiver address, frequency, session ID, and user ID are
+pinned on the root process command line by the validated guard request; none
+can be supplied through the socket. Connect also requires the root-owned
+network-ready marker, refuses pre-existing global WFD metadata, records the
+selected peer's baseline groups, and accepts only one new group attributable
+to the selected adapter. Cleanup uses the recorded control object only after
+this session actually attempted Connect. It clears WFD metadata only when both
+the root-owned marker and exact installed byte value still prove ownership.
+Independent recovery stops the exact transient unit and applies the same
+ownership check before completing restoration.
+
+Production patch 33 adds the matching bounded FluxCast broker client and
+removes direct supplicant mutation from the packaged Omacast path. Package
+revision 52 carries the broker, guard API 10, and the explicit GLib dependency
+for `gdbus`. Protocol, pre-arm, one-connect, pre-existing-owner,
+multi-adapter/peer, group-attribution, changed-WFD-state, socket-ownership, and
+cleanup-failure regressions pass offline. The exact 27-patch engine
+reconstruction passes all 141 FluxCast tests, and all 177 repository tests plus
+the staged Omarchy validation, Bash syntax, ShellCheck, compilation, and git
+whitespace gates pass. An exact clean build from implementation commit
+`9ede42ab2c9c7b0fe13efa2844af39a2b0a70a51` passes the no-root artifact audit,
+candidate installation/removal, and disposable revision-51 to revision-52
+upgrade/removal lifecycle. Its SHA-256 is
+`29ed21d8e4d6096cc316cde9a9bc7fb9412832a8e81e0e69c344a2ed455c0fcc`.
+Revision 51's deferred group-ownership gate and revision 52's broker gate will
+be exercised together in one short GUI connect/stream/Stop session; no live
+network operation was run during this remediation.

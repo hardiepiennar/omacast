@@ -13,9 +13,9 @@ class DiscoveryTest(unittest.TestCase):
     @staticmethod
     def ready_runner(args, *, timeout=5.0):
         if args[0] == "fluxcast":
-            return CommandResult(tuple(args), 0, "--wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-progress-log", "")
+            return CommandResult(tuple(args), 0, "--wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-supplicant-broker --wfd-progress-log", "")
         if Path(args[0]).name == "omarchy-cast-guard":
-            return CommandResult(tuple(args), 0, json.dumps({"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 9}), "")
+            return CommandResult(tuple(args), 0, json.dumps({"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 10}), "")
         if args[0] == "nmcli":
             return CommandResult(tuple(args), 0, "wlan42:wifi:connected\n", "")
         if args[0] == "iw":
@@ -28,7 +28,7 @@ class DiscoveryTest(unittest.TestCase):
 
     @staticmethod
     def install_fake_helpers(root: Path) -> None:
-        for name in ("omarchy-cast-guard", "omarchy-cast-guard-recover"):
+        for name in ("omarchy-cast-guard", "omarchy-cast-guard-recover", "omarchy-cast-supplicant-broker"):
             path = root / name
             path.write_text("#!/bin/sh\n", encoding="utf-8")
             path.chmod(0o755)
@@ -91,7 +91,7 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(snapshot["readiness"]["issues"], [])
         self.assertEqual(snapshot["readiness"]["summary"], "Casting support ready")
         guard = next(helper for helper in snapshot["helpers"] if helper["name"] == "omarchy-cast-guard")
-        self.assertEqual(guard["apiRevision"], 9)
+        self.assertEqual(guard["apiRevision"], 10)
 
     def test_readiness_rejects_an_old_or_unversioned_companion(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

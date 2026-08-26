@@ -1,6 +1,6 @@
 # Omacast architecture and roadmap
 
-Status: canonical plan, updated 2026-08-25
+Status: canonical plan, updated 2026-08-26
 
 This document turns the Phase 1 Miracast research into a path to a dependable
 Omarchy plugin. It is the starting point for implementation and handoff. The
@@ -76,8 +76,8 @@ smoothness, continuous internet access, and audio/video sync all matter.
 - Real `eDP-1` capture through wf-recorder, Intel VAAPI H.264, and AAC reached
   the Fire TV and was visually confirmed.
 - The guarded scripts restore NetworkManager, the temporary DHCP client,
-  D-Bus policy, and firewall rule after success, cancellation, and several
-  failure paths.
+  session-scoped supplicant broker, and firewall rule after success,
+  cancellation, and several failure paths.
 - The package-owned controller/helper path has now completed repeated live
   mirror runs and clean teardown. After instrumenting each media stage and
   testing multiple pacing strategies, the user accepted the current 720p30,
@@ -489,10 +489,12 @@ ordered cleanup even when one cleanup step fails.
 
 ### 3.3 Privileged network boundary
 
-The research solution temporarily pauses NetworkManager, starts a narrowly
-matched systemd-networkd DHCP client, opens one P2P-only TCP port, and extends
-wpa_supplicant D-Bus access. That proves feasibility but is too broad and too
-machine-specific to copy unchanged into the plugin.
+The initial research solution temporarily paused NetworkManager, started a
+narrowly matched systemd-networkd DHCP client, opened one P2P-only TCP port,
+and extended wpa_supplicant D-Bus access. The production replacement no longer
+grants the desktop user's UID supplicant mutation rights: a root-owned session
+broker accepts only fixed connect and cleanup requests pinned to the selected
+adapter, receiver, and frequency.
 
 Build a single audited helper with a very small command/argument surface. It
 must:
@@ -512,13 +514,11 @@ must:
   unrestricted path from QML;
 - never traverse or remove user-owned telemetry; normal and explicit stale
   cleanup remain responsibilities of the unprivileged controller;
-- avoid a temporary policy in `/etc` if a safer brokered or packaged D-Bus
-  authorization design can perform the required supplicant operations.
+- never install a temporary per-user system-bus policy for supplicant mutation.
 
-Before release, threat-model the existing system-wide FluxCast D-Bus policy.
-The production policy should not grant every local process unnecessary
-wpa_supplicant mutation rights. Prefer a dedicated group, polkit action, or
-root broker scoped to the exact P2P calls.
+The session broker must retain its closed request schema, exact receiver and
+adapter binding, one-connect limit, owned-WFD-value check, bounded lifetime,
+and independent cleanup tests.
 
 ### 3.4 FluxCast delivery
 
@@ -619,7 +619,7 @@ read-only doctor/monitor/status probes, live named-receiver discovery,
 versioned state and telemetry, guarded production connect, cooperative Stop,
 stale-state recovery, bounded private logs, and safe offline lifecycle and
 protocol fixtures. `scripts/bootstrap-fluxcast` and the Arch recipe recreate
-the pinned engine from upstream commit `9d27c39` plus the complete 26-patch
+the pinned engine from upstream commit `9d27c39` plus the complete 27-patch
 series. A fresh clone of release-candidate commit `1026b5b` passes the official
 Omarchy validator and all non-hardware controller tests without `work/`.
 
@@ -725,14 +725,26 @@ ambiguous-group, and failed-connect regressions pass. Because successful group
 selection changed, revision 51 retains a short receiver-backed connect/stream/
 Stop acceptance gate before release.
 
+Offline authorization note (2026-08-26): production patch 33 and guard API 10
+replace the temporary UID-wide wpa_supplicant D-Bus policy with a root-owned
+session broker. The user socket accepts only versioned `connect` and `cleanup`
+operations; the authenticated guard pins adapter, receiver, frequency, and
+session before the broker starts. Connect is single-use and waits for the
+root-owned network-ready marker. P2P cleanup begins only after this session
+attempts Connect, and WFD metadata is cleared only while its exact value and
+root-owned marker still prove ownership. Package revision 52 retains a short
+receiver-backed connect/stream/Stop gate, combined with revision 51's deferred
+gate.
+
 ### Phase E — build the Omarchy plugin UI
 
 Implementation note (updated 2026-08-24): the repository contains a schema-version-1
 root `manifest.json`, a thin `ui/Panel.qml` bar widget, and a package-owned
 session helper. The controller issues a fixed, versioned `pkexec` request for a
 validated UID/interface/session/duration; the helper generates only
-session-named runtime network and D-Bus files, and an independent recovery
-process bounds cleanup. Guard API revision 4 binds the requested UID to
+session-named network state and a closed-operation supplicant broker, and an
+independent recovery process bounds cleanup. Guard API revision 10 binds the
+requested UID to
 Polkit's authenticated caller, while the installed declarative action permits
 only the exact guard executable with `prepare` as its first argument for an
 active local user. The compact panel discovers Miracast receivers by name,
@@ -745,7 +757,7 @@ the shell's native toggle route and the bar icon opens the same current-display
 workflow without reading window metadata, taking a screenshot, or opening a
 portal picker. Live discovery identifies receivers without a hard-coded MAC.
 `scripts/validate-plugin` stages the installable payload without the ignored
-local `work/` tree. The shipped 26-patch engine series contains the proven
+local `work/` tree. The shipped 27-patch engine series contains the proven
 display route plus fail-closed selected-receiver admission and bounded RTSP
 input/progress handling. Portal-only patches
 7–8, receiver-rejected FLV patch 23, portal

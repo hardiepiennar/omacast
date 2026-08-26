@@ -4,12 +4,12 @@
 set -euo pipefail
 
 readonly schema_version=1 status_kind='omarchy-cast-guard-status'
-readonly api_revision=9 version_kind='omarchy-cast-guard-version'
-readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network' dbus_root='/etc/dbus-1/system.d'
+readonly api_revision=10 version_kind='omarchy-cast-guard-version'
+readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network'
 readonly wait_for_trigger_seconds=300
 readonly recovery_ready_timeout_seconds=5
 readonly networkd_units=(systemd-networkd.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-networkd-varlink-metrics.socket systemd-networkd-resolve-hook.socket)
-action='' session_id='' uid='' interface='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' heartbeat_fd='' network_file='' policy_file='' networkd_state_file='' networkd_state_pending_file='' network_root_marker='' interfaces_file='' interfaces_armed_file='' network_manager_resume_file='' recovery_ready_file='' token='' ufw_rule_added=false runtime_dirs_created=false interface_cleanup_ok=true network_manager_cleanup_ok=true cleanup_ok=true
+action='' session_id='' uid='' interface='' peer='' frequency='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' heartbeat_fd='' network_file='' networkd_state_file='' networkd_state_pending_file='' network_root_marker='' interfaces_file='' interfaces_armed_file='' network_manager_resume_file='' recovery_ready_file='' broker_socket='' broker_unit='' broker_wfd_file='' token='' ufw_rule_added=false runtime_dirs_created=false broker_started=false broker_cleanup_ok=true interface_cleanup_ok=true network_manager_cleanup_ok=true cleanup_ok=true
 
 die() { printf '%s\n' "$*" >&2; exit 2; }
 status() { local ok="$1" phase="$2" error="${3:-null}"; printf '{"schemaVersion":%s,"kind":"%s","ok":%s,"phase":"%s","sessionId":"%s","error":%s}\n' "$schema_version" "$status_kind" "$ok" "$phase" "$session_id" "$error"; }
@@ -17,19 +17,21 @@ json_error() { status false error "\"$1\""; }
 valid_session() { [[ "$1" =~ ^[a-f0-9]{32}$ ]]; }
 valid_uid() { [[ "$1" =~ ^[1-9][0-9]{3,9}$ ]] && (( $1 <= 2147483647 )); }
 valid_interface() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; }
+valid_peer() { [[ "$1" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; }
+valid_frequency() { [[ "$1" =~ ^[0-9]+$ ]] && { (( $1 == 0 )) || (( $1 >= 2300 && $1 <= 7125 )); }; }
 valid_duration() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 60 && $1 <= 1800 )); }
-usage() { die 'Usage: omarchy-cast-guard prepare --schema-version 1 --session <32-hex> --uid <uid> --interface <ifname> --duration <60-1800>'; }
+usage() { die 'Usage: omarchy-cast-guard prepare --schema-version 1 --session <32-hex> --uid <uid> --interface <ifname> --peer <MAC> --frequency <MHz-or-0> --duration <60-1800>'; }
 
 parse_request() {
   [[ ${EUID} -eq 0 ]] || die 'administrator approval is required'
   action="${1:-}"; shift || true
   [[ "$action" == prepare ]] || usage
-  [[ $# -eq 10 && "$1" == --schema-version && "$2" == 1 && "$3" == --session && "$5" == --uid && "$7" == --interface && "$9" == --duration ]] || usage
-  session_id="$4"; uid="$6"; interface="$8"; duration="${10}"
-  valid_session "$session_id" || die 'invalid session identifier'; valid_uid "$uid" || die 'invalid user identifier'; valid_interface "$interface" || die 'invalid Wi-Fi interface'; valid_duration "$duration" || die 'invalid session duration'
+  [[ $# -eq 14 && "$1" == --schema-version && "$2" == 1 && "$3" == --session && "$5" == --uid && "$7" == --interface && "$9" == --peer && "${11}" == --frequency && "${13}" == --duration ]] || usage
+  session_id="$4"; uid="$6"; interface="$8"; peer="${10}"; frequency="${12}"; duration="${14}"
+  valid_session "$session_id" || die 'invalid session identifier'; valid_uid "$uid" || die 'invalid user identifier'; valid_interface "$interface" || die 'invalid Wi-Fi interface'; valid_peer "$peer" || die 'invalid receiver address'; valid_frequency "$frequency" || die 'invalid P2P frequency'; valid_duration "$duration" || die 'invalid session duration'
   [[ "${PKEXEC_UID:-}" == "$uid" ]] || die 'requested user does not match the Polkit caller'
   getent passwd "$uid" >/dev/null || die 'requested user does not exist'
-  session_root="$run_root/$session_id"; user_root="$session_root/user"; token_file="$session_root/token"; ready_file="$session_root/ready.json"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; network_file="$network_root/80-omarchy-cast-$session_id.network"; policy_file="$dbus_root/zz-omarchy-cast-$session_id.conf"; networkd_state_file="$session_root/networkd-units"; networkd_state_pending_file="$session_root/networkd-units.pending"; network_root_marker="$session_root/network-root-created"; interfaces_file="$session_root/p2p-interfaces"; interfaces_armed_file="$session_root/p2p-armed"; network_manager_resume_file="$session_root/network-manager-resume-required"; recovery_ready_file="$session_root/recovery-ready"
+  session_root="$run_root/$session_id"; user_root="$session_root/user"; token_file="$session_root/token"; ready_file="$session_root/ready.json"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; network_file="$network_root/80-omarchy-cast-$session_id.network"; networkd_state_file="$session_root/networkd-units"; networkd_state_pending_file="$session_root/networkd-units.pending"; network_root_marker="$session_root/network-root-created"; interfaces_file="$session_root/p2p-interfaces"; interfaces_armed_file="$session_root/p2p-armed"; network_manager_resume_file="$session_root/network-manager-resume-required"; recovery_ready_file="$session_root/recovery-ready"; broker_socket="$session_root/supplicant.sock"; broker_unit="omarchy-cast-supplicant-$session_id.service"; broker_wfd_file="$session_root/supplicant-wfd-owned"
 }
 verify_user_runtime() { [[ -d "/run/user/$uid" && "$(stat -c '%u:%a' "/run/user/$uid")" == "$uid:700" ]] || die 'user runtime directory is unavailable or unsafe'; }
 verify_interface() { [[ -d "/sys/class/net/$interface" ]] || die 'Wi-Fi interface is unavailable'; command -v iw >/dev/null || die 'iw is required'; [[ "$(iw dev "$interface" info 2>/dev/null | awk '$1 == "type" {print $2; exit}')" == managed ]] || die 'Wi-Fi interface is not a managed station'; }
@@ -73,7 +75,7 @@ create_session_identity() {
   local user_name user_group
   user_name="$(getent passwd "$uid" | cut -d: -f1)"; user_group="$(id -g "$user_name")"
   [[ ! -e "$session_root" ]] || die 'a conflicting cast session already owns this resource'
-  [[ ! -e "$network_file" && ! -e "$policy_file" ]] || die 'a conflicting cast session already owns this resource'
+  [[ ! -e "$network_file" ]] || die 'a conflicting cast session already owns this resource'
   install -d -m711 "$session_root"
   runtime_dirs_created=true
   install -d -m700 -o "$uid" -g "$user_group" "$user_root"
@@ -86,8 +88,34 @@ create_session_identity() {
 write_privileged_runtime() {
   prepare_network_runtime
   printf '%s\n' '[Match]' "Name=p2p-$interface-*" '' '[Network]' 'DHCP=ipv4' 'IPv6AcceptRA=no' 'LinkLocalAddressing=ipv6' '' '[DHCPv4]' 'UseDNS=no' 'UseDomains=no' 'UseRoutes=yes' 'RouteMetric=2048' > "$network_file"; chmod 644 "$network_file"
-  printf '%s\n' '<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">' '<busconfig>' "  <policy user=\"$uid\">" '    <allow send_destination="fi.w1.wpa_supplicant1" send_interface="org.freedesktop.DBus.Properties" send_member="Get"/>' '    <allow send_destination="fi.w1.wpa_supplicant1" send_interface="org.freedesktop.DBus.Properties" send_member="Set"/>' '    <allow send_destination="fi.w1.wpa_supplicant1" send_interface="fi.w1.wpa_supplicant1.Interface.P2PDevice" send_member="Connect"/>' '    <allow send_destination="fi.w1.wpa_supplicant1" send_interface="fi.w1.wpa_supplicant1.Interface.P2PDevice" send_member="Cancel"/>' '    <allow send_destination="fi.w1.wpa_supplicant1" send_interface="fi.w1.wpa_supplicant1.Interface.P2PDevice" send_member="Disconnect"/>' '    <allow receive_sender="fi.w1.wpa_supplicant1"/>' '  </policy>' '</busconfig>' > "$policy_file"; chmod 644 "$policy_file"
-  systemctl reload dbus.service
+}
+broker_socket_valid() { [[ -S "$broker_socket" && ! -L "$broker_socket" && "$(stat -c '%u:%a' "$broker_socket" 2>/dev/null)" == "$uid:600" ]]; }
+start_broker() {
+  local deadline=$((SECONDS + recovery_ready_timeout_seconds)) runtime_max=$((wait_for_trigger_seconds + duration + 120))
+  systemd-run --quiet --collect --unit="$broker_unit" --property=Type=exec --property="RuntimeMaxSec=$runtime_max" -- /usr/lib/omarchy-cast/omarchy-cast-supplicant-broker --session "$session_id" --uid "$uid" --interface "$interface" --peer "$peer" --frequency "$frequency" || return 1
+  broker_started=true
+  while (( SECONDS <= deadline )); do
+    broker_socket_valid && systemctl is-active --quiet "$broker_unit" && return 0
+    systemctl is-failed --quiet "$broker_unit" && return 1
+    sleep 0.05
+  done
+  return 1
+}
+stop_broker() { local _; [[ "$broker_started" == false ]] && return 0; for _ in 1 2 3; do systemctl is-active --quiet "$broker_unit" || return 0; systemctl stop "$broker_unit" 2>/dev/null || true; sleep 0.1; done; ! systemctl is-active --quiet "$broker_unit"; }
+remove_broker_socket() {
+  [[ ! -e "$broker_socket" && ! -L "$broker_socket" ]] && return 0
+  [[ -S "$broker_socket" && ! -L "$broker_socket" && "$(stat -c '%u:%a' "$broker_socket" 2>/dev/null)" == "$uid:600" ]] || return 1
+  rm -f -- "$broker_socket"
+}
+clear_owned_wfd_ies() {
+  local current expected='0x00 0x00 0x06 0x00 0x10 0x1c 0x44 0x00 0xc8 0x0a 0x00 0x07 0x4f 0x6d 0x61 0x63 0x61 0x73 0x74'
+  [[ ! -e "$broker_wfd_file" ]] && return 0
+  [[ -f "$broker_wfd_file" && ! -L "$broker_wfd_file" && "$(stat -c '%u:%a' "$broker_wfd_file" 2>/dev/null)" == "$EUID:600" ]] || return 1
+  current="$(gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Get fi.w1.wpa_supplicant1 WFDIEs 2>/dev/null | { grep -oE '0x[0-9A-Fa-f]{2}' || true; } | tr '[:upper:]' '[:lower:]' | paste -sd ' ' -)" || return 1
+  if [[ -z "$current" ]]; then rm -f -- "$broker_wfd_file"; return; fi
+  [[ "$current" == "$expected" ]] || return 1
+  gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Set fi.w1.wpa_supplicant1 WFDIEs '<@ay []>' >/dev/null || return 1
+  rm -f -- "$broker_wfd_file"
 }
 owns_session() { [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; }
 remove_cleanup_file() { if ! rm -f -- "$1"; then cleanup_ok=false; fi; return 0; }
@@ -97,9 +125,10 @@ cleanup() {
     return 0
   fi
 
-  local remove_network_root=false networkd_cleanup_ok=true policy_was_present=false
+  local remove_network_root=false networkd_cleanup_ok=true
   [[ -f "$network_root_marker" ]] && remove_network_root=true
-  [[ -e "$policy_file" ]] && policy_was_present=true
+  if ! stop_broker; then broker_cleanup_ok=false; cleanup_ok=false; fi
+  if [[ "$broker_cleanup_ok" == true ]]; then remove_broker_socket || cleanup_ok=false; clear_owned_wfd_ies || cleanup_ok=false; fi
   if [[ -f "$interfaces_armed_file" && ! -L "$interfaces_armed_file" && "$(stat -c '%u:%a' "$interfaces_armed_file" 2>/dev/null)" == "$EUID:600" ]]; then
     record_session_interfaces || interface_cleanup_ok=false
     remove_session_interfaces || interface_cleanup_ok=false
@@ -108,12 +137,10 @@ cleanup() {
   if [[ "$ufw_rule_added" == true ]] && ! ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1; then cleanup_ok=false; fi
 
   remove_cleanup_file "$network_file"
-  remove_cleanup_file "$policy_file"
   remove_cleanup_file "$ready_file"
   remove_cleanup_file "$trigger_file"
   remove_cleanup_file "$heartbeat_file"
   remove_cleanup_file "$stop_file"
-  if [[ "$policy_was_present" == true ]]; then systemctl reload dbus.service 2>/dev/null || cleanup_ok=false; fi
   if [[ -e "$networkd_state_file" ]] && ! restore_networkd_state; then cleanup_ok=false; networkd_cleanup_ok=false; fi
 
   remove_cleanup_file "$networkd_state_pending_file"
@@ -180,8 +207,9 @@ prepare() {
   create_session_identity
   arm_recovery || die 'independent recovery did not become ready'
   write_privileged_runtime
+  start_broker || die 'session-scoped supplicant broker did not become ready'
   trap 'cleanup; if [[ "$cleanup_ok" == true && "$interface_cleanup_ok" == true && "$network_manager_cleanup_ok" == true ]]; then status true cleaned null; else json_error "session network cleanup was incomplete"; fi' EXIT
-  printf '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":true,"phase":"ready","sessionId":"%s","error":null,"triggerPath":"%s"}\n' "$session_id" "$trigger_file"
+  printf '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":true,"phase":"ready","sessionId":"%s","error":null,"triggerPath":"%s","brokerPath":"%s"}\n' "$session_id" "$trigger_file" "$broker_socket"
   local deadline=$((SECONDS + wait_for_trigger_seconds))
   while [[ ! -e "$trigger_file" && ! -e "$stop_file" ]] && (( SECONDS < deadline )); do sleep 0.1; done
   [[ -e "$trigger_file" ]] || { json_error 'FluxCast did not trigger guarded networking'; exit 1; }

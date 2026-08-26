@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""Session-scoped root broker for Omacast's two supplicant operations."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import socket
+import stat
+import subprocess
+import threading
+import time
+
+
+SCHEMA_VERSION = 1
+MAX_REQUEST = 1024
+WPA_DEST = "fi.w1.wpa_supplicant1"
+WPA_ROOT = "/fi/w1/wpa_supplicant1"
+WPA_IFACE = "fi.w1.wpa_supplicant1.Interface"
+WPA_P2P = f"{WPA_IFACE}.P2PDevice"
+WPA_PEER = "fi.w1.wpa_supplicant1.Peer"
+WPA_GROUP = "fi.w1.wpa_supplicant1.Group"
+SESSION_RE = re.compile(r"^[a-f0-9]{32}$")
+INTERFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+PEER_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+
+
+class BrokerError(RuntimeError):
+    pass
+
+
+def object_paths(text: str) -> list[str]:
+    return re.findall(r"(?:objectpath )?['\"](/[^'\"]+)['\"]", text)
+
+
+def byte_values(text: str) -> list[int]:
+    return [int(value, 16) for value in re.findall(r"0x([0-9A-Fa-f]{1,2})", text)]
+
+
+def call(arguments: list[str], *, timeout: float = 5.0) -> str:
+    result = subprocess.run(
+        ["gdbus", "call", "--system", *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise BrokerError(detail[:512] or "supplicant request failed")
+    return result.stdout.strip()
+
+
+def get_property(path: str, interface: str, name: str) -> str:
+    return call([
+        "--dest", WPA_DEST,
+        "--object-path", path,
+        "--method", "org.freedesktop.DBus.Properties.Get",
+        interface, name,
+    ])
+
+
+def set_property(path: str, interface: str, name: str, value: str) -> None:
+    call([
+        "--dest", WPA_DEST,
+        "--object-path", path,
+        "--method", "org.freedesktop.DBus.Properties.Set",
+        interface, name, value,
+    ])
+
+
+def source_wfd_ies() -> bytes:
+    name = b"Omacast"
+    port = 7236
+    device_info = bytes((0, 0, 6, 0, 0x10, port >> 8, port & 0xFF, 0, 0xC8))
+    return device_info + bytes((0x0A, 0, len(name))) + name
+
+
+def byte_variant(data: bytes) -> str:
+    return "<@ay [" + ", ".join(f"byte 0x{value:02x}" for value in data) + "]>"
+
+
+class SupplicantBroker:
+    def __init__(self, *, session: str, uid: int, interface: str, peer: str, frequency: int) -> None:
+        self.session = session
+        self.uid = uid
+        self.interface = interface
+        self.peer = peer.lower()
+        self.frequency = frequency
+        self.root = Path("/run/omarchy-cast") / session
+        self.user_root = self.root / "user"
+        self.socket_path = self.root / "supplicant.sock"
+        self.wfd_marker = self.root / "supplicant-wfd-owned"
+        self.armed_marker = self.root / "p2p-armed"
+        self.stop = threading.Event()
+        self.control_path: str | None = None
+        self.peer_path: str | None = None
+        self.baseline_groups: frozenset[str] = frozenset()
+        self.wfd_owned = False
+        self.connect_attempted = False
+        self.p2p_mutation_attempted = False
+
+    def validate_session(self) -> None:
+        if os.geteuid() != 0:
+            raise BrokerError("broker must run as root")
+        root = self.root.stat(follow_symlinks=False)
+        user = self.user_root.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(root.st_mode) or root.st_uid != 0 or stat.S_IMODE(root.st_mode) != 0o711:
+            raise BrokerError("protected session directory is unsafe")
+        if not stat.S_ISDIR(user.st_mode) or user.st_uid != self.uid or stat.S_IMODE(user.st_mode) != 0o700:
+            raise BrokerError("session user directory is unsafe")
+        if self.socket_path.exists() or self.socket_path.is_symlink():
+            raise BrokerError("broker socket already exists")
+        if self.wfd_marker.exists() or self.wfd_marker.is_symlink():
+            raise BrokerError("broker ownership marker already exists")
+
+    def resolve_control(self) -> str:
+        interfaces = object_paths(get_property(WPA_ROOT, WPA_DEST, "Interfaces"))
+        expected = (f"p2p-dev-{self.interface}", self.interface)
+        matches: dict[str, str] = {}
+        for path in interfaces:
+            raw = get_property(path, WPA_IFACE, "Ifname")
+            match = re.search(r"<['\"]([^'\"]+)['\"]>", raw)
+            if match and match.group(1) in expected:
+                matches[match.group(1)] = path
+        for name in expected:
+            if name in matches:
+                return matches[name]
+        raise BrokerError("selected adapter has no supplicant P2P control object")
+
+    def network_armed(self) -> bool:
+        try:
+            marker = self.armed_marker.stat(follow_symlinks=False)
+        except OSError:
+            return False
+        return (
+            stat.S_ISREG(marker.st_mode)
+            and marker.st_uid == 0
+            and stat.S_IMODE(marker.st_mode) == 0o600
+        )
+
+    def resolve_peer(self, control_path: str) -> str:
+        for path in object_paths(get_property(control_path, WPA_P2P, "Peers")):
+            address = byte_values(get_property(path, WPA_PEER, "DeviceAddress"))
+            if len(address) >= 6 and ":".join(f"{value:02x}" for value in address[:6]) == self.peer:
+                return path
+        raise BrokerError("selected receiver is not present on the selected adapter")
+
+    def peer_groups(self, peer_path: str) -> frozenset[str]:
+        return frozenset(object_paths(get_property(peer_path, WPA_PEER, "Groups")))
+
+    def group_candidate(self, group_path: str) -> dict[str, str] | None:
+        for interface_path in object_paths(get_property(WPA_ROOT, WPA_DEST, "Interfaces")):
+            try:
+                current = object_paths(get_property(interface_path, WPA_P2P, "Group"))
+            except BrokerError:
+                continue
+            if group_path not in current:
+                continue
+            raw_name = get_property(interface_path, WPA_IFACE, "Ifname")
+            name_match = re.search(r"<['\"]([^'\"]+)['\"]>", raw_name)
+            ifname = name_match.group(1) if name_match else ""
+            if not INTERFACE_RE.fullmatch(ifname) or (
+                ifname != self.interface and not ifname.startswith(f"p2p-{self.interface}-")
+            ):
+                return None
+            raw_role = get_property(group_path, WPA_GROUP, "Role")
+            role_match = re.search(r"<['\"]([^'\"]+)['\"]>", raw_role)
+            role = role_match.group(1) if role_match else ""
+            if role not in {"client", "GO"}:
+                return None
+            return {"interface": ifname, "role": role}
+        return None
+
+    def connect(self) -> dict[str, object]:
+        if self.connect_attempted:
+            raise BrokerError("this session already consumed its connect operation")
+        if not self.network_armed():
+            raise BrokerError("guarded networking is not active for this session")
+        self.connect_attempted = True
+        self.control_path = self.resolve_control()
+        self.peer_path = self.resolve_peer(self.control_path)
+        self.baseline_groups = self.peer_groups(self.peer_path)
+        if byte_values(get_property(WPA_ROOT, WPA_DEST, "WFDIEs")):
+            raise BrokerError("another Wi-Fi Display owner already configured supplicant")
+        marker = os.open(self.wfd_marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        os.close(marker)
+        self.wfd_owned = True
+        set_property(WPA_ROOT, WPA_DEST, "WFDIEs", byte_variant(source_wfd_ies()))
+        options = {
+            "peer": f"<objectpath '{self.peer_path}'>",
+            "persistent": "<false>",
+            "join": "<false>",
+            "authorize_only": "<false>",
+            "go_intent": "<int32 0>",
+            "wps_method": "<'pbc'>",
+        }
+        if self.frequency:
+            options["frequency"] = f"<int32 {self.frequency}>"
+        encoded = "{" + ", ".join(f"'{key}': {value}" for key, value in options.items()) + "}"
+        self.p2p_mutation_attempted = True
+        call([
+            "--dest", WPA_DEST,
+            "--object-path", self.control_path,
+            "--method", f"{WPA_P2P}.Connect",
+            encoded,
+        ], timeout=15.0)
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline and not self.stop.is_set():
+            candidates: list[dict[str, str]] = []
+            for group_path in self.peer_groups(self.peer_path) - self.baseline_groups:
+                candidate = self.group_candidate(group_path)
+                if candidate is not None:
+                    candidates.append(candidate)
+            if len(candidates) > 1:
+                raise BrokerError("selected receiver created ambiguous P2P groups")
+            if candidates:
+                return {"group": candidates[0]}
+            self.stop.wait(0.5)
+        raise BrokerError("timed out waiting for the selected receiver P2P group")
+
+    def cleanup(self) -> bool:
+        cleaned = True
+        if self.control_path is not None and self.p2p_mutation_attempted:
+            for member in ("Cancel", "Disconnect"):
+                try:
+                    call([
+                        "--dest", WPA_DEST,
+                        "--object-path", self.control_path,
+                        "--method", f"{WPA_P2P}.{member}",
+                    ], timeout=3.0)
+                except Exception:
+                    cleaned = False
+        if self.wfd_owned:
+            try:
+                if bytes(byte_values(get_property(WPA_ROOT, WPA_DEST, "WFDIEs"))) != source_wfd_ies():
+                    raise BrokerError("supplicant WFD ownership changed before cleanup")
+                set_property(WPA_ROOT, WPA_DEST, "WFDIEs", "<@ay []>")
+                self.wfd_marker.unlink()
+                self.wfd_owned = False
+            except Exception:
+                cleaned = False
+        return cleaned
+
+    @staticmethod
+    def response(ok: bool, *, result: object = None, error: str | None = None) -> bytes:
+        payload = {
+            "schemaVersion": SCHEMA_VERSION,
+            "kind": "omarchy-cast-supplicant-response",
+            "ok": ok,
+            "result": result,
+            "error": error,
+        }
+        return (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+
+    def handle(self, connection: socket.socket) -> None:
+        connection.settimeout(2)
+        request = bytearray()
+        while b"\n" not in request and len(request) <= MAX_REQUEST:
+            chunk = connection.recv(MAX_REQUEST + 1 - len(request))
+            if not chunk:
+                break
+            request.extend(chunk)
+        if len(request) > MAX_REQUEST or not request.endswith(b"\n"):
+            raise BrokerError("broker request is oversized or incomplete")
+        try:
+            payload = json.loads(request)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise BrokerError("broker request is not valid JSON") from exc
+        if not isinstance(payload, dict) or set(payload) != {"schemaVersion", "op"}:
+            raise BrokerError("broker request has an unexpected shape")
+        if payload.get("schemaVersion") != SCHEMA_VERSION:
+            raise BrokerError("broker request schema is unsupported")
+        operation = payload.get("op")
+        if operation == "connect":
+            result = self.connect()
+        elif operation == "cleanup":
+            cleaned = self.cleanup()
+            self.stop.set()
+            if not cleaned:
+                raise BrokerError("supplicant cleanup was incomplete")
+            result = {"cleaned": True}
+        else:
+            raise BrokerError("broker operation is not permitted")
+        connection.sendall(self.response(True, result=result))
+
+    def serve(self) -> None:
+        self.validate_session()
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            server.bind(str(self.socket_path))
+            os.chown(self.socket_path, self.uid, -1)
+            os.chmod(self.socket_path, 0o600)
+            server.listen(1)
+            server.settimeout(0.2)
+            while not self.stop.is_set():
+                try:
+                    connection, _ = server.accept()
+                except TimeoutError:
+                    continue
+                with connection:
+                    try:
+                        self.handle(connection)
+                    except Exception as exc:
+                        try:
+                            connection.sendall(self.response(False, error=str(exc)[:512]))
+                        except OSError:
+                            pass
+        finally:
+            self.cleanup()
+            server.close()
+            try:
+                self.socket_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--session", required=True)
+    parser.add_argument("--uid", required=True, type=int)
+    parser.add_argument("--interface", required=True)
+    parser.add_argument("--peer", required=True)
+    parser.add_argument("--frequency", required=True, type=int)
+    args = parser.parse_args()
+    if not SESSION_RE.fullmatch(args.session):
+        raise BrokerError("invalid session")
+    if not 1000 <= args.uid <= 2_147_483_647:
+        raise BrokerError("invalid uid")
+    if not INTERFACE_RE.fullmatch(args.interface):
+        raise BrokerError("invalid interface")
+    if not PEER_RE.fullmatch(args.peer):
+        raise BrokerError("invalid receiver address")
+    if args.frequency != 0 and not 2300 <= args.frequency <= 7125:
+        raise BrokerError("invalid P2P frequency")
+    return args
+
+
+def main() -> int:
+    try:
+        args = parse_args()
+        broker = SupplicantBroker(
+            session=args.session,
+            uid=args.uid,
+            interface=args.interface,
+            peer=args.peer,
+            frequency=args.frequency,
+        )
+        signal.signal(signal.SIGTERM, lambda _signum, _frame: broker.stop.set())
+        signal.signal(signal.SIGINT, lambda _signum, _frame: broker.stop.set())
+        broker.serve()
+        return 0
+    except Exception as exc:
+        print(f"omarchy-cast-supplicant-broker: {exc}", file=os.sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

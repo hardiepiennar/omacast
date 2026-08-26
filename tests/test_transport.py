@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import subprocess
 import sys
@@ -88,15 +89,15 @@ class TransportTest(unittest.TestCase):
         executable = plan()
         executable["execution"] = {"allowed": True}
         paths = {name: Path("/run/user/1000/omarchy-cast") / name for name in ("progress", "latency", "packets")}
-        adapter = GuardedTransportAdapter(GuardRequest(1, "a" * 32, 1000, "wlan42", 60), env={})
-        command = adapter._engine_command(executable, paths, "/run/user/1000/omarchy-cast/session/trigger")
+        adapter = GuardedTransportAdapter(GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60), env={})
+        command = adapter._engine_command(executable, paths, "/run/omarchy-cast/" + "a" * 32 + "/user/trigger", "/run/omarchy-cast/" + "a" * 32 + "/supplicant.sock")
         self.assertEqual(command[command.index("--wfd-supplicant-hold") + 1], "45")
         self.assertNotIn("--wfd-packet-log", command)
 
         traced = GuardedTransportAdapter(
-            GuardRequest(1, "a" * 32, 1000, "wlan42", 60),
+            GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60),
             env={"OMARCHY_CAST_PACKET_TELEMETRY": "1"},
-        )._engine_command(executable, paths, "/run/user/1000/omarchy-cast/session/trigger")
+        )._engine_command(executable, paths, "/run/omarchy-cast/" + "a" * 32 + "/user/trigger", "/run/omarchy-cast/" + "a" * 32 + "/supplicant.sock")
         self.assertNotIn("--wfd-packet-log", traced)
 
     def test_session_lease_is_private_and_renewable(self) -> None:
@@ -202,7 +203,7 @@ class TransportTest(unittest.TestCase):
 
     def test_guard_stop_uses_the_unprivileged_session_marker(self) -> None:
         from omarchy_cast.guard import GuardRequest
-        adapter = GuardedTransportAdapter(GuardRequest(1, "a" * 32, 1000, "wlan42", 60))
+        adapter = GuardedTransportAdapter(GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60))
         with patch.object(adapter, "_write_private_marker", return_value=True) as write_marker:
             adapter._stop_guard()
         write_marker.assert_called_once_with("/run/omarchy-cast/" + "a" * 32 + "/user/stop")
@@ -226,14 +227,36 @@ class TransportTest(unittest.TestCase):
 
     def test_authorization_wait_observes_stop_without_touching_the_guard(self) -> None:
         from omarchy_cast.guard import GuardRequest
-        request = GuardRequest(1, "a" * 32, 1000, "wlan42", 60)
+        request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
         process = Mock(stdout=Mock())
         self.assertIsNone(GuardedTransportAdapter._read_ready(process, request, lambda: True))
         process.stdout.readline.assert_not_called()
 
+    def test_authorization_ready_binds_trigger_and_broker_to_one_session(self) -> None:
+        from omarchy_cast.guard import GuardRequest
+        session = "a" * 32
+        request = GuardRequest(1, session, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
+        payload = json.dumps({
+            "schemaVersion": 1,
+            "kind": "omarchy-cast-guard-status",
+            "ok": True,
+            "phase": "ready",
+            "sessionId": session,
+            "error": None,
+            "triggerPath": f"/run/omarchy-cast/{session}/user/trigger",
+            "brokerPath": f"/run/omarchy-cast/{session}/supplicant.sock",
+        }) + "\n"
+        process = Mock(stdout=io.StringIO(payload), stderr=io.StringIO(""))
+        process.poll.return_value = None
+        with patch("omarchy_cast.transport.select.select", return_value=((process.stdout,), (), ())):
+            self.assertEqual(
+                GuardedTransportAdapter._read_ready(process, request, lambda: False),
+                (f"/run/omarchy-cast/{session}/user/trigger", f"/run/omarchy-cast/{session}/supplicant.sock"),
+            )
+
     def test_dismissed_authorization_is_an_actionable_no_change_failure(self) -> None:
         from omarchy_cast.guard import GuardRequest
-        request = GuardRequest(1, "a" * 32, 1000, "wlan42", 60)
+        request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
         process = Mock(
             stdout=io.StringIO(""),
             stderr=io.StringIO("Error executing command as another user: Request dismissed"),
@@ -248,7 +271,7 @@ class TransportTest(unittest.TestCase):
 
     def test_helper_cleanup_status_is_bounded_session_scoped_and_explicit(self) -> None:
         from omarchy_cast.guard import GuardRequest
-        request = GuardRequest(1, "a" * 32, 1000, "wlan42", 60)
+        request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
 
         def process(final: str, *, exited: bool = True) -> Mock:
             helper = Mock(stdout=io.StringIO(final))
@@ -270,7 +293,7 @@ class TransportTest(unittest.TestCase):
 
     def test_root_owned_helper_cleanup_does_not_mask_setup_failure(self) -> None:
         from omarchy_cast.guard import GuardRequest
-        request = GuardRequest(1, "a" * 32, 1000, "wlan42", 60)
+        request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
         helper = Mock()
         helper.poll.return_value = None
         helper.terminate.side_effect = PermissionError(1, "Operation not permitted")

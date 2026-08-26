@@ -14,6 +14,7 @@ import re
 HELPER_PATH = "/usr/lib/omarchy-cast/omarchy-cast-guard"
 _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+_PEER = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
 
 class GuardError(ValueError):
@@ -26,6 +27,8 @@ class GuardRequest:
     session_id: str
     uid: int
     interface: str
+    peer: str
+    frequency_mhz: int
     duration_seconds: int
 
     def validate(self) -> "GuardRequest":
@@ -37,6 +40,12 @@ class GuardRequest:
             raise GuardError("guard uid is outside the permitted user range")
         if not _INTERFACE.fullmatch(self.interface):
             raise GuardError("guard interface name is invalid")
+        if not _PEER.fullmatch(self.peer):
+            raise GuardError("guard receiver address is invalid")
+        if not isinstance(self.frequency_mhz, int) or (
+            self.frequency_mhz != 0 and not 2300 <= self.frequency_mhz <= 7125
+        ):
+            raise GuardError("guard P2P frequency is invalid")
         if not isinstance(self.duration_seconds, int) or not 60 <= self.duration_seconds <= 1800:
             raise GuardError("guard duration must be between 60 and 1800 seconds")
         return self
@@ -54,6 +63,8 @@ def prepare_command(request: GuardRequest, *, helper_path: str = HELPER_PATH) ->
         "--session", request.session_id,
         "--uid", str(request.uid),
         "--interface", request.interface,
+        "--peer", request.peer,
+        "--frequency", str(request.frequency_mhz),
         "--duration", str(request.duration_seconds),
     )
 
@@ -75,4 +86,8 @@ def validate_helper_result(payload: object) -> dict[str, object]:
     expected_trigger = f"/run/omarchy-cast/{payload.get('sessionId')}/user/trigger"
     if trigger is not None and (not isinstance(trigger, str) or trigger != expected_trigger):
         raise GuardError("guard status has an invalid trigger path")
+    broker = payload.get("brokerPath")
+    expected_broker = f"/run/omarchy-cast/{payload.get('sessionId')}/supplicant.sock"
+    if broker is not None and (not isinstance(broker, str) or broker != expected_broker):
+        raise GuardError("guard status has an invalid broker path")
     return dict(payload)

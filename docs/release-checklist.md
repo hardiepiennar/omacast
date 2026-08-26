@@ -460,6 +460,22 @@
       connect/stream/Stop run, returned to idle with complete helper cleanup,
       removed its media and session P2P state, and kept infrastructure Wi-Fi
       connected.
+- [x] Production patch 32 limits writable supplicant control to the selected
+      adapter and accepts a newly created group only when it belongs to the
+      selected peer and adapter. Multi-adapter, pre-existing, foreign, and
+      ambiguous group regressions pass in the exact 137-test engine suite.
+      Package revision 51 passes its clean artifact and upgrade/removal gates.
+      Its short receiver-backed acceptance gate is intentionally combined with
+      revision 52 below.
+- [x] Guard API revision 10 removes the temporary UID-wide supplicant D-Bus
+      policy. A root-owned transient broker exposes only one pinned `connect`
+      and fixed `cleanup` operation through the session socket; it refuses to
+      run before guarded networking is armed and clears WFD metadata only while
+      exact ownership still holds. Production patch 33 adds the bounded engine
+      client and package revision 52 installs the broker. Offline protocol,
+      ownership, failure-injection, exact-engine, artifact, and lifecycle gates
+      pass. One GUI connect/stream/Stop run remains pending for revisions 51
+      and 52 together.
 
 Run this before every release:
 

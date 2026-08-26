@@ -6,7 +6,7 @@
 
 pkgname=fluxcast-omarchy-cast
 pkgver=0.1.5.r3.omarchy
-pkgrel=51
+pkgrel=52
 pkgdesc='Pinned FluxCast WFD engine with Omacast compatibility patches'
 arch=('any')
 url='https://github.com/IlyaP358/fluxcast'
@@ -17,6 +17,7 @@ depends=(
   'python-pillow'
   'python-pystray'
   'python-gobject'
+  'glib2'
   'python-pychromecast'
   'gpu-screen-recorder'
   'ffmpeg'
@@ -67,5 +68,6 @@ package() {
   python -m installer --destdir="$pkgdir" dist/*.whl
   install -Dm755 "$startdir/omarchy-cast-guard" "$pkgdir/usr/lib/omarchy-cast/omarchy-cast-guard"
   install -Dm755 "$startdir/omarchy-cast-guard-recover" "$pkgdir/usr/lib/omarchy-cast/omarchy-cast-guard-recover"
+  install -Dm755 "$startdir/omarchy-cast-supplicant-broker" "$pkgdir/usr/lib/omarchy-cast/omarchy-cast-supplicant-broker"
   install -Dm644 "$startdir/com.omacast.guard.policy" "$pkgdir/usr/share/polkit-1/actions/com.omacast.guard.policy"
 }

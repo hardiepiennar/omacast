@@ -4,7 +4,7 @@ set -euo pipefail
 [[ ${EUID} -eq 0 && $# -eq 6 ]] || exit 2
 startup_seconds="$1"; lease_seconds="$2"; session="$3"; token="$4"; uid="$5"; interface="$6"
 [[ "$startup_seconds" =~ ^[0-9]+$ && "$lease_seconds" =~ ^[0-9]+$ && "$lease_seconds" -ge 60 && "$lease_seconds" -le 1800 && "$session" =~ ^[a-f0-9]{32}$ && "$token" =~ ^[a-f0-9]{48}$ && "$uid" =~ ^[1-9][0-9]{3,9}$ && "$interface" =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || exit 2
-root="/run/omarchy-cast/$session"; user_root="$root/user"; token_file="$root/token"; ready_file="$root/ready.json"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; stop_file="$user_root/stop"; heartbeat_fd=''; network_root='/run/systemd/network'; network_file="$network_root/80-omarchy-cast-$session.network"; policy_file="/etc/dbus-1/system.d/zz-omarchy-cast-$session.conf"; networkd_state_file="$root/networkd-units"; networkd_state_pending_file="$root/networkd-units.pending"; network_root_marker="$root/network-root-created"; interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"; recovery_ready_file="$root/recovery-ready"; recovery_cleanup_ok=true
+root="/run/omarchy-cast/$session"; user_root="$root/user"; token_file="$root/token"; ready_file="$root/ready.json"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; stop_file="$user_root/stop"; heartbeat_fd=''; network_root='/run/systemd/network'; network_file="$network_root/80-omarchy-cast-$session.network"; networkd_state_file="$root/networkd-units"; networkd_state_pending_file="$root/networkd-units.pending"; network_root_marker="$root/network-root-created"; interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"; recovery_ready_file="$root/recovery-ready"; broker_unit="omarchy-cast-supplicant-$session.service"; broker_socket="$root/supplicant.sock"; broker_wfd_file="$root/supplicant-wfd-owned"; recovery_cleanup_ok=true
 record_session_interfaces() { local candidate listed; [[ -f "$interfaces_file" && ! -L "$interfaces_file" && "$(stat -c '%u:%a' "$interfaces_file" 2>/dev/null)" == "$EUID:600" ]] || return 1; listed="$(iw dev)" || return 1; while read -r candidate; do [[ -n "$candidate" && "$candidate" == "p2p-$interface-"* ]] || continue; grep -Fxq "$candidate" "$interfaces_file" || printf '%s\n' "$candidate" >> "$interfaces_file"; done < <(awk -v prefix="p2p-$interface-" '$1 == "Interface" && index($2, prefix) == 1 {print $2}' <<< "$listed"); }
 remove_session_interfaces() { local owned details type removed all_removed=true; [[ -f "$interfaces_file" && ! -L "$interfaces_file" && "$(stat -c '%u:%a' "$interfaces_file" 2>/dev/null)" == "$EUID:600" ]] || return 1; while read -r owned; do [[ -n "$owned" && "$owned" == "p2p-$interface-"* ]] || continue; if ! details="$(iw dev "$owned" info 2>/dev/null)"; then continue; fi; type="$(awk '$1 == "type" {print $2; exit}' <<< "$details")"; if [[ "$type" != P2P-client ]]; then all_removed=false; continue; fi; removed=false; for _ in 1 2 3; do iw dev "$owned" del 2>/dev/null || true; if ! iw dev "$owned" info >/dev/null 2>&1; then removed=true; break; fi; sleep 0.1; done; [[ "$removed" == true ]] || all_removed=false; done < "$interfaces_file"; [[ "$all_removed" == true ]]; }
 open_heartbeat() {
@@ -35,6 +35,21 @@ restore_networkd_state() {
   ! systemctl is-active --quiet systemd-networkd.service || systemctl reload systemd-networkd.service
 }
 remove_recovery_file() { if ! rm -f -- "$1"; then recovery_cleanup_ok=false; fi; return 0; }
+remove_broker_socket() {
+  [[ ! -e "$broker_socket" && ! -L "$broker_socket" ]] && return 0
+  [[ -S "$broker_socket" && ! -L "$broker_socket" && "$(stat -c '%u:%a' "$broker_socket" 2>/dev/null)" == "$uid:600" ]] || return 1
+  rm -f -- "$broker_socket"
+}
+clear_owned_wfd_ies() {
+  local current expected='0x00 0x00 0x06 0x00 0x10 0x1c 0x44 0x00 0xc8 0x0a 0x00 0x07 0x4f 0x6d 0x61 0x63 0x61 0x73 0x74'
+  [[ ! -e "$broker_wfd_file" ]] && return 0
+  [[ -f "$broker_wfd_file" && ! -L "$broker_wfd_file" && "$(stat -c '%u:%a' "$broker_wfd_file" 2>/dev/null)" == "$EUID:600" ]] || return 1
+  current="$(gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Get fi.w1.wpa_supplicant1 WFDIEs 2>/dev/null | { grep -oE '0x[0-9A-Fa-f]{2}' || true; } | tr '[:upper:]' '[:lower:]' | paste -sd ' ' -)" || return 1
+  if [[ -z "$current" ]]; then rm -f -- "$broker_wfd_file"; return; fi
+  [[ "$current" == "$expected" ]] || return 1
+  gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Set fi.w1.wpa_supplicant1 WFDIEs '<@ay []>' >/dev/null || return 1
+  rm -f -- "$broker_wfd_file"
+}
 recovery_identity_valid() {
   [[ -d "$root" && ! -L "$root" && "$(stat -c '%u:%a' "$root" 2>/dev/null)" == "$EUID:711" ]] || return 1
   [[ -d "$user_root" && ! -L "$user_root" && "$(stat -c '%u:%a' "$user_root" 2>/dev/null)" == "$uid:700" ]] || return 1
@@ -48,7 +63,10 @@ publish_recovery_ready() {
   [[ -f "$recovery_ready_file" && ! -L "$recovery_ready_file" && "$(stat -c '%u:%a' "$recovery_ready_file" 2>/dev/null)" == "$EUID:600" ]]
 }
 recover_session() {
-  local remove_network_root=false interface_cleanup_ok=true networkd_cleanup_ok=true policy_was_present=false
+  local remove_network_root=false interface_cleanup_ok=true networkd_cleanup_ok=true broker_cleanup_ok=true _
+  for _ in 1 2 3; do systemctl is-active --quiet "$broker_unit" || break; systemctl stop "$broker_unit" 2>/dev/null || true; sleep 0.1; done
+  if systemctl is-active --quiet "$broker_unit"; then broker_cleanup_ok=false; recovery_cleanup_ok=false; fi
+  if [[ "$broker_cleanup_ok" == true ]]; then remove_broker_socket || recovery_cleanup_ok=false; clear_owned_wfd_ies || recovery_cleanup_ok=false; fi
   if [[ -f "$interfaces_armed_file" && ! -L "$interfaces_armed_file" && "$(stat -c '%u:%a' "$interfaces_armed_file" 2>/dev/null)" == "$EUID:600" ]]; then
     record_session_interfaces || interface_cleanup_ok=false
     remove_session_interfaces || interface_cleanup_ok=false
@@ -58,15 +76,12 @@ recover_session() {
     ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || recovery_cleanup_ok=false
   fi
   [[ -f "$network_root_marker" ]] && remove_network_root=true
-  [[ -e "$policy_file" ]] && policy_was_present=true
 
   remove_recovery_file "$network_file"
-  remove_recovery_file "$policy_file"
   remove_recovery_file "$ready_file"
   remove_recovery_file "$trigger_file"
   remove_recovery_file "$heartbeat_file"
   remove_recovery_file "$stop_file"
-  if [[ "$policy_was_present" == true ]]; then systemctl reload dbus.service 2>/dev/null || recovery_cleanup_ok=false; fi
   if [[ -e "$networkd_state_file" ]] && ! restore_networkd_state; then recovery_cleanup_ok=false; networkd_cleanup_ok=false; fi
 
   remove_recovery_file "$networkd_state_pending_file"

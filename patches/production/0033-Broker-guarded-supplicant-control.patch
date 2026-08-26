@@ -1,0 +1,312 @@
+From 0589559b935094310536fb23aab855f34b6d83bc Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Wed, 26 Aug 2026 21:57:22 +1200
+Subject: [PATCH] Broker guarded supplicant control
+
+---
+ src/main.py                  |  4 ++
+ src/wfd/p2p/broker.py        | 64 +++++++++++++++++++++++
+ src/wfd/p2p/supplicant.py    | 18 ++++++-
+ src/wfd/session.py           | 23 ++++++---
+ tests/test_wfd_p2p_broker.py | 98 ++++++++++++++++++++++++++++++++++++
+ 5 files changed, 199 insertions(+), 8 deletions(-)
+ create mode 100644 src/wfd/p2p/broker.py
+ create mode 100644 tests/test_wfd_p2p_broker.py
+
+diff --git a/src/main.py b/src/main.py
+index f7b5231..6389408 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -218,6 +218,10 @@ def parse_args() -> argparse.Namespace:
+                      dest="wfd_supplicant_network_trigger", metavar="PATH",
+                      help="Create a guarded-session trigger file immediately before "
+                           "the direct-supplicant pre-connection delay")
++    wfd.add_argument("--wfd-supplicant-broker", default=None,
++                     dest="wfd_supplicant_broker", metavar="SOCKET",
++                     help="Use the session-scoped Omacast broker instead of granting "
++                          "the user direct supplicant mutation access")
+     wfd.add_argument("--wfd-supplicant-frequency", type=int, default=0,
+                      dest="wfd_supplicant_frequency", metavar="MHZ",
+                      help="Preferred direct P2P operating frequency in MHz; use the "
+diff --git a/src/wfd/p2p/broker.py b/src/wfd/p2p/broker.py
+new file mode 100644
+index 0000000..627e75a
+--- /dev/null
++++ b/src/wfd/p2p/broker.py
+@@ -0,0 +1,64 @@
++import json
++import os
++import re
++import socket
++import stat
++
++from ..config import WFDNotReady
++
++
++_BROKER_PATH = re.compile(r"^/run/omarchy-cast/[a-f0-9]{32}/supplicant\.sock$")
++
++
++def broker_request(path: str, operation: str, *, timeout: float) -> dict:
++    if not _BROKER_PATH.fullmatch(path):
++        raise WFDNotReady("The supplicant broker path is outside the guarded session.")
++    try:
++        metadata = os.stat(path, follow_symlinks=False)
++    except OSError as exc:
++        raise WFDNotReady(f"The supplicant broker is unavailable: {exc}") from exc
++    if (
++        not stat.S_ISSOCK(metadata.st_mode)
++        or metadata.st_uid != os.getuid()
++        or stat.S_IMODE(metadata.st_mode) != 0o600
++    ):
++        raise WFDNotReady("The supplicant broker socket is unsafe.")
++    request = json.dumps(
++        {"schemaVersion": 1, "op": operation}, separators=(",", ":")
++    ).encode("utf-8") + b"\n"
++    response = bytearray()
++    try:
++        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
++            client.settimeout(timeout)
++            client.connect(path)
++            client.sendall(request)
++            while b"\n" not in response:
++                chunk = client.recv(4097 - len(response))
++                if not chunk:
++                    break
++                response.extend(chunk)
++                if len(response) > 4096:
++                    raise WFDNotReady("The supplicant broker returned an oversized response.")
++    except (OSError, TimeoutError) as exc:
++        raise WFDNotReady(f"The supplicant broker request failed: {exc}") from exc
++    if not response.endswith(b"\n"):
++        raise WFDNotReady("The supplicant broker returned an incomplete response.")
++    try:
++        payload = json.loads(response)
++    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
++        raise WFDNotReady("The supplicant broker returned invalid JSON.") from exc
++    if (
++        not isinstance(payload, dict)
++        or set(payload) != {"schemaVersion", "kind", "ok", "result", "error"}
++        or payload.get("schemaVersion") != 1
++        or payload.get("kind") != "omarchy-cast-supplicant-response"
++        or not isinstance(payload.get("ok"), bool)
++    ):
++        raise WFDNotReady("The supplicant broker returned an invalid response.")
++    if payload["ok"] is not True:
++        detail = payload.get("error")
++        raise WFDNotReady(detail if isinstance(detail, str) and detail else "The supplicant broker refused the request.")
++    result = payload.get("result")
++    if not isinstance(result, dict):
++        raise WFDNotReady("The supplicant broker omitted its result.")
++    return result
+diff --git a/src/wfd/p2p/supplicant.py b/src/wfd/p2p/supplicant.py
+index b985a9e..22813d6 100644
+--- a/src/wfd/p2p/supplicant.py
++++ b/src/wfd/p2p/supplicant.py
+@@ -8,6 +8,7 @@ from ..config import WFDNotReady
+ from ..ie import WFDPeer, _parse_gdbus_byte_array
+ from .dbus import _gdbus_call, _object_paths, _variant_byte_array, _wfd_source_ie
+ from .device import _p2p_device_iface_paths
++from .broker import broker_request
+ 
+ 
+ WPA_DEST = "fi.w1.wpa_supplicant1"
+@@ -267,7 +268,9 @@ def connect_supplicant_group(
+     peer: WFDPeer,
+     interface_path: Optional[str] = None,
+ ) -> SupplicantGroup:
+-    interface_path = interface_path or _supplicant_interface_path(args.wfd_interface)
++    broker_path = getattr(args, "wfd_supplicant_broker", None)
++    if not broker_path:
++        interface_path = interface_path or _supplicant_interface_path(args.wfd_interface)
+     mode = getattr(args, "wfd_supplicant_mode", "connect")
+     rtsp_port = getattr(args, "wfd_rtsp_port", 7236)
+     go_intent = getattr(args, "wfd_go_intent", 0)
+@@ -299,6 +302,19 @@ def connect_supplicant_group(
+         )
+         time.sleep(preconnect_delay)
+ 
++    if broker_path:
++        result = broker_request(broker_path, "connect", timeout=50.0)
++        group = result.get("group")
++        if (
++            not isinstance(group, dict)
++            or set(group) != {"interface", "role"}
++            or not isinstance(group.get("interface"), str)
++            or not isinstance(group.get("role"), str)
++        ):
++            raise WFDNotReady("The supplicant broker returned invalid group status.")
++        return SupplicantGroup("broker-owned", "broker-owned", group["interface"], group["role"])
++
++    assert interface_path is not None
+     peer_path = _supplicant_peer_path(interface_path, peer.address)
+     baseline_groups = _selected_peer_groups(peer_path, required=True)
+     _supplicant_connect(
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 049925c..55c89e4 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -20,6 +20,7 @@ from .p2p.supplicant import (
+     connect_supplicant_group,
+     run_supplicant_role_test,
+ )
++from .p2p.broker import broker_request
+ from .probe import _active_rtsp_probe
+ from .rtsp.rtsp_server import WFDRTSPServer
+ 
+@@ -75,7 +76,9 @@ def start_experimental_backend(args) -> None:
+                 from capture import prompt_monitor
+                 monitor = prompt_monitor()
+ 
+-    _set_p2p_device_name(args.wfd_interface)
++    broker_path = getattr(args, "wfd_supplicant_broker", None)
++    if not broker_path:
++        _set_p2p_device_name(args.wfd_interface)
+     peer = _scan_and_select(
+         args.wfd_interface, getattr(args, "wfd_peer", None), args.wfd_timeout
+     )
+@@ -148,7 +151,7 @@ def start_experimental_backend(args) -> None:
+     active_path = ""
+     previous_go_intent = None
+     supplicant_interface_path = ""
+-    if p2p_backend == "supplicant":
++    if p2p_backend == "supplicant" and not broker_path:
+         supplicant_interface_path = _supplicant_interface_path(args.wfd_interface)
+     try:
+         if p2p_backend == "networkmanager":
+@@ -159,7 +162,7 @@ def start_experimental_backend(args) -> None:
+                 pass
+         rtsp.start()
+         if p2p_backend == "supplicant":
+-            connect_supplicant_group(args, peer, supplicant_interface_path)
++            connect_supplicant_group(args, peer, supplicant_interface_path or None)
+         else:
+             # Lower our GO intent before negotiation so the TV becomes the group
+             # owner; most Miracast sinks only start the RTSP session in that role.
+@@ -208,10 +211,16 @@ def start_experimental_backend(args) -> None:
+             _cleanup_step("connection deactivate",
+                           lambda: _deactivate_connection(active_path))
+         if p2p_backend == "supplicant":
+-            _cleanup_step(
+-                "direct P2P disconnect",
+-                lambda: _supplicant_cancel_and_disconnect(supplicant_interface_path),
+-            )
++            if broker_path:
++                _cleanup_step(
++                    "brokered P2P disconnect",
++                    lambda: broker_request(broker_path, "cleanup", timeout=10.0),
++                )
++            else:
++                _cleanup_step(
++                    "direct P2P disconnect",
++                    lambda: _supplicant_cancel_and_disconnect(supplicant_interface_path),
++                )
+         else:
+             _cleanup_step("P2P device disconnect", lambda: _disconnect_device(device_path))
+         if previous_go_intent is not None:
+diff --git a/tests/test_wfd_p2p_broker.py b/tests/test_wfd_p2p_broker.py
+new file mode 100644
+index 0000000..ac1b30b
+--- /dev/null
++++ b/tests/test_wfd_p2p_broker.py
+@@ -0,0 +1,98 @@
++import json
++import stat
++import unittest
++from types import SimpleNamespace
++from unittest import mock
++
++from wfd.config import WFDNotReady
++from wfd.ie import WFDPeer
++from wfd.p2p.broker import broker_request
++from wfd.p2p.supplicant import connect_supplicant_group
++
++
++BROKER = "/run/omarchy-cast/" + "a" * 32 + "/supplicant.sock"
++
++
++class _Socket:
++    def __init__(self, response):
++        self.response = response
++        self.sent = b""
++
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *_args):
++        return False
++
++    def settimeout(self, _timeout):
++        pass
++
++    def connect(self, path):
++        self.path = path
++
++    def sendall(self, payload):
++        self.sent = payload
++
++    def recv(self, _size):
++        response, self.response = self.response, b""
++        return response
++
++
++class SupplicantBrokerClientTest(unittest.TestCase):
++    def metadata(self):
++        return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o600, st_uid=1000)
++
++    def test_client_sends_only_versioned_operation_and_validates_response(self):
++        response = json.dumps({
++            "schemaVersion": 1,
++            "kind": "omarchy-cast-supplicant-response",
++            "ok": True,
++            "result": {"cleaned": True},
++            "error": None,
++        }).encode() + b"\n"
++        client = _Socket(response)
++        with mock.patch("wfd.p2p.broker.os.stat", return_value=self.metadata()), mock.patch(
++            "wfd.p2p.broker.os.getuid", return_value=1000
++        ), mock.patch("wfd.p2p.broker.socket.socket", return_value=client):
++            self.assertEqual(broker_request(BROKER, "cleanup", timeout=1), {"cleaned": True})
++        self.assertEqual(client.path, BROKER)
++        self.assertEqual(json.loads(client.sent), {"schemaVersion": 1, "op": "cleanup"})
++
++    def test_client_rejects_paths_socket_metadata_and_response_shapes(self):
++        with self.assertRaisesRegex(WFDNotReady, "outside the guarded session"):
++            broker_request("/tmp/broker", "connect", timeout=1)
++        unsafe = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=1000)
++        with mock.patch("wfd.p2p.broker.os.stat", return_value=unsafe):
++            with self.assertRaisesRegex(WFDNotReady, "unsafe"):
++                broker_request(BROKER, "connect", timeout=1)
++
++    def test_group_connection_uses_broker_without_direct_supplicant_calls(self):
++        args = SimpleNamespace(
++            wfd_supplicant_broker=BROKER,
++            wfd_supplicant_network_trigger=None,
++            wfd_supplicant_preconnect_delay=0,
++            wfd_interface="wlan0",
++        )
++        with mock.patch(
++            "wfd.p2p.supplicant.broker_request",
++            return_value={"group": {"interface": "p2p-wlan0-0", "role": "client"}},
++        ) as request, mock.patch("wfd.p2p.supplicant._supplicant_interface_path") as direct:
++            group = connect_supplicant_group(args, WFDPeer(address="00:11:22:33:44:55"))
++        request.assert_called_once_with(BROKER, "connect", timeout=50.0)
++        direct.assert_not_called()
++        self.assertEqual((group.ifname, group.role), ("p2p-wlan0-0", "client"))
++
++    def test_group_connection_rejects_unsanitized_broker_status(self):
++        args = SimpleNamespace(
++            wfd_supplicant_broker=BROKER,
++            wfd_supplicant_network_trigger=None,
++            wfd_supplicant_preconnect_delay=0,
++            wfd_interface="wlan0",
++        )
++        with mock.patch("wfd.p2p.supplicant.broker_request", return_value={"group": {"path": "/foreign"}}):
++            with self.assertRaisesRegex(WFDNotReady, "invalid group status"):
++                connect_supplicant_group(args, WFDPeer(address="00:11:22:33:44:55"))
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.55.0
+
