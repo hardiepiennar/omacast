@@ -699,9 +699,10 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn('git clone --quiet --no-local "$repo_root"', builder)
         self.assertIn('[[ "$clone_commit" == "$source_commit" ]]', builder)
         self.assertIn('sha256sum "$package_name" > SHA256SUMS', builder)
-        self.assertIn('build_root="/tmp/omacast-release-build-${UID}"', builder)
-        self.assertIn('flock -n 9', builder)
-        self.assertIn('[[ "$(stat -c %u "$build_root")" == "$UID" ]]', builder)
+        self.assertIn('mktemp -d -p /tmp "omacast-release-build.${UID}.XXXXXXXX"', builder)
+        self.assertIn('"$(stat -c %u:%a "$build_root")" == "$UID:700"', builder)
+        self.assertNotIn('omacast-release-build-${UID}.lock', builder)
+        self.assertNotIn('exec 9>', builder)
 
     def test_artifact_audit_is_no_root_and_checks_the_runtime_contract(self) -> None:
         audit = (ROOT / "scripts" / "audit-release-artifact").read_text(encoding="utf-8")

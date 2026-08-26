@@ -368,6 +368,13 @@ the installed dependency set. Tagged public workflows will add GitHub artifact
 provenance so users can verify the exact hosted builder and commit; that hosted
 attestation remains pending a public repository and tag.
 
+The fixed build root and adjacent predictable lock described above were
+superseded on 2026-08-26. Shell redirection could follow a pre-planted lock-file
+symlink and truncate another file writable by the developer. Each build now
+uses a private, randomly named `mktemp` directory under `/tmp`, verifies its
+owner and mode before cloning, and removes only that validated directory.
+Concurrent builds no longer share intermediate state.
+
 ### Long-session cadence and lifecycle evidence (2026-08-23)
 
 A package-owned real-desktop cast ran for about 20.5 minutes and transmitted

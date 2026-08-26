@@ -634,6 +634,8 @@ protocol fixtures. `scripts/bootstrap-fluxcast` and the Arch recipe recreate
 the pinned engine from upstream commit `9d27c39` plus the complete 28-patch
 series. A fresh clone of release-candidate commit `1026b5b` passes the official
 Omarchy validator and all non-hardware controller tests without `work/`.
+Release builds clone the exact clean commit into a private randomly named build
+directory; no predictable lock or shared intermediate path is opened.
 
 - Configure a top-level public remote and trusted package/release channel.
 - Rebuild the companion from a clean public clone as part of release CI. The

@@ -5,8 +5,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output_dir="${1:-$repo_root/dist}"
-build_root="/tmp/omacast-release-build-${UID}"
-lock_path="${build_root}.lock"
+build_root=""
 
 die() {
   echo "build-release-artifact: $*" >&2
@@ -14,16 +13,20 @@ die() {
 }
 
 cleanup() {
-  if [[ "$build_root" == "/tmp/omacast-release-build-${UID}" && -d "$build_root" ]]; then
-    rm -rf -- "$build_root"
-  fi
+  case "$build_root" in
+    /tmp/omacast-release-build."${UID}".*)
+      if [[ -d "$build_root" && ! -L "$build_root" && "$(stat -c %u "$build_root")" == "$UID" ]]; then
+        rm -rf -- "$build_root"
+      fi
+      ;;
+  esac
 }
 trap cleanup EXIT HUP INT TERM
 
 command -v git >/dev/null || die "git is required"
 command -v makepkg >/dev/null || die "makepkg is required"
+command -v mktemp >/dev/null || die "mktemp is required"
 command -v pacman >/dev/null || die "pacman is required"
-command -v flock >/dev/null || die "flock is required"
 
 [[ -d "$repo_root/.git" ]] || die "run this from a git clone"
 [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]] \
@@ -32,14 +35,9 @@ command -v flock >/dev/null || die "flock is required"
 source_commit="$(git -C "$repo_root" rev-parse --verify HEAD)"
 [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || die "could not resolve the source commit"
 
-exec 9>"$lock_path"
-flock -n 9 || die "another release build is active"
-if [[ -e "$build_root" ]]; then
-  [[ -d "$build_root" && ! -L "$build_root" ]] || die "unsafe build path: $build_root"
-  [[ "$(stat -c %u "$build_root")" == "$UID" ]] || die "build path is owned by another user"
-  rm -rf -- "$build_root"
-fi
-install -d -m 0700 "$build_root"
+build_root="$(mktemp -d -p /tmp "omacast-release-build.${UID}.XXXXXXXX")"
+[[ -d "$build_root" && ! -L "$build_root" && "$(stat -c %u:%a "$build_root")" == "$UID:700" ]] \
+  || die "mktemp did not create a private build directory"
 git clone --quiet --no-local "$repo_root" "$build_root/source"
 
 clone_commit="$(git -C "$build_root/source" rev-parse --verify HEAD)"
