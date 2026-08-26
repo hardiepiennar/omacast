@@ -83,7 +83,7 @@ def build_launch_plan(
         "--wfd-supplicant-mode", "connect", "--wfd-peer", peer.strip(),
         "--wfd-interface", str(wifi["interface"]), "--wfd-timeout", "15",
         "--wfd-supplicant-frequency", str(frequency) if isinstance(frequency, int) else "0",
-        "--wfd-supplicant-preconnect-delay", "10", "--wfd-no-firewall",
+        "--wfd-no-firewall",
         "--monitor", str(output["name"]),
         "--wfd-capture-backend", "wf-recorder",
         "--wfd-audio-device", sink + ".monitor",

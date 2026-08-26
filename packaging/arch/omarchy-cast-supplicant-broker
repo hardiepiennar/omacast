@@ -18,6 +18,7 @@ import time
 
 SCHEMA_VERSION = 1
 MAX_REQUEST = 1024
+NETWORK_ARM_TIMEOUT_SECONDS = 10.0
 WPA_DEST = "fi.w1.wpa_supplicant1"
 WPA_ROOT = "/fi/w1/wpa_supplicant1"
 WPA_IFACE = "fi.w1.wpa_supplicant1.Interface"
@@ -143,6 +144,15 @@ class SupplicantBroker:
             and stat.S_IMODE(marker.st_mode) == 0o600
         )
 
+    def wait_for_network_arm(self, timeout: float = NETWORK_ARM_TIMEOUT_SECONDS) -> bool:
+        """Wait only for the root guard's owned readiness marker."""
+        deadline = time.monotonic() + timeout
+        while not self.network_armed():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or self.stop.wait(min(0.1, remaining)):
+                return False
+        return True
+
     def resolve_peer(self, control_path: str) -> str:
         for path in object_paths(get_property(control_path, WPA_P2P, "Peers")):
             address = byte_values(get_property(path, WPA_PEER, "DeviceAddress"))
@@ -179,7 +189,7 @@ class SupplicantBroker:
     def connect(self) -> dict[str, object]:
         if self.connect_attempted:
             raise BrokerError("this session already consumed its connect operation")
-        if not self.network_armed():
+        if not self.wait_for_network_arm():
             raise BrokerError("guarded networking is not active for this session")
         self.connect_attempted = True
         self.control_path = self.resolve_control()

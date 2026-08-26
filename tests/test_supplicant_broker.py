@@ -123,12 +123,29 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
 
     def test_connect_refuses_to_run_before_root_guard_arms_networking(self) -> None:
         broker = self.broker()
-        with mock.patch.object(broker, "network_armed", return_value=False), mock.patch.object(
+        with mock.patch.object(broker, "wait_for_network_arm", return_value=False), mock.patch.object(
             broker, "resolve_control"
         ) as resolve:
             with self.assertRaisesRegex(broker_module.BrokerError, "networking is not active"):
                 broker.connect()
         resolve.assert_not_called()
+
+    def test_connect_waits_for_the_root_owned_network_marker(self) -> None:
+        broker = self.broker()
+        with mock.patch.object(
+            broker, "network_armed", side_effect=(False, False, True)
+        ) as armed, mock.patch.object(broker.stop, "wait", return_value=False) as wait:
+            self.assertTrue(broker.wait_for_network_arm(timeout=10))
+        self.assertEqual(armed.call_count, 3)
+        self.assertEqual(wait.call_count, 2)
+
+    def test_network_marker_wait_is_bounded_and_stoppable(self) -> None:
+        broker = self.broker()
+        with mock.patch.object(broker, "network_armed", return_value=False), mock.patch.object(
+            broker.stop, "wait", return_value=True
+        ) as wait:
+            self.assertFalse(broker.wait_for_network_arm(timeout=10))
+        wait.assert_called_once()
 
     def test_resolution_never_falls_back_to_another_adapter_or_peer(self) -> None:
         broker = self.broker()
