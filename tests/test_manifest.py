@@ -105,7 +105,10 @@ class ManifestTest(unittest.TestCase):
         for code in ("authorization-cancelled", "authorization-timeout", "guard-setup-failed", "dhcp-failed", "p2p-negotiation-failed", "receiver-negotiation-failed", "receiver-negotiation-timeout", "capture-failed", "engine-exited"):
             self.assertIn('code === "' + code + '"', panel)
         self.assertIn("function maybeAutoScan()", panel)
-        self.assertIn("doctorComplete && systemReady() && !autoScanDone", panel)
+        self.assertIn("!sessionBusy && phase === \"idle\" && doctorComplete && systemReady() && !autoScanDone", panel)
+        self.assertIn("if (!sessionBusy) {", panel)
+        self.assertIn("if (sessionBusy) return", panel)
+        self.assertIn("root.nerdMode && root.sessionActive ? 650 : 570", panel)
         self.assertIn('text: root.doctorComplete && root.setupRequired() ? "Open setup terminal"', panel)
         self.assertIn('return "cd " + Util.shellQuote(packagePath) + " && makepkg -si"', panel)
 

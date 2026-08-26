@@ -295,7 +295,7 @@ Panel {
   }
 
   function maybeAutoScan() {
-    if (root.opened && phase === "idle" && doctorComplete && systemReady() && !autoScanDone) {
+    if (root.opened && !sessionBusy && phase === "idle" && doctorComplete && systemReady() && !autoScanDone) {
       autoScanDone = true
       startScan()
     }
@@ -305,8 +305,10 @@ Panel {
     var result = normalizeDoctor(parseJsonObject(text, {}))
     doctor = result
     doctorComplete = result.schemaVersion === 1 && result.readiness !== undefined
-    if (!doctorComplete) message = "Casting support check failed"
-    else if (!systemReady()) message = readinessSummary()
+    if (!sessionBusy) {
+      if (!doctorComplete) message = "Casting support check failed"
+      else if (!systemReady()) message = readinessSummary()
+    }
     requestPlan()
     maybeAutoScan()
   }
@@ -343,6 +345,10 @@ Panel {
   }
 
   function applyScan(text) {
+    // A receiver normally stops advertising after it joins the P2P group. A
+    // late scan must not clear the selected display or replace active-session
+    // progress with a misleading empty-discovery message.
+    if (sessionBusy) return
     var result = parseJsonObject(text, {})
     if (result.ok === false) {
       receivers = []
@@ -823,7 +829,10 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(390))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(570))
+    contentHeight: panel.fittedContentHeight(
+      content.implicitHeight,
+      Style.space(root.nerdMode && root.sessionActive ? 650 : 570)
+    )
 
     PanelKeyCatcher {
       id: keyCatcher
