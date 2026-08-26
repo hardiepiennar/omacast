@@ -31,3 +31,4 @@
 0037-Return-early-when-selected-receiver-is-found.patch
 0038-Remove-legacy-system-integration-payload.patch
 0039-Bound-internal-command-output.patch
+0040-Validate-receiver-media-ports.patch

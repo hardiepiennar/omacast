@@ -169,6 +169,8 @@ done
   || die "packaged engine retains unbounded subprocess capture"
 grep -Fq 'MAX_COMMAND_OUTPUT_BYTES' "$site_packages/wfd/proc.py" \
   || die "packaged engine lacks bounded subprocess capture"
+grep -Fq 'port > 65535' "$site_packages/wfd/rtsp/message.py" \
+  || die "packaged engine lacks receiver port range validation"
 
 pacman -Qp "$package" >/dev/null
 printf 'Artifact audit passed: %s\n' "$package"

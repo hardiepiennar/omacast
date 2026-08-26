@@ -1,0 +1,112 @@
+From 9717078041afcb3ebffdc78d3046b1944a39308a Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 23:56:44 +1200
+Subject: [PATCH] Validate receiver media ports
+
+---
+ src/wfd/rtsp/message.py       | 28 ++++++++++++++++++++++++----
+ tests/test_wfd_rtsp_limits.py | 34 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 58 insertions(+), 4 deletions(-)
+
+diff --git a/src/wfd/rtsp/message.py b/src/wfd/rtsp/message.py
+index 4015183..f8c2fd2 100644
+--- a/src/wfd/rtsp/message.py
++++ b/src/wfd/rtsp/message.py
+@@ -121,18 +121,38 @@ def _parse_parameters(body: str) -> dict[str, str]:
+             params[key.strip().lower()] = value.strip()
+     return params
+ 
++def _parse_port(value: str, *, allow_zero: bool = False) -> Optional[int]:
++    if not value or len(value) > 5 or not value.isascii() or not value.isdecimal():
++        return None
++    port = int(value)
++    if port > 65535 or (port == 0 and not allow_zero):
++        return None
++    return port
++
+ def _parse_rtp_ports(value: str) -> Optional[tuple[int, int]]:
+     match = re.search(
+-        r"RTP/AVP/(?:UDP|TCP);unicast\s+(\d+)\s+(\d+)\s+mode=play",
++        r"RTP/AVP/(?:UDP|TCP);unicast\s+([0-9]{1,5})(?![0-9])\s+"
++        r"([0-9]{1,5})(?![0-9])\s+mode=play",
+         value,
+         re.IGNORECASE,
+     )
+     if match:
+-        return int(match.group(1)), int(match.group(2))
++        rtp = _parse_port(match.group(1))
++        rtcp = _parse_port(match.group(2), allow_zero=True)
++        if rtp is not None and rtcp is not None:
++            return rtp, rtcp
+     return None
+ 
+ def _parse_transport_client_ports(value: str) -> Optional[tuple[int, int]]:
+-    match = re.search(r"client_port=(\d+)(?:-(\d+))?", value, re.IGNORECASE)
++    match = re.search(
++        r"client_port=([0-9]{1,5})(?![0-9])"
++        r"(?:-([0-9]{1,5})(?![0-9]))?(?![-0-9])",
++        value,
++        re.IGNORECASE,
++    )
+     if match:
+-        return int(match.group(1)), int(match.group(2) or "0")
++        rtp = _parse_port(match.group(1))
++        rtcp = _parse_port(match.group(2) or "0", allow_zero=True)
++        if rtp is not None and rtcp is not None:
++            return rtp, rtcp
+     return None
+diff --git a/tests/test_wfd_rtsp_limits.py b/tests/test_wfd_rtsp_limits.py
+index f10e22a..48b2828 100644
+--- a/tests/test_wfd_rtsp_limits.py
++++ b/tests/test_wfd_rtsp_limits.py
+@@ -11,6 +11,8 @@ from wfd.rtsp.message import (
+     RTSP_MAX_HEADERS,
+     RTSP_MAX_LINE_BYTES,
+     RTSPMessageError,
++    _parse_rtp_ports,
++    _parse_transport_client_ports,
+     _read_rtsp_message,
+ )
+ from wfd.rtsp.rtsp_server import RTSP_MAX_CONNECTION_WORKERS, _ThreadingTCPServer
+@@ -76,6 +78,38 @@ class RTSPMessageLimitTest(unittest.TestCase):
+             _read_rtsp_message(io.BytesIO(b"OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n"))
+ 
+ 
++class RTSPPortLimitTest(unittest.TestCase):
++    def test_valid_rtp_ports_are_accepted(self):
++        self.assertEqual(
++            _parse_rtp_ports("RTP/AVP/UDP;unicast 65535 0 mode=play"),
++            (65535, 0),
++        )
++        self.assertEqual(
++            _parse_transport_client_ports("RTP/AVP/UDP;unicast;client_port=19000-19001"),
++            (19000, 19001),
++        )
++
++    def test_invalid_primary_ports_are_rejected(self):
++        for port in ("0", "65536", "9" * 5000):
++            with self.subTest(port=port[:10]):
++                self.assertIsNone(
++                    _parse_rtp_ports(f"RTP/AVP/UDP;unicast {port} 0 mode=play")
++                )
++                self.assertIsNone(
++                    _parse_transport_client_ports(f"client_port={port}-19001")
++                )
++
++    def test_invalid_secondary_ports_are_rejected(self):
++        for port in ("65536", "9" * 5000):
++            with self.subTest(port=port[:10]):
++                self.assertIsNone(
++                    _parse_rtp_ports(f"RTP/AVP/UDP;unicast 19000 {port} mode=play")
++                )
++                self.assertIsNone(
++                    _parse_transport_client_ports(f"client_port=19000-{port}")
++                )
++
++
+ class RTSPDeadlineTest(unittest.TestCase):
+     def setUp(self):
+         self.reader_sock, self.writer_sock = socket.socketpair()
+-- 
+2.55.0
+
