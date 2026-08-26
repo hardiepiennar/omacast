@@ -271,10 +271,10 @@ compatible-channel tests pass.
 - `work/` remains ignored research state and is not a production dependency.
   A fresh local clone of `1026b5b` passed the official Omarchy validator and
   the complete controller suite without it.
-- The FluxCast compatibility history is preserved as 32 numbered patches under
+- The FluxCast compatibility history is preserved as 34 numbered patches under
   `patches/` and applied by the tracked Arch recipe to pinned upstream commit
-  `9d27c39`. The production series applies 26 receiver-relevant patches:
-  1–6, 9–22, and 27–32. Portal-only patches 7–8, rejected FLV patch 23,
+  `9d27c39`. The production series applies 28 receiver-relevant patches:
+  1–6, 9–22, and 27–34. Portal-only patches 7–8, rejected FLV patch 23,
   portal/window patches 24–25, and rejected MPEG-TS patch 26 remain tracked
   research and are excluded from shipping.
 - The live host now runs `fluxcast-omarchy-cast 0.1.5.r3.omarchy-36` with all
@@ -619,7 +619,7 @@ read-only doctor/monitor/status probes, live named-receiver discovery,
 versioned state and telemetry, guarded production connect, cooperative Stop,
 stale-state recovery, bounded private logs, and safe offline lifecycle and
 protocol fixtures. `scripts/bootstrap-fluxcast` and the Arch recipe recreate
-the pinned engine from upstream commit `9d27c39` plus the complete 27-patch
+the pinned engine from upstream commit `9d27c39` plus the complete 28-patch
 series. A fresh clone of release-candidate commit `1026b5b` passes the official
 Omarchy validator and all non-hardware controller tests without `work/`.
 
@@ -737,6 +737,16 @@ gate passed: the retry connected and streamed cleanly, and GUI Stop restored an
 idle controller, connected infrastructure Wi-Fi, empty WFD metadata, and no
 session P2P interface, broker state, or media process.
 
+Offline shutdown note (2026-08-26): production patch 34 makes SIGTERM enter the
+same WFD unwind as Ctrl+C, then restores the caller's prior signal handler. The
+session now owns and cancels the active-probe thread and outbound socket, joins
+it with a deadline, and registers probe-started media before spawning children
+so ordinary media cleanup can always reach it. Stop during initial probe wait,
+peer lookup, connection, media startup, and the live session has direct
+regression coverage. Package revision 53 retains guard API 10. Because this
+changes the successful GUI Stop path, one short receiver-backed start/Stop gate
+remains before release.
+
 ### Phase E — build the Omarchy plugin UI
 
 Implementation note (updated 2026-08-24): the repository contains a schema-version-1
@@ -758,7 +768,7 @@ the shell's native toggle route and the bar icon opens the same current-display
 workflow without reading window metadata, taking a screenshot, or opening a
 portal picker. Live discovery identifies receivers without a hard-coded MAC.
 `scripts/validate-plugin` stages the installable payload without the ignored
-local `work/` tree. The shipped 27-patch engine series contains the proven
+local `work/` tree. The shipped 28-patch engine series contains the proven
 display route plus fail-closed selected-receiver admission and bounded RTSP
 input/progress handling. Portal-only patches
 7–8, receiver-rejected FLV patch 23, portal

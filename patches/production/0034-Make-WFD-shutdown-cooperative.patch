@@ -1,0 +1,475 @@
+From 5ff387a78e71b10ce32095fcbb155ef5c1893e3b Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 22:22:44 +1200
+Subject: [PATCH] Make WFD shutdown cooperative
+
+---
+ src/main.py                            |  20 +++-
+ src/wfd/p2p/addressing.py              |  12 ++-
+ src/wfd/probe.py                       | 117 +++++++++++++++++++-
+ src/wfd/session.py                     |  18 ++--
+ tests/test_wfd_cooperative_shutdown.py | 142 +++++++++++++++++++++++++
+ 5 files changed, 288 insertions(+), 21 deletions(-)
+ create mode 100644 tests/test_wfd_cooperative_shutdown.py
+
+diff --git a/src/main.py b/src/main.py
+index 6389408..18c6ba3 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -72,6 +72,11 @@ from capture import prompt_monitor, start_capture, stop_capture
+ from server import HLS_DIR, CorsHLSRequestHandler, HLSRequestHandler, StreamServer
+ 
+ 
++def _wfd_sigterm(_signum, _frame) -> None:
++    """Turn service-manager termination into the WFD path's normal unwind."""
++    raise KeyboardInterrupt
++
++
+ def get_local_ip() -> str:
+     try:
+         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+@@ -320,11 +325,18 @@ def main() -> None:
+ 
+     if args.protocol == "wfd":
+         from wfd import WFDNotReady, start_experimental_backend
++        previous_sigterm = signal.getsignal(signal.SIGTERM)
++        signal.signal(signal.SIGTERM, _wfd_sigterm)
+         try:
+-            start_experimental_backend(args)
+-        except WFDNotReady as exc:
+-            print(f"[FluxCast WFD] ERROR: {exc}")
+-            sys.exit(1)
++            try:
++                start_experimental_backend(args)
++            except WFDNotReady as exc:
++                print(f"[FluxCast WFD] ERROR: {exc}")
++                sys.exit(1)
++            except KeyboardInterrupt:
++                pass
++        finally:
++            signal.signal(signal.SIGTERM, previous_sigterm)
+         return
+ 
+     host = args.host or get_local_ip()
+diff --git a/src/wfd/p2p/addressing.py b/src/wfd/p2p/addressing.py
+index f4da9fa..adea26b 100644
+--- a/src/wfd/p2p/addressing.py
++++ b/src/wfd/p2p/addressing.py
+@@ -1,7 +1,7 @@
+ import re
+ import shutil
+ import time
+-from typing import Optional
++from typing import Callable, Optional
+ 
+ from ..proc import _run
+ 
+@@ -119,14 +119,22 @@ def _wait_for_peer_ip(
+     *,
+     interface: Optional[str] = None,
+     allow_interface_fallback: bool = True,
++    cancelled: Optional[Callable[[], bool]] = None,
+ ) -> Optional[str]:
+     """Poll ARP until the peer's IP appears (DHCP may take a few seconds)."""
+     deadline = time.monotonic() + timeout
+     while time.monotonic() < deadline:
++        if cancelled is not None and cancelled():
++            return None
+         ip = _get_peer_ip_from_arp(peer_mac, interface=interface)
+         if not ip and allow_interface_fallback:
+             ip = _get_peer_ip_from_p2p_iface()
+         if ip:
+             return ip
+-        time.sleep(0.75)
++        if cancelled is not None:
++            if cancelled():
++                return None
++            time.sleep(0.1)
++        else:
++            time.sleep(0.75)
+     return None
+diff --git a/src/wfd/probe.py b/src/wfd/probe.py
+index f2362c8..eae78b4 100644
+--- a/src/wfd/probe.py
++++ b/src/wfd/probe.py
+@@ -1,5 +1,6 @@
+ import random
+ import socket
++import threading
+ import time
+ from dataclasses import replace
+ from typing import Optional
+@@ -23,14 +24,105 @@ from .rtsp.message import (
+ from .rtsp.rtsp_server import WFDRTSPServer
+ 
+ 
++class ActiveRTSPProbe:
++    """Own the outbound probe thread and the socket that can unblock it."""
++
++    def __init__(self, rtsp_server: WFDRTSPServer, peer: WFDPeer, media_config: WFDMediaConfig) -> None:
++        self.rtsp_server = rtsp_server
++        self.peer = peer
++        self.media_config = media_config
++        self._stop = threading.Event()
++        self._socket_lock = threading.Lock()
++        self._socket: Optional[socket.socket] = None
++        self._thread: Optional[threading.Thread] = None
++
++    def start(self) -> None:
++        if self._thread is not None:
++            raise RuntimeError("active RTSP probe already started")
++        self._thread = threading.Thread(
++            target=_active_rtsp_probe,
++            args=(self.rtsp_server, self.peer, self.media_config, self),
++            daemon=True,
++            name="wfd-active-rtsp-probe",
++        )
++        self._thread.start()
++
++    def cancelled(self) -> bool:
++        return self._stop.is_set()
++
++    def wait(self, timeout: float) -> bool:
++        return self._stop.wait(timeout)
++
++    def attach_socket(self, value: socket.socket) -> bool:
++        with self._socket_lock:
++            if self.cancelled():
++                return False
++            self._socket = value
++            return True
++
++    def detach_socket(self, value: socket.socket) -> None:
++        with self._socket_lock:
++            if self._socket is value:
++                self._socket = None
++
++    def stop(self) -> None:
++        self._stop.set()
++        with self._socket_lock:
++            active_socket = self._socket
++            self._socket = None
++        if active_socket is not None:
++            try:
++                active_socket.shutdown(socket.SHUT_RDWR)
++            except OSError:
++                pass
++            try:
++                active_socket.close()
++            except OSError:
++                pass
++        thread = self._thread
++        if (
++            thread is not None
++            and thread.ident is not None
++            and thread is not threading.current_thread()
++        ):
++            thread.join(timeout=6.0)
++            if thread.is_alive():
++                raise RuntimeError("active RTSP probe did not stop within its deadline")
++
++
++def _start_probe_media(rtsp_server: WFDRTSPServer, media: WFDMediaPipeline) -> None:
++    """Publish probe media to the session before starting its child processes."""
++    rtsp_server._register_media(media)
++    try:
++        media.start()
++    except BaseException:
++        try:
++            rtsp_server._unregister_media(media)
++        except Exception:
++            pass
++        raise
++
++
++def _stop_probe_media(rtsp_server: WFDRTSPServer, media: WFDMediaPipeline) -> None:
++    try:
++        media.stop()
++    finally:
++        rtsp_server._unregister_media(media)
++
++
+ def _active_rtsp_probe(
+     rtsp_server: WFDRTSPServer,
+     peer: WFDPeer,
+     media_config: WFDMediaConfig,
++    control: Optional[ActiveRTSPProbe] = None,
+ ) -> None:
+     # 4s: give passive-RTSP TVs a window to connect first, without burning too
+     # much of the cca 15 s timeout that some TVs enforce after P2P activation.
+-    time.sleep(4.0)
++    if control is not None:
++        if control.wait(4.0):
++            return
++    else:
++        time.sleep(4.0)
+     if rtsp_server.has_connected_client:
+         return
+ 
+@@ -44,7 +136,10 @@ def _active_rtsp_probe(
+         timeout=8.0,
+         interface=rtsp_server.interface,
+         allow_interface_fallback=False,
++        cancelled=control.cancelled if control is not None else None,
+     )
++    if control is not None and control.cancelled():
++        return
+     if not tv_ip:
+         print(
+             f"[FluxCast WFD RTSP] Active probe: selected TV IP not found for MAC "
+@@ -71,11 +166,17 @@ def _active_rtsp_probe(
+         print(f"[FluxCast WFD RTSP] Active probe: connect error: {exc}")
+         return
+ 
++    if control is not None and not control.attach_socket(sock):
++        sock.close()
++        return
++
+     print(f"[FluxCast WFD RTSP] Active probe: connected to TV RTSP at {tv_ip}:{tv_port}")
+     claim = rtsp_server.claim_client(tv_ip, replace_unconfirmed=True)
+     if claim is None:
+         print(f"[FluxCast WFD RTSP] Active probe: rejected unverified or duplicate client {tv_ip}")
+         sock.close()
++        if control is not None:
++            control.detach_socket(sock)
+         return
+     try:
+         sock.settimeout(8.0)
+@@ -86,6 +187,8 @@ def _active_rtsp_probe(
+         print(f"[FluxCast WFD RTSP] Active probe: socket setup failed: {exc}")
+         sock.close()
+         rtsp_server.release_client(tv_ip, claim)
++        if control is not None:
++            control.detach_socket(sock)
+         return
+     local_uri = f"rtsp://{local_ip}:{rtsp_server.port}/wfd1.0"
+     session_id = str(random.randint(1_000_000, 9_999_999))
+@@ -258,7 +361,7 @@ def _active_rtsp_probe(
+                         )
+                         if eff_cfg.aosp_pmt_pid:
+                             print("[FluxCast WFD RTSP] AOSP-compatible MPEG-TS requested: PMT 0x0100, PSI version 1 (#84).")
+-                        media.start()
++                        _start_probe_media(rtsp_server, media)
+                         schedule_ts_dump_report(eff_cfg.dump_ts_path)
+                         # Keep-alive: respond to GET_PARAMETER/SET_PARAMETER heartbeats.
+                         while True:
+@@ -282,7 +385,11 @@ def _active_rtsp_probe(
+     except (OSError, RTSPMessageError) as exc:
+         print(f"[FluxCast WFD RTSP] Active probe: I/O error: {exc}")
+     finally:
+-        if media is not None:
+-            media.stop()
+-        rtsp_server.release_client(tv_ip, claim)
++        try:
++            if media is not None:
++                _stop_probe_media(rtsp_server, media)
++        finally:
++            if control is not None:
++                control.detach_socket(sock)
++            rtsp_server.release_client(tv_ip, claim)
+     print("[FluxCast WFD RTSP] Active probe: session ended.")
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 55c89e4..297ff61 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -1,4 +1,3 @@
+-import threading
+ import time
+ 
+ from diagnostics import print_report, run_diagnostics
+@@ -21,7 +20,7 @@ from .p2p.supplicant import (
+     run_supplicant_role_test,
+ )
+ from .p2p.broker import broker_request
+-from .probe import _active_rtsp_probe
++from .probe import ActiveRTSPProbe
+ from .rtsp.rtsp_server import WFDRTSPServer
+ 
+ 
+@@ -151,6 +150,7 @@ def start_experimental_backend(args) -> None:
+     active_path = ""
+     previous_go_intent = None
+     supplicant_interface_path = ""
++    active_probe = None
+     if p2p_backend == "supplicant" and not broker_path:
+         supplicant_interface_path = _supplicant_interface_path(args.wfd_interface)
+     try:
+@@ -181,14 +181,10 @@ def start_experimental_backend(args) -> None:
+             if getattr(args, "wfd_uibc", False):
+                 uibc_firewall_opened = _open_wfd_firewall_port(WFD_UIBC_PORT)
+ 
+-        # Active probe for newer TVs (Samsung 2024++, some LGs)
+-        # It runs in a background thread to not block the main loop.
+-        probe_thread = threading.Thread(
+-            target=_active_rtsp_probe,
+-            args=(rtsp, peer, media_config),
+-            daemon=True,
+-        )
+-        probe_thread.start()
++        # Active probe for newer TVs (Samsung 2024++, some LGs). The session
++        # owns its thread, outbound socket, and any media it starts.
++        active_probe = ActiveRTSPProbe(rtsp, peer, media_config)
++        active_probe.start()
+ 
+         print("[FluxCast WFD] Waiting for TV RTSP/WFD session. Press Ctrl+C to stop.")
+         while True:
+@@ -199,6 +195,8 @@ def start_experimental_backend(args) -> None:
+         except KeyboardInterrupt:
+             pass
+     finally:
++        if active_probe is not None:
++            _cleanup_step("active RTSP probe shutdown", active_probe.stop)
+         _cleanup_step("media shutdown", rtsp.stop_all_media)
+         _cleanup_step("TS dump report",
+                       lambda: report_ts_dump(media_config.dump_ts_path))
+diff --git a/tests/test_wfd_cooperative_shutdown.py b/tests/test_wfd_cooperative_shutdown.py
+new file mode 100644
+index 0000000..d425a48
+--- /dev/null
++++ b/tests/test_wfd_cooperative_shutdown.py
+@@ -0,0 +1,142 @@
++import signal
++import socket
++import unittest
++from types import SimpleNamespace
++from unittest import mock
++
++import main as fluxcast_main
++from wfd.config import WFDMediaConfig
++from wfd.ie import WFDPeer
++from wfd.p2p.addressing import _wait_for_peer_ip
++from wfd.probe import ActiveRTSPProbe, _start_probe_media, _stop_probe_media
++from wfd.session import start_experimental_backend
++
++
++class WFDSignalTest(unittest.TestCase):
++    def test_sigterm_enters_the_existing_keyboard_interrupt_unwind(self):
++        with self.assertRaises(KeyboardInterrupt):
++            fluxcast_main._wfd_sigterm(signal.SIGTERM, None)
++
++    def test_wfd_main_installs_and_restores_its_sigterm_handler(self):
++        args = SimpleNamespace(
++            transport="unused",
++            protocol="wfd",
++            tray=False,
++            doctor=False,
++            doctor_json=False,
++            wfd_scan=False,
++        )
++        previous = signal.getsignal(signal.SIGTERM)
++        with mock.patch.object(fluxcast_main, "parse_args", return_value=args), mock.patch(
++            "wfd.start_experimental_backend",
++            side_effect=lambda _args: fluxcast_main._wfd_sigterm(signal.SIGTERM, None),
++        ) as start:
++            fluxcast_main.main()
++        start.assert_called_once_with(args)
++        self.assertIs(signal.getsignal(signal.SIGTERM), previous)
++
++
++class ActiveProbeOwnershipTest(unittest.TestCase):
++    def test_stop_cancels_and_joins_probe_during_initial_wait(self):
++        probe = ActiveRTSPProbe(
++            SimpleNamespace(has_connected_client=False),
++            WFDPeer(address="00:11:22:33:44:55", name="TV"),
++            WFDMediaConfig(monitor=None),
++        )
++        probe.start()
++        probe.stop()
++        self.assertIsNotNone(probe._thread)
++        self.assertFalse(probe._thread.is_alive())
++
++    def test_stop_closes_an_owned_outbound_socket(self):
++        probe = ActiveRTSPProbe(
++            SimpleNamespace(),
++            WFDPeer(address="00:11:22:33:44:55", name="TV"),
++            WFDMediaConfig(monitor=None),
++        )
++        owned, peer = socket.socketpair()
++        try:
++            self.assertTrue(probe.attach_socket(owned))
++            probe.stop()
++            self.assertEqual(owned.fileno(), -1)
++            self.assertEqual(peer.recv(1), b"")
++        finally:
++            peer.close()
++
++    def test_probe_media_is_registered_before_start_and_always_unregistered(self):
++        parent = mock.Mock()
++        media = mock.Mock()
++        calls = mock.Mock()
++        calls.attach_mock(parent._register_media, "register")
++        calls.attach_mock(media.start, "start")
++        calls.attach_mock(media.stop, "stop")
++        calls.attach_mock(parent._unregister_media, "unregister")
++
++        _start_probe_media(parent, media)
++        _stop_probe_media(parent, media)
++
++        self.assertEqual(
++            calls.mock_calls,
++            [mock.call.register(media), mock.call.start(), mock.call.stop(), mock.call.unregister(media)],
++        )
++
++    def test_probe_media_start_failure_releases_session_ownership(self):
++        parent = mock.Mock()
++        media = mock.Mock()
++        media.start.side_effect = RuntimeError("spawn failed")
++        with self.assertRaisesRegex(RuntimeError, "spawn failed"):
++            _start_probe_media(parent, media)
++        parent._register_media.assert_called_once_with(media)
++        parent._unregister_media.assert_called_once_with(media)
++
++    def test_peer_lookup_observes_cancellation_before_polling(self):
++        with mock.patch("wfd.p2p.addressing._get_peer_ip_from_arp") as lookup:
++            self.assertIsNone(
++                _wait_for_peer_ip(
++                    "00:11:22:33:44:55",
++                    interface="wlan0",
++                    cancelled=lambda: True,
++                )
++            )
++        lookup.assert_not_called()
++
++
++class WFDSessionShutdownTest(unittest.TestCase):
++    def test_keyboard_interrupt_stops_probe_media_server_and_broker(self):
++        args = SimpleNamespace(
++            wfd_no_firewall=True,
++            wfd_test_pattern=True,
++            wfd_dry_run=False,
++            wfd_interface="wlan0",
++            wfd_timeout=1,
++            wfd_p2p_backend="supplicant",
++            wfd_supplicant_broker="/run/omarchy-cast/" + "a" * 32 + "/supplicant.sock",
++            fps=60,
++            bitrate="4M",
++            output_res="1280x720",
++        )
++        report = SimpleNamespace(wfd_candidate=True)
++        peer = WFDPeer(address="00:11:22:33:44:55", name="TV")
++        rtsp = mock.Mock()
++        probe = mock.Mock()
++
++        with mock.patch("wfd.session.run_diagnostics", return_value=report), mock.patch(
++            "wfd.session.print_report"
++        ), mock.patch("wfd.session._scan_and_select", return_value=peer), mock.patch(
++            "wfd.session.WFDRTSPServer", return_value=rtsp
++        ), mock.patch("wfd.session.connect_supplicant_group"), mock.patch(
++            "wfd.session.ActiveRTSPProbe", return_value=probe
++        ), mock.patch("wfd.session.time.sleep", side_effect=KeyboardInterrupt), mock.patch(
++            "wfd.session.broker_request", return_value={"cleaned": True}
++        ) as broker, mock.patch("wfd.session.report_ts_dump"):
++            start_experimental_backend(args)
++
++        probe.start.assert_called_once_with()
++        probe.stop.assert_called_once_with()
++        rtsp.stop_all_media.assert_called_once_with()
++        rtsp.stop.assert_called_once_with()
++        broker.assert_called_once_with(args.wfd_supplicant_broker, "cleanup", timeout=10.0)
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.55.0
+

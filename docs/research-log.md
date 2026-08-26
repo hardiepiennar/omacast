@@ -1986,3 +1986,34 @@ radio interface present, no transient broker unit or `/run/omarchy-cast`
 session state, and no FluxCast, capture, or mux process. A final privileged
 read returned an empty supplicant `WFDIEs` array. This closes both revision 51's
 selected-group gate and revision 52's broker/cleanup gate.
+
+### Cooperative WFD process shutdown (2026-08-26)
+
+The controller's normal Stop sends SIGTERM to FluxCast, but the WFD branch ran
+before the signal handlers used by the unrelated DLNA/Chromecast path. Default
+SIGTERM termination could therefore bypass the WFD session's `finally` block.
+The source-initiated RTSP probe also owned a daemon thread, outbound socket, and
+potential media pipeline outside the server's active-media collection.
+
+Production patch 34 installs a WFD-scoped SIGTERM handler that raises the same
+`KeyboardInterrupt` used by the existing cooperative Ctrl+C path and restores
+the previous handler afterward. The active probe is now a session-owned object
+with a cancellation event, an owned outbound socket that Stop shuts down to
+unblock RTSP reads, and a bounded thread join. Peer-address polling observes
+cancellation. Probe media is registered with the RTSP server before child
+startup and unregistered on startup failure or final stop, so both direct probe
+cleanup and `stop_all_media()` can reach it.
+
+Regressions cover signal translation and restoration, cancellation during the
+probe's initial wait and peer lookup, outbound-socket shutdown, media ownership
+ordering, media-start failure, and session cleanup through probe, media, RTSP,
+and broker teardown. The exact 28-patch reconstruction passes all 149 FluxCast
+tests. Package revision 53 carries the engine-only change with guard API 10.
+All 177 repository tests, staged Omarchy validation, shell lint, compilation,
+and whitespace gates pass. An exact clean build from implementation commit
+`e4c79472ba0ddff7d777bbb9ea66e29e8472b36b` passes the no-root artifact audit,
+candidate installation/removal, and disposable revision-52 to revision-53
+upgrade/removal lifecycle. Its SHA-256 is
+`3209468140d64a08419495ebd55bb50170b82139c34a45e6bd2908755083cb30`.
+Because the normal GUI Stop path changed, a short receiver-backed start/Stop
+acceptance gate remains open; no live network operation was run for this fix.

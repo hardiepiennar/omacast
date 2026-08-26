@@ -480,6 +480,16 @@
       sound. GUI Stop returned the controller to idle, restored connected
       infrastructure Wi-Fi, cleared WFD metadata, and left no session P2P
       interface, broker/runtime state, or media process.
+- [x] Production patch 34 turns WFD SIGTERM into the existing cooperative
+      unwind and restores the previous handler afterward. The session owns,
+      cancels, and joins the active RTSP probe; its socket is shut down to
+      unblock reads, and probe media is registered before child startup and
+      always unregistered. Signal, wait, lookup, socket, media-start, and full
+      session cleanup regressions pass in the exact 28-patch, 149-test engine
+      reconstruction. Package revision 53 retains guard API 10. Offline
+      repository, artifact, fresh lifecycle, and revision-52 upgrade/removal
+      gates pass. One GUI start/Stop gate remains pending because the successful
+      Stop path changed.
 
 Run this before every release:
 
