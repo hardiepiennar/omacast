@@ -66,6 +66,7 @@ install -m 0644 "${packages[0]}" "$output_dir/$package_name"
   cd "$output_dir"
   sha256sum "$package_name" > SHA256SUMS
   pacman -Qip "$package_name" > PACKAGE-INFO.txt
+  LC_ALL=C pacman -Q | sort > BUILD-ENVIRONMENT.txt
   printf '%s\n' "$source_commit" > SOURCE-COMMIT.txt
 )
 

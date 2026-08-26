@@ -525,6 +525,10 @@ install content from the supplied package. Use them only for a candidate built
 from the clean source commit being released; they do not sandbox an artifact
 obtained from an untrusted source.
 
+For a hosted release, confirm that `BUILD-ENVIRONMENT.txt`,
+`RELEASE-BUILDER.txt`, and `SOURCE-COMMIT.txt` are present and that the builder
+image digest and dated Arch repository snapshot match the reviewed workflow.
+
 The ignored `work/` directory is a local research checkout and is intentionally
 not part of the marketplace payload. Validate through `scripts/validate-plugin`
 or from a clean clone; do not delete research evidence merely to validate the

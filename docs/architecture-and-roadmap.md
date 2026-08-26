@@ -642,6 +642,9 @@ not hostile-package sandboxes. They refuse to proceed without an explicit
 the package built moments earlier from that checked-out commit.
 The root plugin manifest and Python controller package share one release
 version, enforced by the repository test suite.
+Release CI pins the Arch builder image by digest and resolves packages from a
+dated Arch Linux Archive snapshot. Every artifact records the installed package
+inventory, image digest, and repository snapshot alongside its source commit.
 
 - Configure a top-level public remote and trusted package/release channel.
 - Rebuild the companion from a clean public clone as part of release CI. The

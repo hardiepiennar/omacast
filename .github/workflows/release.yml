@@ -35,8 +35,9 @@ jobs:
         run: |
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/workspace" \
-            archlinux:base-devel \
+            archlinux:base-devel@sha256:68bfc3b0d277b08a99101dc9b94aaa03e5ae70cf1b4fb965c03b2b87b915760d \
             bash -euo pipefail -c '
+              printf "%s\n" "Server = https://archive.archlinux.org/repos/2026/08/24/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
               pacman -Syu --needed --noconfirm \
                 fakeroot ffmpeg git gpu-screen-recorder iproute2 iw libpulse \
                 networkmanager polkit python python-build python-dbus-next \
@@ -50,6 +51,10 @@ jobs:
               runuser -u builder -- /build/source/scripts/build-release-artifact /build/dist
               runuser -u builder -- /build/source/scripts/audit-release-artifact --trusted-local-artifact /build/dist/fluxcast-omarchy-cast-*.pkg.tar.zst
               runuser -u builder -- /build/source/scripts/test-package-lifecycle --trusted-local-artifact /build/dist/fluxcast-omarchy-cast-*.pkg.tar.zst
+              printf "%s\n" \
+                "image=archlinux:base-devel@sha256:68bfc3b0d277b08a99101dc9b94aaa03e5ae70cf1b4fb965c03b2b87b915760d" \
+                "repository_snapshot=2026/08/24" \
+                > /build/dist/RELEASE-BUILDER.txt
               cp -a /build/dist /workspace/dist
             '
 
@@ -81,6 +86,8 @@ jobs:
             dist/*.pkg.tar.zst \
             dist/SHA256SUMS \
             dist/PACKAGE-INFO.txt \
+            dist/BUILD-ENVIRONMENT.txt \
+            dist/RELEASE-BUILDER.txt \
             dist/SOURCE-COMMIT.txt \
             --verify-tag \
             --title "Omacast $GITHUB_REF_NAME" \

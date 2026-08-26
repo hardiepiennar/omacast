@@ -387,6 +387,15 @@ The review also found that the plugin manifest reported `0.1.1` while the
 Python controller metadata remained at `0.1.0`. The controller now reports
 `0.1.1`, and a repository test requires both release versions to remain equal.
 
+Dependency-level release reproduction was then closed over the tracked build
+inputs. Release CI pins the official `archlinux:base-devel` OCI index digest to
+`sha256:68bfc3b0d277b08a99101dc9b94aaa03e5ae70cf1b4fb965c03b2b87b915760d`
+and resolves packages only from the Arch Linux Archive snapshot dated
+2026-08-24. `BUILD-ENVIRONMENT.txt` records every installed package version;
+`RELEASE-BUILDER.txt` records the image and snapshot; `SOURCE-COMMIT.txt`
+continues to bind the source. Future dependency updates must change these
+reviewed pins explicitly.
+
 ### Long-session cadence and lifecycle evidence (2026-08-23)
 
 A package-owned real-desktop cast ran for about 20.5 minutes and transmitted

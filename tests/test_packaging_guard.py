@@ -706,6 +706,7 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn('git clone --quiet --no-local "$repo_root"', builder)
         self.assertIn('[[ "$clone_commit" == "$source_commit" ]]', builder)
         self.assertIn('sha256sum "$package_name" > SHA256SUMS', builder)
+        self.assertIn('pacman -Q | sort > BUILD-ENVIRONMENT.txt', builder)
         self.assertIn('mktemp -d -p /tmp "omacast-release-build.${UID}.XXXXXXXX"', builder)
         self.assertIn('"$(stat -c %u:%a "$build_root")" == "$UID:700"', builder)
         self.assertNotIn('omacast-release-build-${UID}.lock', builder)
@@ -801,6 +802,10 @@ if record_session_interfaces; then exit 3; fi
         self.assertLess(workflow.index("scripts/test-package-lifecycle"), workflow.index("actions/attest-build-provenance@"))
         self.assertIn('[[ "$GITHUB_REF_NAME" == "v$version" ]]', workflow)
         self.assertIn('[[ "$(cat dist/SOURCE-COMMIT.txt)" == "$GITHUB_SHA" ]]', workflow)
+        self.assertRegex(workflow, r"archlinux:base-devel@sha256:[0-9a-f]{64}")
+        self.assertIn("archive.archlinux.org/repos/2026/08/24", workflow)
+        self.assertIn("BUILD-ENVIRONMENT.txt", workflow)
+        self.assertIn("RELEASE-BUILDER.txt", workflow)
         for dependency in ("ffmpeg", "iproute2", "iw", "libpulse", "networkmanager", "polkit", "systemd", "wpa_supplicant"):
             self.assertIn(dependency, workflow)
 
