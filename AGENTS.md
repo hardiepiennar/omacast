@@ -26,6 +26,10 @@ Rules for future work:
   `omarchy plugin validate .` once plugin files exist.
 - Do not run a live Fire TV/network test until the user confirms that the TV is
   waiting in Display Mirroring and understands the temporary network impact.
+- Never start an interactive `sudo` password prompt inside a hidden command
+  session. For an action that needs user authorization, use a visible desktop
+  authorization flow such as `pkexec`, or ask the user to run the command in a
+  terminal they can see.
 - Preserve conflicting evidence in the research log; mark conclusions
   superseded instead of rewriting history.
 - Update the canonical plan and acceptance evidence as decisions change.
