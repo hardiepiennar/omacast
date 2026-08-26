@@ -196,7 +196,10 @@ smoothness, continuous internet access, and audio/video sync all matter.
   completion deadline, established sessions may remain legitimately idle, and
   the passive listener admits at most four concurrent workers. Oversized,
   malformed, truncated, stalled, and excess-connection cases fail before they
-  can begin a new capture pipeline.
+  can begin a new capture pipeline. A revision-44 GUI run then connected to the
+  stock Fire TV, streamed with picture and sound accepted by the user, and
+  returned to idle through GUI Stop with the P2P client removed and normal
+  infrastructure Wi-Fi connected.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the

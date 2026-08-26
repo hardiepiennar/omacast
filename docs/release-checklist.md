@@ -392,11 +392,12 @@
       size, and link count before truncation, and renews one pinned descriptor
       until Stop. FIFO, link, oversized/public-file, unsafe-parent, and
       post-open replacement regressions pass without changing unrelated data.
-- [ ] Production patch 28 bounds every receiver-facing RTSP line, header set,
+- [x] Production patch 28 bounds every receiver-facing RTSP line, header set,
       and body; rejects malformed or truncated lengths; times out negotiation
       and partial messages; and limits passive workers to four. The exact
-      reconstruction and offline adversarial suite pass. A short Fire TV
-      connect/stream/Stop run remains required because RTSP timing changed.
+      reconstruction and offline adversarial suite pass. Revision 44 also
+      completed a GUI Fire TV connect/stream/Stop run with user-accepted picture
+      and sound, idle controller state, removed P2P client, and connected Wi-Fi.
 
 Run this before every release:
 

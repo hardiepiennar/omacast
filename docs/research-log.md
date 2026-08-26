@@ -1662,3 +1662,13 @@ and worker-start failure. The exact 22-patch reconstruction passes all 117
 engine tests. A short receiver connect/stream/Stop acceptance remains open
 because this changes the RTSP timing path; no live network operation was run
 during the offline remediation.
+
+The clean-built revision-44 package was subsequently installed over revision
+41 and exercised through the normal Omacast GUI with the stock Fire TV waiting
+in Display Mirroring. Negotiation completed, the desktop and audio played, and
+the user reported that the result looked good. The user then stopped through
+the GUI. The controller returned to `idle`; FluxCast, media, guard, RTSP socket,
+and transient session service were absent; the session P2P client was removed;
+and the original infrastructure Wi-Fi remained connected. This closes the
+receiver acceptance gate for patch 28 without claiming a soak or broader
+receiver result.
