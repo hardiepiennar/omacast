@@ -1,0 +1,252 @@
+From 5668fe47a09e5a59e2a15796478349a3b92364a4 Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Wed, 26 Aug 2026 20:55:52 +1200
+Subject: [PATCH] Clean up partial WFD media startup
+
+---
+ src/wfd/media/wlroots.py                |  72 ++++++++----
+ tests/test_wfd_media_startup_cleanup.py | 141 ++++++++++++++++++++++++
+ 2 files changed, 192 insertions(+), 21 deletions(-)
+ create mode 100644 tests/test_wfd_media_startup_cleanup.py
+
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 6080c3a..8ad014a 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -13,6 +13,20 @@ from ..net import _ffmpeg_sender_args
+ from ..progress import _start_ffmpeg_progress_drain
+ 
+ 
++def _stop_startup_process(proc: subprocess.Popen[bytes]) -> None:
++    """Best-effort bounded cleanup without hiding the startup failure."""
++    try:
++        if proc.poll() is None:
++            proc.terminate()
++        try:
++            proc.wait(timeout=2)
++        except subprocess.TimeoutExpired:
++            proc.kill()
++            proc.wait(timeout=1)
++    except (OSError, subprocess.SubprocessError):
++        pass
++
++
+ class WlrootsMixin:
+     def _start_desktop_wf_recorder(self) -> None:
+         if not shutil.which("gpu-screen-recorder"):
+@@ -113,28 +127,44 @@ class WlrootsMixin:
+             f"{self.tv_ip}:{self.sink_rtp_port} from local port {self.config.source_port}"
+         )
+ 
+-        capture_proc = subprocess.Popen(capture_cmd, stdout=subprocess.PIPE, stderr=None)
+-        if capture_proc.stdout is None:
+-            capture_proc.kill()
+-            raise WFDNotReady("gpu-screen-recorder did not expose stdout.")
++        started_processes: list[subprocess.Popen[bytes]] = []
++        capture_proc = None
++        progress_thread = None
++        try:
++            capture_proc = subprocess.Popen(capture_cmd, stdout=subprocess.PIPE, stderr=None)
++            started_processes.append(capture_proc)
++            if capture_proc.stdout is None:
++                raise WFDNotReady("gpu-screen-recorder did not expose stdout.")
+ 
+-        ffmpeg_proc = subprocess.Popen(
+-            ffmpeg_cmd,
+-            stdin=capture_proc.stdout,
+-            stderr=subprocess.PIPE if self.config.progress_log_path else None,
+-        )
+-        capture_proc.stdout.close()
+-        if self.config.progress_log_path and ffmpeg_proc.stderr is not None:
+-            self._progress_threads.append(
+-                _start_ffmpeg_progress_drain(ffmpeg_proc.stderr, self.config.progress_log_path)
++            ffmpeg_proc = subprocess.Popen(
++                ffmpeg_cmd,
++                stdin=capture_proc.stdout,
++                stderr=subprocess.PIPE if self.config.progress_log_path else None,
+             )
+-        time.sleep(1.0)
++            started_processes.append(ffmpeg_proc)
++            capture_proc.stdout.close()
++            if self.config.progress_log_path and ffmpeg_proc.stderr is not None:
++                progress_thread = _start_ffmpeg_progress_drain(
++                    ffmpeg_proc.stderr, self.config.progress_log_path
++                )
++            time.sleep(1.0)
+ 
+-        if capture_proc.poll() is not None:
+-            ffmpeg_proc.terminate()
+-            raise WFDNotReady("gpu-screen-recorder exited immediately during WFD streaming.")
+-        if ffmpeg_proc.poll() is not None:
+-            capture_proc.terminate()
+-            raise WFDNotReady("ffmpeg exited immediately during WFD streaming.")
++            if capture_proc.poll() is not None:
++                raise WFDNotReady("gpu-screen-recorder exited immediately during WFD streaming.")
++            if ffmpeg_proc.poll() is not None:
++                raise WFDNotReady("ffmpeg exited immediately during WFD streaming.")
++        except BaseException:
++            if capture_proc is not None and capture_proc.stdout is not None:
++                try:
++                    capture_proc.stdout.close()
++                except OSError:
++                    pass
++            for proc in reversed(started_processes):
++                _stop_startup_process(proc)
++            if progress_thread is not None:
++                progress_thread.join(timeout=2)
++            raise
+ 
+-        self.processes = [capture_proc, ffmpeg_proc]
++        self.processes = started_processes
++        if progress_thread is not None:
++            self._progress_threads.append(progress_thread)
+diff --git a/tests/test_wfd_media_startup_cleanup.py b/tests/test_wfd_media_startup_cleanup.py
+new file mode 100644
+index 0000000..6ba29d1
+--- /dev/null
++++ b/tests/test_wfd_media_startup_cleanup.py
+@@ -0,0 +1,141 @@
++import io
++import subprocess
++import unittest
++from types import SimpleNamespace
++from unittest import mock
++
++from wfd.config import WFDMediaConfig, WFDNotReady
++from wfd.media.pipeline import WFDMediaPipeline
++
++
++class _Process:
++    def __init__(self, *, stdout=False, running=True, ignore_terminate=False):
++        self.stdout = io.BytesIO() if stdout else None
++        self.stderr = None
++        self.running = running
++        self.ignore_terminate = ignore_terminate
++        self.terminate_calls = 0
++        self.kill_calls = 0
++        self.wait_timeouts = []
++
++    def poll(self):
++        return None if self.running else 1
++
++    def terminate(self):
++        self.terminate_calls += 1
++        if not self.ignore_terminate:
++            self.running = False
++
++    def kill(self):
++        self.kill_calls += 1
++        self.running = False
++
++    def wait(self, timeout=None):
++        self.wait_timeouts.append(timeout)
++        if self.running:
++            raise subprocess.TimeoutExpired("process", timeout)
++        return 0
++
++
++def _pipeline():
++    config = WFDMediaConfig(
++        monitor=SimpleNamespace(name="eDP-1", width=1920, height=1080),
++        output_resolution="1280x720",
++        fps=60,
++        bitrate="5M",
++        no_audio=True,
++        capture_backend="wf-recorder",
++    )
++    return WFDMediaPipeline(
++        config,
++        tv_ip="192.168.49.2",
++        local_ip="192.168.49.1",
++        sink_rtp_port=19000,
++    )
++
++
++class WlrootsStartupCleanupTest(unittest.TestCase):
++    def _start(self, pipeline, popen):
++        responses = iter(popen)
++
++        def next_process(*_args, **_kwargs):
++            response = next(responses)
++            if isinstance(response, BaseException):
++                raise response
++            return response
++
++        with mock.patch(
++            "wfd.media.wlroots.shutil.which", return_value="/usr/bin/gpu-screen-recorder"
++        ), mock.patch(
++            "wfd.media.wlroots._detect_audio_monitor", return_value="monitor"
++        ), mock.patch("wfd.media.wlroots.subprocess.Popen", side_effect=next_process), mock.patch(
++            "wfd.media.wlroots.time.sleep"
++        ):
++            pipeline._start_desktop_wf_recorder()
++
++    def test_ffmpeg_spawn_failure_reaps_capture_and_preserves_error(self):
++        pipeline = _pipeline()
++        capture = _Process(stdout=True)
++
++        with self.assertRaisesRegex(OSError, "ffmpeg spawn failed"):
++            self._start(pipeline, [capture, OSError("ffmpeg spawn failed")])
++
++        self.assertTrue(capture.stdout.closed)
++        self.assertEqual(capture.terminate_calls, 1)
++        self.assertEqual(capture.wait_timeouts, [2])
++        self.assertEqual(pipeline.processes, [])
++
++    def test_immediate_capture_exit_reaps_both_children(self):
++        pipeline = _pipeline()
++        capture = _Process(stdout=True, running=False)
++        ffmpeg = _Process()
++
++        with self.assertRaisesRegex(WFDNotReady, "gpu-screen-recorder exited immediately"):
++            self._start(pipeline, [capture, ffmpeg])
++
++        self.assertEqual(ffmpeg.terminate_calls, 1)
++        self.assertEqual(ffmpeg.wait_timeouts, [2])
++        self.assertEqual(capture.terminate_calls, 0)
++        self.assertEqual(capture.wait_timeouts, [2])
++        self.assertEqual(pipeline.processes, [])
++
++    def test_immediate_ffmpeg_exit_reaps_both_children(self):
++        pipeline = _pipeline()
++        capture = _Process(stdout=True)
++        ffmpeg = _Process(running=False)
++
++        with self.assertRaisesRegex(WFDNotReady, "ffmpeg exited immediately"):
++            self._start(pipeline, [capture, ffmpeg])
++
++        self.assertEqual(capture.terminate_calls, 1)
++        self.assertEqual(capture.wait_timeouts, [2])
++        self.assertEqual(ffmpeg.terminate_calls, 0)
++        self.assertEqual(ffmpeg.wait_timeouts, [2])
++        self.assertEqual(pipeline.processes, [])
++
++    def test_cleanup_kills_child_that_ignores_termination(self):
++        pipeline = _pipeline()
++        capture = _Process(stdout=True, ignore_terminate=True)
++
++        with self.assertRaises(OSError):
++            self._start(pipeline, [capture, OSError("ffmpeg spawn failed")])
++
++        self.assertEqual(capture.terminate_calls, 1)
++        self.assertEqual(capture.kill_calls, 1)
++        self.assertEqual(capture.wait_timeouts, [2, 1])
++        self.assertEqual(pipeline.processes, [])
++
++    def test_success_publishes_processes_without_stopping_them(self):
++        pipeline = _pipeline()
++        capture = _Process(stdout=True)
++        ffmpeg = _Process()
++
++        self._start(pipeline, [capture, ffmpeg])
++
++        self.assertEqual(pipeline.processes, [capture, ffmpeg])
++        self.assertEqual(capture.terminate_calls, 0)
++        self.assertEqual(ffmpeg.terminate_calls, 0)
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.55.0
+

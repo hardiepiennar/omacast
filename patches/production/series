@@ -21,3 +21,4 @@
 0027-Authenticate-selected-WFD-receiver.patch
 0028-Bound-receiver-facing-RTSP-input.patch
 0029-Keep-WFD-progress-telemetry-bounded.patch
+0030-Clean-up-partial-WFD-media-startup.patch

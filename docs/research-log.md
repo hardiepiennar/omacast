@@ -1830,3 +1830,29 @@ syntax, production ShellCheck, Python compilation, and git whitespace checks
 pass. The exact-clean revision-48 build passes all 120 FluxCast tests, the
 artifact audit, candidate installation/removal, and disposable revision-47 to
 revision-48 upgrade/removal. No live package or network state was changed.
+
+### Transactional media startup cleanup (2026-08-26)
+
+The exhaustive review found that the supported GPU Screen Recorder path did
+not publish either child into the pipeline's owned process list until both
+capture and FFmpeg had launched and survived their readiness check. If FFmpeg
+failed to spawn, capture remained outside normal teardown. The two
+immediate-exit branches also sent a termination signal to the sibling without
+waiting for it, so a failed cast could leave a running or unreaped child.
+
+Production patch 30 now keeps every successfully spawned child in a private
+startup transaction. Any exception, including interruption during the
+readiness delay, closes the parent copy of the capture pipe and reaps children
+in reverse launch order with bounded terminate, wait, kill, and final-wait
+steps. The original startup exception is preserved. Only a fully healthy pair
+is published to the normal pipeline owner; the progress-drain thread follows
+the same success boundary.
+
+Failure-injection regressions cover FFmpeg spawn failure, immediate capture
+exit, immediate FFmpeg exit, a child that ignores termination, and successful
+ownership publication. The exact 24-patch reconstruction passes all 125
+FluxCast tests. Package revision 49 carries the new engine patch without a
+guard API change. All 163 repository tests, staged Omarchy validation,
+production ShellCheck, and git whitespace checks pass. This remediation does
+not change networking, privilege, receiver negotiation, or the successful
+media command line, so no live Fire TV test was run.

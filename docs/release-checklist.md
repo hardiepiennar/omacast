@@ -437,6 +437,14 @@
       syntax, ShellCheck, compilation, and git whitespace checks pass offline.
       The exact-clean build also passes 120 FluxCast tests, artifact audit,
       candidate lifecycle, and revision-47 to revision-48 upgrade/removal.
+- [x] Production patch 30 treats GPU capture and FFmpeg startup as one owned
+      transaction. Spawn failure, either immediate child exit, and interruption
+      close the capture pipe and reap all started children with bounded
+      terminate/kill escalation before the original error escapes. A child
+      that ignores termination and the successful publication path have direct
+      regressions. The exact 24-patch reconstruction passes 125 FluxCast tests;
+      the repository passes 163 tests and its validation and shell-lint gates.
+      Package revision 49 carries the media-only change with guard API 9.
 
 Run this before every release:
 
