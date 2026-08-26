@@ -2137,3 +2137,22 @@ lifecycle. Its SHA-256 is
 `3c3ea4a7f0ea24a4582611fefe3819573c8febdaac436315efa9dbfc7374db20`.
 No live network state was changed. Receiver timing, stream quality, Stop, and
 cleanup remain the acceptance gate before this candidate is published.
+
+The installed revision-56 package and plugin then completed that gate against
+the stock Fire TV. Identifier-free startup markers recorded engine launch at
+0.299 seconds, RTSP establishment at 9.657 seconds, and first frame at 12.066
+seconds, compared with the earlier approximately 36–40-second startup. After
+the initial capture ramp, three samples over 20 seconds remained healthy at
+60.00–60.49 measured frames per second, 0.992–1.003 realtime ratio, zero
+FFmpeg drops or duplicates, zero radio retries or failures, and zero interface
+drops. The user accepted picture and sound.
+
+GUI Stop recorded cooperative `transport-cancelled` and returned the
+controller to idle. The user service became inactive, infrastructure Wi-Fi
+remained connected, the session P2P interface disappeared, and no engine,
+guard, broker, capture, or mux process or current session runtime remained.
+The root session directory was empty. One private same-UID marker directory
+dated 2026-08-23 remains under the user runtime directory; its timestamp and
+session identity predate revision 56, and the successful session neither owned
+nor altered it. It will naturally disappear with the user runtime at logout
+and is preserved rather than deleted without current ownership evidence.
