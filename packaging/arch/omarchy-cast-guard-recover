@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Independent, bounded cleanup for a helper that was killed or orphaned.
 set -euo pipefail
-[[ ${EUID} -eq 0 && $# -eq 7 ]] || exit 2
-startup_seconds="$1"; lease_seconds="$2"; session="$3"; token="$4"; uid="$5"; interface="$6"; nm_pid="$7"
-[[ "$startup_seconds" =~ ^[0-9]+$ && "$lease_seconds" =~ ^[0-9]+$ && "$lease_seconds" -ge 60 && "$lease_seconds" -le 1800 && "$session" =~ ^[a-f0-9]{32}$ && "$token" =~ ^[a-f0-9]{48}$ && "$uid" =~ ^[1-9][0-9]{3,9}$ && "$interface" =~ ^[A-Za-z0-9_.-]{1,15}$ && "$nm_pid" =~ ^[0-9]+$ ]] || exit 2
-root="/run/omarchy-cast/$session"; user_root="$root/user"; token_file="$root/token"; heartbeat_file="$user_root/heartbeat"; heartbeat_fd=''; network_root='/run/systemd/network'; networkd_state_file="$root/networkd-units"; network_root_marker="$root/network-root-created"; interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"
+[[ ${EUID} -eq 0 && $# -eq 6 ]] || exit 2
+startup_seconds="$1"; lease_seconds="$2"; session="$3"; token="$4"; uid="$5"; interface="$6"
+[[ "$startup_seconds" =~ ^[0-9]+$ && "$lease_seconds" =~ ^[0-9]+$ && "$lease_seconds" -ge 60 && "$lease_seconds" -le 1800 && "$session" =~ ^[a-f0-9]{32}$ && "$token" =~ ^[a-f0-9]{48}$ && "$uid" =~ ^[1-9][0-9]{3,9}$ && "$interface" =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || exit 2
+root="/run/omarchy-cast/$session"; user_root="$root/user"; token_file="$root/token"; heartbeat_file="$user_root/heartbeat"; heartbeat_fd=''; network_root='/run/systemd/network'; networkd_state_file="$root/networkd-units"; network_root_marker="$root/network-root-created"; interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"
 record_session_interfaces() { local candidate listed; [[ -f "$interfaces_file" && ! -L "$interfaces_file" && "$(stat -c '%u:%a' "$interfaces_file" 2>/dev/null)" == "$EUID:600" ]] || return 1; listed="$(iw dev)" || return 1; while read -r candidate; do [[ -n "$candidate" && "$candidate" == "p2p-$interface-"* ]] || continue; grep -Fxq "$candidate" "$interfaces_file" || printf '%s\n' "$candidate" >> "$interfaces_file"; done < <(awk -v prefix="p2p-$interface-" '$1 == "Interface" && index($2, prefix) == 1 {print $2}' <<< "$listed"); }
 remove_session_interfaces() { local owned details type removed all_removed=true; [[ -f "$interfaces_file" && ! -L "$interfaces_file" && "$(stat -c '%u:%a' "$interfaces_file" 2>/dev/null)" == "$EUID:600" ]] || return 1; while read -r owned; do [[ -n "$owned" && "$owned" == "p2p-$interface-"* ]] || continue; if ! details="$(iw dev "$owned" info 2>/dev/null)"; then continue; fi; type="$(awk '$1 == "type" {print $2; exit}' <<< "$details")"; if [[ "$type" != P2P-client ]]; then all_removed=false; continue; fi; removed=false; for _ in 1 2 3; do iw dev "$owned" del 2>/dev/null || true; if ! iw dev "$owned" info >/dev/null 2>&1; then removed=true; break; fi; sleep 0.1; done; [[ "$removed" == true ]] || all_removed=false; done < "$interfaces_file"; [[ "$all_removed" == true ]]; }
 open_heartbeat() {
@@ -25,6 +25,8 @@ lease_fresh() {
   IFS= read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd" || return 1
   [[ "$renewed" =~ ^[0-9]+$ ]] && (( EPOCHSECONDS >= renewed && EPOCHSECONDS - renewed <= lease_seconds ))
 }
+network_manager_marker_valid() { [[ -f "$network_manager_resume_file" && ! -L "$network_manager_resume_file" && "$(stat -c '%u:%a' "$network_manager_resume_file" 2>/dev/null)" == "$EUID:600" ]]; }
+resume_network_manager() { network_manager_marker_valid || { [[ ! -e "$network_manager_resume_file" ]] && return 0; return 1; }; for _ in 1 2 3; do if systemctl kill --kill-whom=main --signal=SIGCONT NetworkManager.service; then rm -f -- "$network_manager_resume_file" || return 1; return 0; fi; sleep 0.1; done; return 1; }
 started="$EPOCHSECONDS"
 while [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; do
   if [[ -n "$heartbeat_fd" ]] || open_heartbeat; then
@@ -36,7 +38,7 @@ while [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; do
 done
 [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]] || exit 0
 if [[ -f "$interfaces_armed_file" && ! -L "$interfaces_armed_file" && "$(stat -c '%u:%a' "$interfaces_armed_file" 2>/dev/null)" == "$EUID:600" ]]; then record_session_interfaces || true; remove_session_interfaces || true; fi
-kill -CONT "$nm_pid" 2>/dev/null || true
+resume_network_manager || exit 1
 if command -v ufw >/dev/null && ufw status | grep -Fq "omarchy-cast-$session"; then ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || true; fi
 remove_network_root=false; [[ -f "$network_root_marker" ]] && remove_network_root=true
 rm -f -- "$network_root/80-omarchy-cast-$session.network" "/etc/dbus-1/system.d/zz-omarchy-cast-$session.conf" "$root/ready.json" "$user_root/trigger" "$heartbeat_file" "$user_root/stop"

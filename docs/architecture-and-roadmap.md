@@ -191,6 +191,11 @@ smoothness, continuous internet access, and audio/video sync all matter.
   then retained as one nonblocking descriptor through the complete session.
   Renewals update only that inode, matching the privileged guard and recovery
   processes that independently pin the same heartbeat before reading it.
+- NetworkManager pause/resume signals are resolved through the systemd unit at
+  signal time rather than a numeric PID retained across authorization and cast
+  lifetime. A private root-owned marker records that this session may require a
+  resume; cleanup and independent recovery validate it, retry unit-scoped
+  `SIGCONT`, and never signal a recycled unrelated process ID.
 - Receiver-facing RTSP input now has explicit line, header-count, aggregate
   header, and body ceilings. Negotiation and partial messages have a ten-second
   completion deadline, established sessions may remain legitimately idle, and

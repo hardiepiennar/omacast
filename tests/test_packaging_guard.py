@@ -23,7 +23,7 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         version = subprocess.run(("bash", str(guard), "--version"), check=False, capture_output=True, text=True)
         self.assertEqual(version.returncode, 0, version.stderr)
-        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 7})
+        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 8})
         source = guard.read_text(encoding="utf-8")
         self.assertIn('[[ "$action" == prepare ]] || usage', source)
         self.assertNotIn('"$action" == stop', source)
@@ -49,7 +49,7 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("systemd network runtime directory is unsafe", source)
         self.assertIn('restore_networkd_state', source)
         self.assertIn('runtime_dirs_created=false', source)
-        self.assertIn("api_revision=7", source)
+        self.assertIn("api_revision=8", source)
         self.assertIn('user_root="$session_root/user"', source)
         self.assertNotIn('user_root="/run/user/', source)
         self.assertIn('install -d -m711 "$session_root"', source)
@@ -57,6 +57,7 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("user marker directory is unsafe", source)
         self.assertIn('interfaces_file="$session_root/p2p-interfaces"', source)
         self.assertIn('interfaces_armed_file="$session_root/p2p-armed"', source)
+        self.assertIn('network_manager_resume_file="$session_root/network-manager-resume-required"', source)
         self.assertIn("record_session_interfaces", source)
         self.assertIn("remove_session_interfaces", source)
         self.assertIn("verify_clean_interface_baseline", source)
@@ -79,6 +80,7 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn('user_root="$root/user"', recovery_source)
         self.assertIn('interfaces_file="$root/p2p-interfaces"', recovery_source)
         self.assertIn('interfaces_armed_file="$root/p2p-armed"', recovery_source)
+        self.assertIn('network_manager_resume_file="$root/network-manager-resume-required"', recovery_source)
         self.assertIn("record_session_interfaces", recovery_source)
         self.assertIn("remove_session_interfaces", recovery_source)
         self.assertIn('heartbeat_fd=', recovery_source)
@@ -91,6 +93,92 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertNotIn(removed_surface, recovery_source)
         self.assertIn("systemctl reload systemd-networkd.service", recovery_source)
         self.assertNotIn('systemctl stop systemd-networkd.service systemd-networkd.socket', recovery_source)
+        for helper_source in (source, recovery_source):
+            self.assertNotIn("nm_pid", helper_source)
+            self.assertNotRegex(helper_source, r"kill\s+-(?:STOP|CONT)")
+            self.assertIn("systemctl kill --kill-whom=main --signal=SIGCONT NetworkManager.service", helper_source)
+        self.assertIn("systemctl kill --kill-whom=main --signal=SIGSTOP NetworkManager.service", source)
+
+    def test_network_manager_pause_is_unit_scoped_owned_and_idempotent(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+network_manager_resume_file="$2"
+calls="$3"
+stop_result=0
+systemctl() {
+  if [[ "$1" == is-active ]]; then return 0; fi
+  printf '%s\n' "$*" >> "$calls"
+  if [[ "$*" == *SIGSTOP* ]]; then return "$stop_result"; fi
+}
+pause_network_manager
+network_manager_marker_valid
+resume_network_manager
+[[ ! -e "$network_manager_resume_file" ]]
+resume_network_manager
+stop_result=1
+if pause_network_manager; then exit 3; fi
+[[ ! -e "$network_manager_resume_file" ]]
+network_manager_resume_file="$2/missing/marker"
+stop_result=0
+if pause_network_manager; then exit 4; fi
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            marker = root / "network-manager-resume-required"
+            calls = root / "calls"
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(marker), str(calls)),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                calls.read_text(encoding="ascii").splitlines(),
+                [
+                    "kill --kill-whom=main --signal=SIGSTOP NetworkManager.service",
+                    "kill --kill-whom=main --signal=SIGCONT NetworkManager.service",
+                    "kill --kill-whom=main --signal=SIGSTOP NetworkManager.service",
+                ],
+            )
+
+    def test_network_manager_resume_failure_retains_recovery_ownership(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+network_manager_resume_file="$2"
+attempts="$3"
+systemctl() {
+  printf '%s\n' "$*" >> "$attempts"
+  return 1
+}
+install -m600 /dev/null "$network_manager_resume_file"
+if resume_network_manager; then exit 3; fi
+network_manager_marker_valid
+systemctl() {
+  printf '%s\n' "$*" >> "$attempts"
+  return 0
+}
+rm() { return 1; }
+if resume_network_manager; then exit 4; fi
+network_manager_marker_valid
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            marker = root / "network-manager-resume-required"
+            attempts = root / "attempts"
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(marker), str(attempts)),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(marker.is_file())
+            self.assertEqual(len(attempts.read_text(encoding="ascii").splitlines()), 4)
 
     def test_root_recovery_never_traverses_user_telemetry(self) -> None:
         recovery_source = (ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover").read_text(encoding="utf-8")

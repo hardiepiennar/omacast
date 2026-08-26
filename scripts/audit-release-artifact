@@ -97,8 +97,8 @@ bash -n "$guard"
 bash -n "$recovery"
 
 guard_version="$($guard --version)"
-python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":7}' "$guard_version" \
-  || die "guard API contract does not match revision 7"
+python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":8}' "$guard_version" \
+  || die "guard API contract does not match revision 8"
 for removed_surface in qos.pid qos_file apply_media_qos renice; do
   ! grep -Fq "$removed_surface" "$guard" || die "guard retains removed privileged QoS surface: $removed_surface"
   ! grep -Fq "$removed_surface" "$recovery" || die "recovery retains removed privileged QoS surface: $removed_surface"
@@ -110,6 +110,13 @@ grep -Fq 'interfaces_file="$session_root/p2p-interfaces"' "$guard" || die "guard
 grep -Fq 'interfaces_file="$root/p2p-interfaces"' "$recovery" || die "recovery lacks root-owned recorded P2P cleanup"
 grep -Fq 'interfaces_armed_file="$session_root/p2p-armed"' "$guard" || die "guard lacks the clean-baseline ownership marker"
 grep -Fq 'interfaces_armed_file="$root/p2p-armed"' "$recovery" || die "recovery lacks the clean-baseline ownership marker"
+grep -Fq 'network_manager_resume_file="$session_root/network-manager-resume-required"' "$guard" || die "guard lacks NetworkManager pause ownership"
+grep -Fq 'network_manager_resume_file="$root/network-manager-resume-required"' "$recovery" || die "recovery lacks NetworkManager pause ownership"
+for helper in "$guard" "$recovery"; do
+  ! grep -Fq 'nm_pid' "$helper" || die "helper retains a recyclable NetworkManager PID"
+  grep -Fq 'systemctl kill --kill-whom=main --signal=SIGCONT NetworkManager.service' "$helper" || die "helper does not resume NetworkManager through its systemd unit"
+done
+grep -Fq 'systemctl kill --kill-whom=main --signal=SIGSTOP NetworkManager.service' "$guard" || die "guard does not pause NetworkManager through its systemd unit"
 for helper in "$guard" "$recovery"; do
   grep -Fq 'stat -Lc '\''%F:%u:%a:%s'\'' "/proc/self/fd/$heartbeat_fd"' "$helper" || die "helper does not validate the pinned heartbeat descriptor"
   grep -Fq 'read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd"' "$helper" || die "helper does not bound pinned heartbeat reads"

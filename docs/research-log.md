@@ -1722,3 +1722,35 @@ requested test and Stop was observed cooperatively. The controller returned to
 `idle`, the session P2P client and media processes were absent, and the original
 infrastructure Wi-Fi remained connected. This closes patch 29's short receiver
 gate without claiming a soak test.
+
+### NetworkManager process identity (2026-08-26)
+
+The exhaustive review found that the privileged helper resolved and validated
+NetworkManager's numeric PID only once, before a trigger wait of up to five
+minutes, then retained it through activation, the complete cast, cleanup, and
+the independent recovery command line. Linux can recycle a PID after its
+process exits, so either later numeric `SIGSTOP` or `SIGCONT` could target an
+unrelated process despite the original `/proc/<pid>/comm` check.
+
+Guard API revision 8 removes the retained PID and recovery argument. The main
+helper now asks systemd to signal only the current main process belonging to
+`NetworkManager.service`. Before the pause request it creates a private
+root-owned `network-manager-resume-required` marker in the protected session
+directory; a failed pause removes that marker. Normal cleanup and independent
+recovery validate the marker before issuing a unit-scoped `SIGCONT`, retry the
+resume three times, remove the marker only after success, and otherwise retain
+the root token and marker as explicit incomplete-cleanup evidence. Calling
+resume again after success is a no-op.
+
+Regression harnesses prove unit-scoped STOP/CONT arguments, pause failure,
+three bounded resume retries, preserved ownership after resume failure,
+idempotent repeated cleanup, and the absence of `nm_pid` or numeric STOP/CONT
+signals from both production helpers. The controller requires API revision 8
+and package revision 46 carries the matching immutable helpers. The full 158
+test repository suite, Python compilation, plugin validation, Bash syntax
+checks, and simulation pass. After installing the repository ShellCheck 0.11
+package, the complete production shell-lint gate also passes. Revision 46 then
+built from a clean clone, passed all 120 FluxCast tests and the no-root artifact
+audit, and completed a disposable revision-45 to revision-46 upgrade/removal
+lifecycle. A live receiver run remains open because privileged pause/resume
+signalling changed.
