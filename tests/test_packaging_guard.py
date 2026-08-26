@@ -98,6 +98,110 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertNotRegex(helper_source, r"kill\s+-(?:STOP|CONT)")
             self.assertIn("systemctl kill --kill-whom=main --signal=SIGCONT NetworkManager.service", helper_source)
         self.assertIn("systemctl kill --kill-whom=main --signal=SIGSTOP NetworkManager.service", source)
+        self.assertIn("remove_cleanup_file", source)
+        self.assertIn("remove_recovery_file", recovery_source)
+        self.assertIn("recover_session", recovery_source)
+
+    def test_guard_cleanup_continues_after_user_marker_removal_failure(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+session_root="$2/session"
+user_root="$session_root/user"
+calls="$3"
+token_file="$session_root/token"
+ready_file="$session_root/ready.json"
+trigger_file="$user_root/trigger"
+heartbeat_file="$user_root/heartbeat"
+stop_file="$user_root/stop"
+network_file="$2/session.network"
+policy_file="$2/session.conf"
+networkd_state_file="$session_root/networkd-units"
+network_root_marker="$session_root/network-root-created"
+interfaces_file="$session_root/p2p-interfaces"
+interfaces_armed_file="$session_root/p2p-armed"
+network_manager_resume_file="$session_root/network-manager-resume-required"
+token=owned
+runtime_dirs_created=true
+mkdir -p "$user_root" "$user_root/$4"
+printf '%s\n' "$token" > "$token_file"
+touch "$ready_file" "$network_file" "$policy_file" "$networkd_state_file" "$interfaces_file"
+for marker in trigger heartbeat stop; do [[ "$marker" == "$4" ]] || touch "$user_root/$marker"; done
+resume_network_manager() { printf '%s\n' resume >> "$calls"; }
+restore_networkd_state() { printf '%s\n' restore-networkd >> "$calls"; }
+systemctl() { printf '%s\n' "$*" >> "$calls"; }
+cleanup
+[[ "$cleanup_ok" == false ]]
+[[ -d "$user_root/$4" ]]
+[[ -f "$token_file" ]]
+[[ ! -e "$network_file" && ! -e "$policy_file" ]]
+for marker in trigger heartbeat stop; do [[ "$marker" == "$4" || ! -e "$user_root/$marker" ]]; done
+grep -Fxq 'reload dbus.service' "$calls"
+grep -Fxq restore-networkd "$calls"
+'''
+        for marker in ("trigger", "heartbeat", "stop"):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as temp:
+                calls = Path(temp) / "calls"
+                result = subprocess.run(
+                    ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), temp, str(calls), marker),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_recovery_attempts_every_restoration_after_independent_failures(self) -> None:
+        recovery = ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover"
+        harness = r'''
+source <(sed -n '/^record_session_interfaces()/,/^started=/p' "$1" | sed '$d')
+root="$2/session"
+user_root="$root/user"
+network_root="$2/network"
+calls="$3"
+session=deadbeef
+interface=wlan0
+token_file="$root/token"
+ready_file="$root/ready.json"
+trigger_file="$user_root/trigger"
+heartbeat_file="$user_root/heartbeat"
+stop_file="$user_root/stop"
+network_file="$network_root/session.network"
+policy_file="$2/session.conf"
+networkd_state_file="$root/networkd-units"
+network_root_marker="$root/network-root-created"
+interfaces_file="$root/p2p-interfaces"
+interfaces_armed_file="$root/p2p-armed"
+network_manager_resume_file="$root/network-manager-resume-required"
+recovery_cleanup_ok=true
+mkdir -p "$user_root" "$network_root" "$user_root/$4"
+touch "$token_file" "$ready_file" "$network_file" "$policy_file" "$networkd_state_file" "$interfaces_file"
+for marker in trigger heartbeat stop; do [[ "$marker" == "$4" ]] || touch "$user_root/$marker"; done
+resume_network_manager() { printf '%s\n' resume >> "$calls"; return 1; }
+restore_networkd_state() { printf '%s\n' restore-networkd >> "$calls"; return 1; }
+systemctl() { printf '%s\n' "$*" >> "$calls"; }
+ufw() { return 1; }
+recover_session
+[[ "$recovery_cleanup_ok" == false ]]
+[[ -d "$user_root/$4" ]]
+[[ -f "$token_file" && -f "$networkd_state_file" ]]
+[[ ! -e "$network_file" && ! -e "$policy_file" ]]
+for marker in trigger heartbeat stop; do [[ "$marker" == "$4" || ! -e "$user_root/$marker" ]]; done
+grep -Fxq resume "$calls"
+grep -Fxq 'reload dbus.service' "$calls"
+grep -Fxq restore-networkd "$calls"
+'''
+        for marker in ("trigger", "heartbeat", "stop"):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as temp:
+                calls = Path(temp) / "calls"
+                result = subprocess.run(
+                    ("bash", "-euo", "pipefail", "-c", harness, "_", str(recovery), temp, str(calls), marker),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_network_manager_pause_is_unit_scoped_owned_and_idempotent(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"

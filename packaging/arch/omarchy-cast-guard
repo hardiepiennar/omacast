@@ -8,7 +8,7 @@ readonly api_revision=8 version_kind='omarchy-cast-guard-version'
 readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network' dbus_root='/etc/dbus-1/system.d'
 readonly wait_for_trigger_seconds=300
 readonly networkd_units=(systemd-networkd.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-networkd-varlink-metrics.socket systemd-networkd-resolve-hook.socket)
-action='' session_id='' uid='' interface='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' heartbeat_fd='' network_file='' policy_file='' networkd_state_file='' network_root_marker='' interfaces_file='' interfaces_armed_file='' network_manager_resume_file='' token='' ufw_rule_added=false runtime_dirs_created=false interface_cleanup_ok=true network_manager_cleanup_ok=true
+action='' session_id='' uid='' interface='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' heartbeat_fd='' network_file='' policy_file='' networkd_state_file='' network_root_marker='' interfaces_file='' interfaces_armed_file='' network_manager_resume_file='' token='' ufw_rule_added=false runtime_dirs_created=false interface_cleanup_ok=true network_manager_cleanup_ok=true cleanup_ok=true
 
 die() { printf '%s\n' "$*" >&2; exit 2; }
 status() { local ok="$1" phase="$2" error="${3:-null}"; printf '{"schemaVersion":%s,"kind":"%s","ok":%s,"phase":"%s","sessionId":"%s","error":%s}\n' "$schema_version" "$status_kind" "$ok" "$phase" "$session_id" "$error"; }
@@ -85,7 +85,46 @@ write_runtime_files() {
   systemctl reload dbus.service
 }
 owns_session() { [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; }
-cleanup() { if ! owns_session; then [[ "$runtime_dirs_created" == true ]] && rmdir --ignore-fail-on-non-empty "$user_root" "$session_root" 2>/dev/null || true; return 0; fi; local remove_network_root=false; [[ -f "$network_root_marker" ]] && remove_network_root=true; if [[ -f "$interfaces_armed_file" && ! -L "$interfaces_armed_file" && "$(stat -c '%u:%a' "$interfaces_armed_file" 2>/dev/null)" == "$EUID:600" ]]; then record_session_interfaces || interface_cleanup_ok=false; remove_session_interfaces || interface_cleanup_ok=false; fi; resume_network_manager || network_manager_cleanup_ok=false; [[ "$ufw_rule_added" == true ]] && ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || true; rm -f -- "$network_file" "$policy_file" "$ready_file" "$trigger_file" "$heartbeat_file" "$stop_file"; systemctl reload dbus.service 2>/dev/null || true; restore_networkd_state || true; rm -f -- "$networkd_state_file" "$network_root_marker" "$interfaces_armed_file" "$interfaces_file"; [[ "$network_manager_cleanup_ok" == true ]] && rm -f -- "$token_file"; rmdir --ignore-fail-on-non-empty "$user_root" "$session_root" 2>/dev/null || true; [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true; }
+remove_cleanup_file() { if ! rm -f -- "$1"; then cleanup_ok=false; fi; return 0; }
+cleanup() {
+  if ! owns_session; then
+    [[ "$runtime_dirs_created" == true ]] && rmdir --ignore-fail-on-non-empty "$user_root" "$session_root" 2>/dev/null || true
+    return 0
+  fi
+
+  local remove_network_root=false networkd_cleanup_ok=true
+  [[ -f "$network_root_marker" ]] && remove_network_root=true
+  if [[ -f "$interfaces_armed_file" && ! -L "$interfaces_armed_file" && "$(stat -c '%u:%a' "$interfaces_armed_file" 2>/dev/null)" == "$EUID:600" ]]; then
+    record_session_interfaces || interface_cleanup_ok=false
+    remove_session_interfaces || interface_cleanup_ok=false
+  fi
+  resume_network_manager || network_manager_cleanup_ok=false
+  if [[ "$ufw_rule_added" == true ]] && ! ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1; then cleanup_ok=false; fi
+
+  remove_cleanup_file "$network_file"
+  remove_cleanup_file "$policy_file"
+  remove_cleanup_file "$ready_file"
+  remove_cleanup_file "$trigger_file"
+  remove_cleanup_file "$heartbeat_file"
+  remove_cleanup_file "$stop_file"
+  systemctl reload dbus.service 2>/dev/null || cleanup_ok=false
+  if ! restore_networkd_state; then cleanup_ok=false; networkd_cleanup_ok=false; fi
+
+  if [[ "$networkd_cleanup_ok" == true ]]; then
+    remove_cleanup_file "$networkd_state_file"
+    remove_cleanup_file "$network_root_marker"
+  fi
+  if [[ "$interface_cleanup_ok" == true ]]; then
+    remove_cleanup_file "$interfaces_armed_file"
+    remove_cleanup_file "$interfaces_file"
+  fi
+  if [[ "$cleanup_ok" == true && "$interface_cleanup_ok" == true && "$network_manager_cleanup_ok" == true ]]; then
+    remove_cleanup_file "$token_file"
+  fi
+  rmdir --ignore-fail-on-non-empty "$user_root" "$session_root" 2>/dev/null || true
+  [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true
+  return 0
+}
 open_heartbeat() {
   local metadata kind owner mode size
   [[ -e "$heartbeat_file" && ! -L "$heartbeat_file" ]] || return 1
@@ -114,7 +153,7 @@ prepare() {
   trap 'cleanup' EXIT
   trap 'exit 0' HUP INT TERM
   write_runtime_files
-  trap 'cleanup; if [[ "$interface_cleanup_ok" == true && "$network_manager_cleanup_ok" == true ]]; then status true cleaned null; else json_error "session network cleanup was incomplete"; fi' EXIT
+  trap 'cleanup; if [[ "$cleanup_ok" == true && "$interface_cleanup_ok" == true && "$network_manager_cleanup_ok" == true ]]; then status true cleaned null; else json_error "session network cleanup was incomplete"; fi' EXIT
   arm_recovery
   printf '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":true,"phase":"ready","sessionId":"%s","error":null,"triggerPath":"%s"}\n' "$session_id" "$trigger_file"
   local deadline=$((SECONDS + wait_for_trigger_seconds))

@@ -4,7 +4,7 @@ set -euo pipefail
 [[ ${EUID} -eq 0 && $# -eq 6 ]] || exit 2
 startup_seconds="$1"; lease_seconds="$2"; session="$3"; token="$4"; uid="$5"; interface="$6"
 [[ "$startup_seconds" =~ ^[0-9]+$ && "$lease_seconds" =~ ^[0-9]+$ && "$lease_seconds" -ge 60 && "$lease_seconds" -le 1800 && "$session" =~ ^[a-f0-9]{32}$ && "$token" =~ ^[a-f0-9]{48}$ && "$uid" =~ ^[1-9][0-9]{3,9}$ && "$interface" =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || exit 2
-root="/run/omarchy-cast/$session"; user_root="$root/user"; token_file="$root/token"; heartbeat_file="$user_root/heartbeat"; heartbeat_fd=''; network_root='/run/systemd/network'; networkd_state_file="$root/networkd-units"; network_root_marker="$root/network-root-created"; interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"
+root="/run/omarchy-cast/$session"; user_root="$root/user"; token_file="$root/token"; ready_file="$root/ready.json"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; stop_file="$user_root/stop"; heartbeat_fd=''; network_root='/run/systemd/network'; network_file="$network_root/80-omarchy-cast-$session.network"; policy_file="/etc/dbus-1/system.d/zz-omarchy-cast-$session.conf"; networkd_state_file="$root/networkd-units"; network_root_marker="$root/network-root-created"; interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"; recovery_cleanup_ok=true
 record_session_interfaces() { local candidate listed; [[ -f "$interfaces_file" && ! -L "$interfaces_file" && "$(stat -c '%u:%a' "$interfaces_file" 2>/dev/null)" == "$EUID:600" ]] || return 1; listed="$(iw dev)" || return 1; while read -r candidate; do [[ -n "$candidate" && "$candidate" == "p2p-$interface-"* ]] || continue; grep -Fxq "$candidate" "$interfaces_file" || printf '%s\n' "$candidate" >> "$interfaces_file"; done < <(awk -v prefix="p2p-$interface-" '$1 == "Interface" && index($2, prefix) == 1 {print $2}' <<< "$listed"); }
 remove_session_interfaces() { local owned details type removed all_removed=true; [[ -f "$interfaces_file" && ! -L "$interfaces_file" && "$(stat -c '%u:%a' "$interfaces_file" 2>/dev/null)" == "$EUID:600" ]] || return 1; while read -r owned; do [[ -n "$owned" && "$owned" == "p2p-$interface-"* ]] || continue; if ! details="$(iw dev "$owned" info 2>/dev/null)"; then continue; fi; type="$(awk '$1 == "type" {print $2; exit}' <<< "$details")"; if [[ "$type" != P2P-client ]]; then all_removed=false; continue; fi; removed=false; for _ in 1 2 3; do iw dev "$owned" del 2>/dev/null || true; if ! iw dev "$owned" info >/dev/null 2>&1; then removed=true; break; fi; sleep 0.1; done; [[ "$removed" == true ]] || all_removed=false; done < "$interfaces_file"; [[ "$all_removed" == true ]]; }
 open_heartbeat() {
@@ -27,6 +27,50 @@ lease_fresh() {
 }
 network_manager_marker_valid() { [[ -f "$network_manager_resume_file" && ! -L "$network_manager_resume_file" && "$(stat -c '%u:%a' "$network_manager_resume_file" 2>/dev/null)" == "$EUID:600" ]]; }
 resume_network_manager() { network_manager_marker_valid || { [[ ! -e "$network_manager_resume_file" ]] && return 0; return 1; }; for _ in 1 2 3; do if systemctl kill --kill-whom=main --signal=SIGCONT NetworkManager.service; then rm -f -- "$network_manager_resume_file" || return 1; return 0; fi; sleep 0.1; done; return 1; }
+restore_networkd_state() {
+  [[ -f "$networkd_state_file" && ! -L "$networkd_state_file" && "$(stat -c '%u:%a' "$networkd_state_file" 2>/dev/null)" == '0:600' ]] || return 1
+  local unit state
+  while read -r unit state; do [[ "$state" == inactive ]] && systemctl stop "$unit" 2>/dev/null || true; done < "$networkd_state_file"
+  while read -r unit state; do [[ "$state" == active ]] && systemctl start "$unit" 2>/dev/null || true; done < "$networkd_state_file"
+  ! systemctl is-active --quiet systemd-networkd.service || systemctl reload systemd-networkd.service
+}
+remove_recovery_file() { if ! rm -f -- "$1"; then recovery_cleanup_ok=false; fi; return 0; }
+recover_session() {
+  local remove_network_root=false interface_cleanup_ok=true networkd_cleanup_ok=true
+  if [[ -f "$interfaces_armed_file" && ! -L "$interfaces_armed_file" && "$(stat -c '%u:%a' "$interfaces_armed_file" 2>/dev/null)" == "$EUID:600" ]]; then
+    record_session_interfaces || interface_cleanup_ok=false
+    remove_session_interfaces || interface_cleanup_ok=false
+  fi
+  resume_network_manager || recovery_cleanup_ok=false
+  if command -v ufw >/dev/null && ufw status | grep -Fq "omarchy-cast-$session"; then
+    ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || recovery_cleanup_ok=false
+  fi
+  [[ -f "$network_root_marker" ]] && remove_network_root=true
+
+  remove_recovery_file "$network_file"
+  remove_recovery_file "$policy_file"
+  remove_recovery_file "$ready_file"
+  remove_recovery_file "$trigger_file"
+  remove_recovery_file "$heartbeat_file"
+  remove_recovery_file "$stop_file"
+  systemctl reload dbus.service 2>/dev/null || recovery_cleanup_ok=false
+  if ! restore_networkd_state; then recovery_cleanup_ok=false; networkd_cleanup_ok=false; fi
+
+  if [[ "$networkd_cleanup_ok" == true ]]; then
+    remove_recovery_file "$networkd_state_file"
+    remove_recovery_file "$network_root_marker"
+  fi
+  if [[ "$interface_cleanup_ok" == true ]]; then
+    remove_recovery_file "$interfaces_armed_file"
+    remove_recovery_file "$interfaces_file"
+  else
+    recovery_cleanup_ok=false
+  fi
+  if [[ "$recovery_cleanup_ok" == true ]]; then remove_recovery_file "$token_file"; fi
+  rmdir --ignore-fail-on-non-empty "$user_root" "$root" 2>/dev/null || true
+  [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true
+  return 0
+}
 started="$EPOCHSECONDS"
 while [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; do
   if [[ -n "$heartbeat_fd" ]] || open_heartbeat; then
@@ -37,17 +81,5 @@ while [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; do
   sleep 1
 done
 [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]] || exit 0
-if [[ -f "$interfaces_armed_file" && ! -L "$interfaces_armed_file" && "$(stat -c '%u:%a' "$interfaces_armed_file" 2>/dev/null)" == "$EUID:600" ]]; then record_session_interfaces || true; remove_session_interfaces || true; fi
-resume_network_manager || exit 1
-if command -v ufw >/dev/null && ufw status | grep -Fq "omarchy-cast-$session"; then ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || true; fi
-remove_network_root=false; [[ -f "$network_root_marker" ]] && remove_network_root=true
-rm -f -- "$network_root/80-omarchy-cast-$session.network" "/etc/dbus-1/system.d/zz-omarchy-cast-$session.conf" "$root/ready.json" "$user_root/trigger" "$heartbeat_file" "$user_root/stop"
-systemctl reload dbus.service 2>/dev/null || true
-if [[ -f "$networkd_state_file" && ! -L "$networkd_state_file" && "$(stat -c '%u:%a' "$networkd_state_file" 2>/dev/null)" == '0:600' ]]; then
-  while read -r unit state; do [[ "$state" == inactive ]] && systemctl stop "$unit" 2>/dev/null || true; done < "$networkd_state_file"
-  while read -r unit state; do [[ "$state" == active ]] && systemctl start "$unit" 2>/dev/null || true; done < "$networkd_state_file"
-  ! systemctl is-active --quiet systemd-networkd.service || systemctl reload systemd-networkd.service
-fi
-rm -f -- "$networkd_state_file" "$network_root_marker" "$interfaces_armed_file" "$interfaces_file" "$token_file"
-rmdir --ignore-fail-on-non-empty "$user_root" "$root" 2>/dev/null || true
-[[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true
+recover_session
+[[ "$recovery_cleanup_ok" == true ]]

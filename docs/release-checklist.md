@@ -417,6 +417,16 @@
       46 completed a GUI Fire TV connect/Stop run at 1280x720p60 with healthy
       steady-state telemetry, then restored NetworkManager, removed its P2P
       client, and left infrastructure Wi-Fi connected.
+- [x] Both privileged cleanup owners aggregate failures and continue through
+      D-Bus, NetworkManager, firewall, systemd-networkd, P2P-interface, and
+      ownership-record restoration. Unexpected directories at each
+      user-writable marker name and independent resume/restore failures cannot
+      suppress later cleanup attempts; incomplete sessions retain their root
+      token and restoration records. Package revision 47 carries the hardened
+      helpers. The 160-test repository suite, Omarchy validation, Bash syntax,
+      ShellCheck, and git whitespace checks pass offline. Its exact-clean build
+      also passes 120 FluxCast tests, the artifact audit, and disposable
+      package installation/removal.
 
 Run this before every release:
 

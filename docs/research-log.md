@@ -1765,3 +1765,34 @@ controller returned to `idle`; NetworkManager was active and running; the P2P
 client and cast/media processes were absent; and infrastructure Wi-Fi remained
 connected. This closes finding 8's receiver gate without claiming a soak test
 or exercising forced independent recovery on the live network.
+
+### Failure-tolerant privileged cleanup (2026-08-26)
+
+The exhaustive review found that both root helpers used fail-fast shell mode
+around multi-path removal and recovery operations. The authenticated local user
+owns the session marker directory and could place a directory at `trigger`,
+`heartbeat`, or `stop`. GNU `rm -f` rejects directories, so any such leaf could
+abort cleanup before the D-Bus reload, systemd-networkd restoration, ownership
+record handling, and final status. Independent recovery also exited immediately
+when NetworkManager resume failed, suppressing every later restoration attempt.
+
+Both helpers now remove each expected leaf independently, aggregate failures,
+and always proceed through the remaining safe restoration stages. D-Bus reload,
+NetworkManager resume, firewall removal, systemd-networkd restoration, recorded
+P2P-client cleanup, and fixed ownership-record removal no longer depend on an
+earlier unrelated command succeeding. Unexpected marker directories are not
+removed recursively. If any required step remains incomplete, the root token
+and the relevant restoration records remain as evidence and the normal helper
+reports incomplete cleanup rather than a false success.
+
+Deadline-bounded harnesses exercise directories at all three user-controlled
+marker names against both cleanup owners. They also inject independent
+NetworkManager-resume and networkd-restore failures and prove that later D-Bus
+and state restoration is still attempted. Package revision 47 carries the
+updated API-8 helpers; no helper command or authorization surface changed. All
+160 repository tests, staged Omarchy validation, Bash syntax, production
+ShellCheck, and git whitespace checks pass. The exact-clean revision-47 build
+passes all 120 FluxCast tests, the no-root artifact audit, and disposable
+candidate installation/removal. This is offline failure-injection evidence;
+forced privileged recovery on the live host remains part of the final
+acceptance matrix.

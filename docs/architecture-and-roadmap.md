@@ -1037,6 +1037,10 @@ waiting in Display Mirroring and understands any temporary network change.
   installed Omarchy CLI.
 - **Reliability policy:** radio topology and internet coexistence gate all UI
   and release work.
+- **Privileged cleanup policy:** normal and independent recovery attempt every
+  safe restoration step even after an earlier failure, preserve root-owned
+  recovery evidence whenever cleanup is incomplete, and never recursively
+  remove an unexpected object from the user-writable marker directory.
 - **Dependency policy:** tracked upstream/fork/package; never an ignored local
   checkout or runtime patching.
 - **Engine packaging:** `packaging/arch/PKGBUILD` pins the researched FluxCast
