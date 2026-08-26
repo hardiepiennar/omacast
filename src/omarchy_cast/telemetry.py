@@ -249,6 +249,7 @@ class BoundedOutputCollector:
         self.key = key
         self.limit = limit
         self._tail = bytearray()
+        self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="omarchy-cast-engine-log", daemon=True)
         self._started = False
 
@@ -266,9 +267,29 @@ class BoundedOutputCollector:
 
     def _snapshot(self) -> None:
         try:
-            self.workspace.replace_output(self.key, bytes(self._tail), limit=self.limit)
+            with self._lock:
+                payload = bytes(self._tail)
+            self.workspace.replace_output(self.key, payload, limit=self.limit)
         except (KeyError, OSError, ValueError):
             pass
+
+    def note_startup(self, milestone: str, elapsed_seconds: float) -> None:
+        """Append one bounded, identifier-free startup timing marker."""
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", milestone):
+            raise ValueError("startup milestone is invalid")
+        elapsed_ms = max(0, round(elapsed_seconds * 1000))
+        self._append(f"[Omacast startup] milestone={milestone} elapsed_ms={elapsed_ms}\n".encode("ascii"))
+        self._snapshot()
+
+    def _append(self, chunk: bytes) -> None:
+        with self._lock:
+            if len(chunk) >= self.limit:
+                self._tail = bytearray(chunk[-self.limit:])
+            else:
+                self._tail.extend(chunk)
+                excess = len(self._tail) - self.limit
+                if excess > 0:
+                    del self._tail[:excess]
 
     def _run(self) -> None:
         try:
@@ -279,13 +300,7 @@ class BoundedOutputCollector:
                     break
                 if isinstance(chunk, str):
                     chunk = chunk.encode("utf-8", errors="replace")
-                if len(chunk) >= self.limit:
-                    self._tail = bytearray(chunk[-self.limit:])
-                else:
-                    self._tail.extend(chunk)
-                    excess = len(self._tail) - self.limit
-                    if excess > 0:
-                        del self._tail[:excess]
+                self._append(chunk)
                 self._snapshot()
         except (OSError, ValueError):
             pass

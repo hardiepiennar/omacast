@@ -233,6 +233,27 @@ class TelemetryTest(unittest.TestCase):
             finally:
                 workspace.close()
 
+    def test_engine_output_collector_adds_bounded_identifier_free_startup_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            workspace = TelemetryWorkspace("a" * 32, environment)
+            workspace.prepare_engine_outputs()
+            read_descriptor, write_descriptor = os.pipe()
+            collector = BoundedOutputCollector(os.fdopen(read_descriptor, "rb", buffering=0), workspace)
+            try:
+                collector.start()
+                collector.note_startup("rtsp-established", 1.2345)
+                os.close(write_descriptor)
+                collector.stop()
+                self.assertIn(
+                    "[Omacast startup] milestone=rtsp-established elapsed_ms=1234",
+                    workspace.read_text("engineLog"),
+                )
+                with self.assertRaisesRegex(ValueError, "milestone is invalid"):
+                    collector.note_startup("peer=00:11:22:33:44:55", 1)
+            finally:
+                workspace.close()
+
     def test_engine_output_collector_keeps_its_preopened_output_after_path_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}

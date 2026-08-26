@@ -414,6 +414,7 @@ class GuardedTransportAdapter:
         engine_output_collector: BoundedOutputCollector | None = None
         guard_ready = False
         guard_cleanup_confirmed = False
+        startup_started_at = time.monotonic()
         try:
             helper = subprocess.Popen((*self.authorization_command, *prepare_command(self.request)), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
             ready = self._read_ready(helper, self.request, cancelled)
@@ -435,6 +436,7 @@ class GuardedTransportAdapter:
                 raise TransportError("FluxCast did not expose its diagnostic stream", code="engine-exited")
             engine_output_collector = BoundedOutputCollector(engine.stdout, telemetry)
             engine_output_collector.start()
+            engine_output_collector.note_startup("engine-started", time.monotonic() - startup_started_at)
             sampler = TelemetrySampler(
                 session_id=self.request.session_id,
                 engine_pid=engine.pid,
@@ -454,7 +456,9 @@ class GuardedTransportAdapter:
                 now = time.monotonic()
                 if rtsp_ready_at is None and self._rtsp_established(engine.pid):
                     rtsp_ready_at = now
+                    engine_output_collector.note_startup("rtsp-established", now - startup_started_at)
                 if not streaming and rtsp_ready_at is not None and self._media_started_text(telemetry.read_text("progress")):
+                    engine_output_collector.note_startup("first-frame", now - startup_started_at)
                     stage("streaming")
                     streaming = True
                 if streaming:
