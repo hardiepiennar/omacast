@@ -171,6 +171,10 @@ grep -Fq 'MAX_COMMAND_OUTPUT_BYTES' "$site_packages/wfd/proc.py" \
   || die "packaged engine lacks bounded subprocess capture"
 grep -Fq 'port > 65535' "$site_packages/wfd/rtsp/message.py" \
   || die "packaged engine lacks receiver port range validation"
+grep -Fq 'MAX_LATENCY_LOG_BYTES' "$site_packages/wfd/latency.py" \
+  || die "packaged engine lacks a bounded latency journal"
+grep -Fq '"M16_KEEPALIVE" in self.pending.values()' "$site_packages/wfd/rtsp/handler.py" \
+  || die "packaged engine can accumulate unanswered keepalives"
 
 pacman -Qp "$package" >/dev/null
 printf 'Artifact audit passed: %s\n' "$package"

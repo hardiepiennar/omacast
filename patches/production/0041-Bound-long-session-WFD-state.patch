@@ -1,0 +1,235 @@
+From 00d78edeaa6c7f8ced92d4c5e5e079c71313c286 Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 23:58:28 +1200
+Subject: [PATCH] Bound long-session WFD state
+
+---
+ src/wfd/latency.py            | 82 +++++++++++++++++++++++++++++++++--
+ src/wfd/rtsp/handler.py       |  3 ++
+ tests/test_wfd_latency.py     | 73 +++++++++++++++++++++++++++++++
+ tests/test_wfd_rtsp_limits.py | 14 ++++++
+ 4 files changed, 169 insertions(+), 3 deletions(-)
+ create mode 100644 tests/test_wfd_latency.py
+
+diff --git a/src/wfd/latency.py b/src/wfd/latency.py
+index 0cddbe3..c0f1959 100644
+--- a/src/wfd/latency.py
++++ b/src/wfd/latency.py
+@@ -1,9 +1,84 @@
+ import json
++import os
++import re
++import stat
++import threading
+ import time
+ from datetime import datetime, timezone
+ from typing import Optional
+ 
+ 
++MAX_LATENCY_LOG_BYTES = 256 * 1024
++MAX_LATENCY_RECORD_BYTES = 16 * 1024
++_PRESERVED_PREFIX_BYTES = 16 * 1024
++_CONTROLLER_FD_PATH = re.compile(r"^/proc/[1-9][0-9]*/fd/[0-9]+$")
++_LATENCY_LOG_LOCK = threading.Lock()
++
++
++def _write_all(descriptor: int, payload: bytes, offset: int) -> None:
++    view = memoryview(payload)
++    while view:
++        written = os.pwrite(descriptor, view, offset)
++        if written <= 0:
++            raise OSError("latency log write made no progress")
++        offset += written
++        view = view[written:]
++
++
++def _complete_prefix(descriptor: int, size: int) -> bytes:
++    prefix = os.pread(descriptor, min(size, _PRESERVED_PREFIX_BYTES), 0)
++    end = prefix.rfind(b"\n")
++    return prefix[:end + 1] if end >= 0 else b""
++
++
++def _complete_tail(descriptor: int, size: int, budget: int) -> bytes:
++    if budget <= 0 or size <= 0:
++        return b""
++    start = max(0, size - budget)
++    tail = os.pread(descriptor, min(size, budget), start)
++    if start:
++        first_line = tail.find(b"\n")
++        return tail[first_line + 1:] if first_line >= 0 else b""
++    return tail
++
++
++def _write_latency_record(path: str, record: bytes) -> None:
++    if len(record) > MAX_LATENCY_RECORD_BYTES:
++        raise ValueError("latency record exceeds its byte limit")
++
++    flags = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
++    if not _CONTROLLER_FD_PATH.fullmatch(path):
++        flags |= os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
++    descriptor = os.open(path, flags, 0o600)
++    try:
++        metadata = os.fstat(descriptor)
++        if (
++            not stat.S_ISREG(metadata.st_mode)
++            or metadata.st_uid != os.getuid()
++            or metadata.st_mode & 0o077
++            or metadata.st_nlink not in (0, 1)
++        ):
++            raise ValueError("latency log output is unsafe")
++
++        if metadata.st_size + len(record) <= MAX_LATENCY_LOG_BYTES:
++            _write_all(descriptor, record, metadata.st_size)
++            return
++
++        marker = b'{"event":"log_compacted"}\n'
++        prefix = _complete_prefix(descriptor, metadata.st_size)
++        available = MAX_LATENCY_LOG_BYTES - len(prefix) - len(marker) - len(record)
++        tail = _complete_tail(
++            descriptor,
++            metadata.st_size,
++            min(max(0, available), MAX_LATENCY_LOG_BYTES // 2),
++        )
++        payload = prefix + marker + tail + record
++        os.ftruncate(descriptor, 0)
++        _write_all(descriptor, payload, 0)
++    finally:
++        os.close(descriptor)
++
++
+ def _append_latency_log(path: Optional[str], event: str, **fields: object) -> None:
+     if not path:
+         return
+@@ -13,8 +88,9 @@ def _append_latency_log(path: Optional[str], event: str, **fields: object) -> No
+         "event": event,
+         **fields,
+     }
++    record = (json.dumps(payload, ensure_ascii=True) + "\n").encode("ascii")
+     try:
+-        with open(path, "a", encoding="utf-8") as file:
+-            file.write(json.dumps(payload, ensure_ascii=True) + "\n")
+-    except OSError:
++        with _LATENCY_LOG_LOCK:
++            _write_latency_record(path, record)
++    except (OSError, ValueError):
+         pass
+diff --git a/src/wfd/rtsp/handler.py b/src/wfd/rtsp/handler.py
+index 6007a0b..69a5d5a 100644
+--- a/src/wfd/rtsp/handler.py
++++ b/src/wfd/rtsp/handler.py
+@@ -516,6 +516,9 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+         # If media is None (portal dialog still open), keep sending keepalives.
+         if media is not None and not all(p.poll() is None for p in media.processes):
+             return
++        if "M16_KEEPALIVE" in self.pending.values():
++            self._schedule_rtsp_keepalive(25.0)
++            return
+         try:
+             self._send_request(
+                 "M16_KEEPALIVE",
+diff --git a/tests/test_wfd_latency.py b/tests/test_wfd_latency.py
+new file mode 100644
+index 0000000..f940dd1
+--- /dev/null
++++ b/tests/test_wfd_latency.py
+@@ -0,0 +1,73 @@
++import json
++import os
++import tempfile
++import unittest
++from pathlib import Path
++
++from wfd.latency import (
++    MAX_LATENCY_LOG_BYTES,
++    MAX_LATENCY_RECORD_BYTES,
++    _append_latency_log,
++)
++
++
++class LatencyLogLimitTest(unittest.TestCase):
++    def test_long_session_retains_valid_bounded_json_lines(self):
++        with tempfile.TemporaryDirectory() as temp:
++            path = Path(temp) / "engine.jsonl"
++            _append_latency_log(str(path), "media_starting", mode="1280x720p60")
++            for sequence in range(4000):
++                _append_latency_log(
++                    str(path),
++                    "sender_health",
++                    sequence=sequence,
++                    detail="x" * 100,
++                )
++
++            payload = path.read_bytes()
++            self.assertLessEqual(len(payload), MAX_LATENCY_LOG_BYTES)
++            records = [json.loads(line) for line in payload.splitlines()]
++            self.assertEqual(records[0]["event"], "media_starting")
++            self.assertEqual(records[-1]["sequence"], 3999)
++            self.assertTrue(any(record["event"] == "log_compacted" for record in records))
++
++    def test_oversized_record_is_not_written(self):
++        with tempfile.TemporaryDirectory() as temp:
++            path = Path(temp) / "engine.jsonl"
++            _append_latency_log(str(path), "oversized", detail="x" * MAX_LATENCY_RECORD_BYTES)
++            self.assertFalse(path.exists())
++
++    def test_unsafe_existing_path_is_not_modified(self):
++        with tempfile.TemporaryDirectory() as temp:
++            path = Path(temp) / "engine.jsonl"
++            path.write_text("keep\n", encoding="ascii")
++            path.chmod(0o644)
++            _append_latency_log(str(path), "sender_health")
++            self.assertEqual(path.read_text(encoding="ascii"), "keep\n")
++
++    def test_symlink_output_is_not_followed(self):
++        with tempfile.TemporaryDirectory() as temp:
++            victim = Path(temp) / "victim"
++            victim.write_text("keep\n", encoding="ascii")
++            victim.chmod(0o600)
++            link = Path(temp) / "engine.jsonl"
++            link.symlink_to(victim)
++            _append_latency_log(str(link), "sender_health")
++            self.assertEqual(victim.read_text(encoding="ascii"), "keep\n")
++
++    def test_controller_descriptor_path_is_supported(self):
++        with tempfile.TemporaryDirectory() as temp:
++            path = Path(temp) / "engine.jsonl"
++            descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
++            try:
++                _append_latency_log(
++                    f"/proc/{os.getpid()}/fd/{descriptor}",
++                    "media_starting",
++                )
++            finally:
++                os.close(descriptor)
++            self.assertEqual(json.loads(path.read_text(encoding="ascii"))["event"], "media_starting")
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_wfd_rtsp_limits.py b/tests/test_wfd_rtsp_limits.py
+index 48b2828..043ead1 100644
+--- a/tests/test_wfd_rtsp_limits.py
++++ b/tests/test_wfd_rtsp_limits.py
+@@ -163,5 +163,19 @@ class RTSPWorkerLimitTest(unittest.TestCase):
+         self.assertTrue(self.server._worker_slots.acquire(blocking=False))
+ 
+ 
++class RTSPKeepaliveLimitTest(unittest.TestCase):
++    def test_unanswered_keepalive_is_not_duplicated(self):
++        handler = _WFDRTSPHandler.__new__(_WFDRTSPHandler)
++        handler._keepalive_active = True
++        handler.media = None
++        handler.pending = {"7": "M16_KEEPALIVE"}
++        with mock.patch.object(handler, "_send_request") as send, \
++             mock.patch.object(handler, "_schedule_rtsp_keepalive") as schedule:
++            handler._send_rtsp_keepalive()
++        send.assert_not_called()
++        schedule.assert_called_once_with(25.0)
++        self.assertEqual(handler.pending, {"7": "M16_KEEPALIVE"})
++
++
+ if __name__ == "__main__":
+     unittest.main()
+-- 
+2.55.0
+
