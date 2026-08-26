@@ -1521,3 +1521,25 @@ engine tests; the repository passes all 131 controller/plugin tests and its
 staged installable payload validates. Direct root validation still sees an
 ignored research symlink under `work/`, which is not part of that payload. Live
 receiver acceptance remains open; no network operation was needed here.
+
+### Root recovery telemetry boundary (2026-08-26)
+
+The exhaustive review found that the independent root recovery helper removed
+fixed telemetry filenames beneath `/run/user/<uid>/omarchy-cast/telemetry/`.
+Although the filenames were allowlisted, their parent hierarchy was controlled
+by the user. A replaced session directory could therefore redirect root's file
+operations outside the cast telemetry directory.
+
+Revision 43 removes that traversal instead of attempting to make root manage
+user-owned data. Normal transport teardown and explicit stale-state recovery
+already call the controller's `cleanup_live_telemetry()` as the session user.
+After an abrupt controller death, bounded volatile telemetry may remain until
+the user chooses Recover or the user runtime directory disappears at logout;
+privileged network, firewall, policy, P2P-interface, and root-owned runtime
+cleanup remain unchanged.
+
+A dedicated package regression requires the root recovery source to contain no
+`/run/user/`, telemetry path, or live telemetry filename, and the built-package
+auditor enforces the same rule. All 132 controller/plugin tests and staged
+payload validation pass. This narrows only the cleanup privilege boundary and
+needs no live receiver run.

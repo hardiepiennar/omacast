@@ -124,9 +124,10 @@ smoothness, continuous internet access, and audio/video sync all matter.
   forced owner death both release the inhibitor automatically.
 - Live status includes the session age alongside measured pipeline health, and
   private session history is bounded to the newest 50 sessions.
-- Finished and recovered sessions now remove their known volatile telemetry
-  files from `$XDG_RUNTIME_DIR`; archived samples are pruned alongside the same
-  50-session event-history boundary.
+- Normal teardown and explicit user-owned recovery remove known volatile
+  telemetry from `$XDG_RUNTIME_DIR`; archived samples are pruned alongside the
+  same 50-session event-history boundary. Independent privileged recovery
+  restores networking but never traverses or deletes user-owned telemetry.
 - The installable plugin is branded **Omacast** while retaining the stable
   `hardie.omarchy-cast` plugin ID for in-place upgrades. Super+Alt+C is the
   intended optional summon gesture and leaves Omarchy's stock Super+C Universal
@@ -459,6 +460,8 @@ must:
 - support cancellation during discovery, authorization, connection, and media;
 - never accept an arbitrary command, arbitrary file source, shell fragment, or
   unrestricted path from QML;
+- never traverse or remove user-owned telemetry; normal and explicit stale
+  cleanup remain responsibilities of the unprivileged controller;
 - avoid a temporary policy in `/etc` if a safer brokered or packaged D-Bus
   authorization design can perform the required supplicant operations.
 

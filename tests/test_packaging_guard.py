@@ -86,15 +86,18 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn('read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd"', recovery_source)
         self.assertNotIn('renewed="$(<"$heartbeat_file")"', recovery_source)
         self.assertIn('networkd_state_file="$root/networkd-units"', recovery_source)
-        self.assertIn('telemetry_root="/run/user/$uid/omarchy-cast/telemetry/$session"', recovery_source)
-        for live_name in ("current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log"):
-            self.assertIn(f'"$telemetry_root/{live_name}"', recovery_source)
         for removed_surface in ("qos.pid", "qos_file", "apply_media_qos", "renice", "/proc/$root_pid"):
             self.assertNotIn(removed_surface, source)
             self.assertNotIn(removed_surface, recovery_source)
-        self.assertIn('rmdir --ignore-fail-on-non-empty "$telemetry_root"', recovery_source)
         self.assertIn("systemctl reload systemd-networkd.service", recovery_source)
         self.assertNotIn('systemctl stop systemd-networkd.service systemd-networkd.socket', recovery_source)
+
+    def test_root_recovery_never_traverses_user_telemetry(self) -> None:
+        recovery_source = (ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover").read_text(encoding="utf-8")
+        self.assertNotIn("/run/user/", recovery_source)
+        self.assertNotIn("telemetry", recovery_source)
+        for live_name in ("current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log"):
+            self.assertNotIn(live_name, recovery_source)
 
     def test_recipe_installs_the_immutable_privilege_boundary(self) -> None:
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
@@ -298,6 +301,9 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("unused privileged Stop verb", audit)
         self.assertIn("recorded P2P cleanup", audit)
         self.assertIn("clean-baseline ownership marker", audit)
+        self.assertIn("root recovery traverses the user runtime tree", audit)
+        self.assertIn("root recovery manages user-owned telemetry", audit)
+        self.assertIn("root recovery removes user-owned telemetry", audit)
         self.assertIn("com.omacast.guard.policy", audit)
         self.assertIn("allow_active", audit)
         self.assertNotIn("--wfd-gsr-handoff", audit)

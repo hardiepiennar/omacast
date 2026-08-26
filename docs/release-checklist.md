@@ -372,6 +372,11 @@
       or conventional-address fallback. The exact 21-patch reconstruction and
       all offline suites pass; a short selected-Fire-TV connect/Stop run remains
       the receiver-backed release gate.
+- [x] Revision 43 removes user-owned telemetry from the independent root
+      recovery helper. Normal and explicit stale recovery retain unprivileged
+      cleanup; source and built-package contracts reject `/run/user/` and live
+      telemetry names in the root recovery payload. All offline tests and staged
+      validation pass; the media and network paths are unchanged.
 
 Run this before every release:
 

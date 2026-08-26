@@ -115,6 +115,11 @@ for helper in "$guard" "$recovery"; do
   grep -Fq 'read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd"' "$helper" || die "helper does not bound pinned heartbeat reads"
   ! grep -Fq 'renewed="$(<"$heartbeat_file")"' "$helper" || die "helper reopens the user heartbeat by pathname"
 done
+! grep -Fq '/run/user/' "$recovery" || die "root recovery traverses the user runtime tree"
+! grep -Fq 'telemetry' "$recovery" || die "root recovery manages user-owned telemetry"
+for live_name in current.json ffmpeg.progress mux-packets.csv engine.jsonl engine.log; do
+  ! grep -Fq "$live_name" "$recovery" || die "root recovery removes user-owned telemetry: $live_name"
+done
 
 site_packages="$(find "$audit_root/usr/lib" -type d -path '*/site-packages' -print -quit)"
 [[ -n "$site_packages" ]] || die "packaged Python modules are missing"
