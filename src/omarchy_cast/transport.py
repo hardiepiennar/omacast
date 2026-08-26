@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import errno
 import json
 import os
 from pathlib import Path
@@ -59,17 +60,98 @@ class SessionLease:
         self.interval_seconds = interval_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._directory_descriptor: int | None = None
+        self._descriptor: int | None = None
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _unsafe(message: str) -> OSError:
+        return OSError(errno.EPERM, message)
+
+    def _open(self) -> None:
+        if self._descriptor is not None:
+            return
+        if self.path.name != "heartbeat":
+            raise self._unsafe("session heartbeat name is unsafe")
+        directory_flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
+        directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            directory_descriptor = os.open(self.path.parent, directory_flags)
+        except OSError as exc:
+            raise self._unsafe("session heartbeat directory is unavailable or unsafe") from exc
+        descriptor = -1
+        try:
+            directory_metadata = os.fstat(directory_descriptor)
+            if (
+                not stat.S_ISDIR(directory_metadata.st_mode)
+                or directory_metadata.st_uid != os.getuid()
+                or stat.S_IMODE(directory_metadata.st_mode) != 0o700
+            ):
+                raise self._unsafe("session heartbeat directory ownership or permissions are unsafe")
+            flags = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            created = False
+            try:
+                descriptor = os.open(
+                    self.path.name,
+                    flags | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=directory_descriptor,
+                )
+                created = True
+            except FileExistsError:
+                descriptor = os.open(self.path.name, flags, dir_fd=directory_descriptor)
+            if created:
+                os.fchmod(descriptor, 0o600)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise self._unsafe("session heartbeat is not a regular file")
+            if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+                raise self._unsafe("session heartbeat ownership or permissions are unsafe")
+            if metadata.st_nlink != 1:
+                raise self._unsafe("session heartbeat has an unsafe link count")
+            if metadata.st_size > 32:
+                raise self._unsafe("session heartbeat exceeds the safe size limit")
+        except Exception:
+            if descriptor >= 0:
+                os.close(descriptor)
+            os.close(directory_descriptor)
+            raise
+        self._directory_descriptor = directory_descriptor
+        self._descriptor = descriptor
 
     def renew(self) -> None:
-        descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        try:
-            os.write(descriptor, f"{int(time.time())}\n".encode("ascii"))
-            os.fchmod(descriptor, 0o600)
-        finally:
-            os.close(descriptor)
+        with self._lock:
+            self._open()
+            assert self._descriptor is not None
+            metadata = os.fstat(self._descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_nlink not in (0, 1)
+            ):
+                raise self._unsafe("session heartbeat descriptor became unsafe")
+            encoded = f"{int(time.time())}\n".encode("ascii")
+            os.ftruncate(self._descriptor, 0)
+            view = memoryview(encoded)
+            offset = 0
+            while view:
+                written = os.pwrite(self._descriptor, view, offset)
+                if written <= 0:
+                    raise OSError(errno.EIO, "session heartbeat renewal made no progress")
+                view = view[written:]
+                offset += written
+            os.ftruncate(self._descriptor, len(encoded))
 
     def start(self) -> None:
-        self.renew()
+        if self._thread is not None:
+            raise self._unsafe("session heartbeat renewal already started")
+        try:
+            self.renew()
+        except Exception:
+            self._close()
+            raise
         self._thread = threading.Thread(target=self._run, name="omarchy-cast-lease", daemon=True)
         self._thread.start()
 
@@ -84,6 +166,17 @@ class SessionLease:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2)
+            self._thread = None
+        self._close()
+
+    def _close(self) -> None:
+        with self._lock:
+            if self._descriptor is not None:
+                os.close(self._descriptor)
+                self._descriptor = None
+            if self._directory_descriptor is not None:
+                os.close(self._directory_descriptor)
+                self._directory_descriptor = None
 
 
 def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False) -> None:

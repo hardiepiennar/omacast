@@ -187,6 +187,10 @@ smoothness, continuous internet access, and audio/video sync all matter.
   those descriptors. FluxCast receives paths to preopened telemetry inodes
   through the controller's `/proc/<pid>/fd` entries, so a later pathname swap
   cannot redirect engine output to another user file.
+- The renewable user heartbeat is created and validated without truncation,
+  then retained as one nonblocking descriptor through the complete session.
+  Renewals update only that inode, matching the privileged guard and recovery
+  processes that independently pin the same heartbeat before reading it.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the
@@ -471,6 +475,9 @@ must:
 - refuse to overwrite pre-existing configuration or operate when ownership is
   ambiguous;
 - use a unique token and an independent maximum-duration recovery path;
+- establish renewable lease files without following, blocking on, or
+  truncating an unvalidated inode, and retain the verified inode across
+  renewal;
 - restore the exact prior NetworkManager/systemd-networkd/firewall state;
 - expose deterministic status and cleanup results to the supervisor;
 - support cancellation during discovery, authorization, connection, and media;

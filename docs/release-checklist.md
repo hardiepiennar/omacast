@@ -387,6 +387,11 @@
       retention, and append. FluxCast writes progress, latency, packet, and log
       output through preopened descriptor-backed paths. Link, FIFO, hard-link,
       and induced directory-replacement tests preserve unrelated targets.
+- [x] The unprivileged renewable heartbeat opens its private parent and file
+      with no-follow/nonblocking semantics, validates type, ownership, mode,
+      size, and link count before truncation, and renews one pinned descriptor
+      until Stop. FIFO, link, oversized/public-file, unsafe-parent, and
+      post-open replacement regressions pass without changing unrelated data.
 
 Run this before every release:
 

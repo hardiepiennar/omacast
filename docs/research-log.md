@@ -1603,3 +1603,31 @@ two-generation subprocess write through the descriptor-backed engine path.
 Unrelated targets remain unchanged. The change affects only unprivileged local
 state/telemetry handling and does not alter P2P, privileged cleanup, capture,
 encoding, or receiver negotiation, so no Fire TV run is required.
+
+### Renewable heartbeat writer anchoring (2026-08-26)
+
+The privileged guard and independent recovery process already opened the
+user-owned heartbeat once, validated its inode, and retained that descriptor.
+The unprivileged writer did not match that contract: every renewal reopened the
+predictable pathname with `O_TRUNC` before checking what it referenced. A FIFO
+could block the renewal thread during `open()`, while a hard link to another
+user-owned file was truncated before any later validation could reject it.
+
+`SessionLease` now opens the private marker directory with directory/no-follow
+semantics and verifies its current-user ownership and `0700` mode. It opens or
+exclusively creates `heartbeat` with no-follow and nonblocking flags but without
+truncation, then validates that exact descriptor as a private, single-link,
+current-user-owned regular file no larger than 32 bytes. Only then does the
+first renewal truncate and write. The controller keeps both directory and file
+descriptors until Stop; every later renewal revalidates and updates the pinned
+file descriptor with positional writes rather than reopening the pathname.
+
+This intentionally does not use atomic replacement. Both privileged readers
+pin the original heartbeat inode after guarded setup, so replacing it on every
+renewal would leave them observing stale data. An induced post-open pathname
+replacement instead proves that the controller and a guard-like reader keep
+observing the original inode while the replacement target remains unchanged.
+Additional offline regressions reject symlinks, hard links, FIFOs, oversized or
+public files, and unsafe parent directories before modification. The change is
+limited to the unprivileged lease writer and requires no receiver or network
+test.

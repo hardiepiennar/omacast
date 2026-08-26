@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 import tempfile
@@ -99,6 +101,92 @@ class TransportTest(unittest.TestCase):
             lease.stop()
             self.assertRegex(heartbeat.read_text(encoding="ascii"), r"^[0-9]+\n$")
             self.assertEqual(heartbeat.stat().st_mode & 0o777, 0o600)
+
+    def test_session_lease_rejects_links_without_changing_their_targets(self) -> None:
+        for link_kind in ("symlink", "hardlink"):
+            with self.subTest(link_kind=link_kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                heartbeat = root / "heartbeat"
+                target = root / "unrelated"
+                target.write_text("preserve", encoding="utf-8")
+                target.chmod(0o600)
+                if link_kind == "symlink":
+                    heartbeat.symlink_to(target)
+                else:
+                    os.link(target, heartbeat)
+
+                with self.assertRaises(OSError):
+                    SessionLease(heartbeat).start()
+
+                self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+
+    def test_session_lease_rejects_fifo_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            heartbeat = Path(directory) / "heartbeat"
+            os.mkfifo(heartbeat, mode=0o600)
+            probe = (
+                "import pathlib,sys\n"
+                "from omarchy_cast.transport import SessionLease\n"
+                "try:\n"
+                "    SessionLease(pathlib.Path(sys.argv[1])).start()\n"
+                "except OSError as error:\n"
+                "    print(error)\n"
+                "else:\n"
+                "    raise SystemExit('FIFO was accepted as the session heartbeat')\n"
+            )
+            result = subprocess.run(
+                (sys.executable, "-c", probe, str(heartbeat)),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("not a regular file", result.stdout)
+
+    def test_session_lease_rejects_oversized_or_public_files_before_truncation(self) -> None:
+        for content, mode, message in (("x" * 33, 0o600, "size limit"), ("preserve", 0o644, "permissions")):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                heartbeat = Path(directory) / "heartbeat"
+                heartbeat.write_text(content, encoding="ascii")
+                heartbeat.chmod(mode)
+
+                with self.assertRaisesRegex(OSError, message):
+                    SessionLease(heartbeat).start()
+
+                self.assertEqual(heartbeat.read_text(encoding="ascii"), content)
+                self.assertEqual(heartbeat.stat().st_mode & 0o777, mode)
+
+    def test_session_lease_keeps_renewing_the_pinned_inode_after_path_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            heartbeat = root / "heartbeat"
+            target = root / "unrelated"
+            target.write_text("preserve", encoding="utf-8")
+            target.chmod(0o600)
+            lease = SessionLease(heartbeat, interval_seconds=60)
+            with patch("omarchy_cast.transport.time.time", side_effect=(100, 200)):
+                lease.start()
+                guard_descriptor = os.open(heartbeat, os.O_RDONLY)
+                try:
+                    heartbeat.unlink()
+                    heartbeat.symlink_to(target)
+                    lease.renew()
+                    self.assertEqual(os.pread(guard_descriptor, 32, 0), b"200\n")
+                finally:
+                    os.close(guard_descriptor)
+                    lease.stop()
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+
+    def test_session_lease_rejects_an_unsafe_parent_without_repairing_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "markers"
+            parent.mkdir(mode=0o755)
+            with self.assertRaisesRegex(OSError, "directory ownership or permissions"):
+                SessionLease(parent / "heartbeat").start()
+            self.assertEqual(parent.stat().st_mode & 0o777, 0o755)
+            self.assertFalse((parent / "heartbeat").exists())
 
     def test_engine_detail_is_bounded_to_recent_lines(self) -> None:
         detail = GuardedTransportAdapter._bounded_detail("first\nsecond\nthird\nfourth\nfifth\n", "fallback")
