@@ -1,0 +1,371 @@
+From 4490887c87f3796169445b801da38ceed449f1ab Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Wed, 26 Aug 2026 21:07:22 +1200
+Subject: [PATCH] Keep active RTSP fallback available
+
+---
+ src/wfd/probe.py                     | 19 +++++--
+ src/wfd/rtsp/handler.py              | 38 +++++++++++---
+ src/wfd/rtsp/message.py              |  3 ++
+ src/wfd/rtsp/rtsp_server.py          | 30 ++++++++---
+ tests/test_wfd_active_probe_claim.py | 39 +++++++++++++++
+ tests/test_wfd_rtsp_identity.py      | 74 ++++++++++++++++++++++++----
+ 6 files changed, 176 insertions(+), 27 deletions(-)
+ create mode 100644 tests/test_wfd_active_probe_claim.py
+
+diff --git a/src/wfd/probe.py b/src/wfd/probe.py
+index ec26ef8..f2362c8 100644
+--- a/src/wfd/probe.py
++++ b/src/wfd/probe.py
+@@ -16,7 +16,8 @@ from .modes import (
+ from .net import _safe_source_port
+ from .p2p.addressing import _wait_for_peer_ip
+ from .rtsp.message import (
+-    RTSPMessage, RTSPMessageError, _parse_parameters, _parse_rtp_ports,
++    RTSPMessage, RTSPMessageError, WFD_NEGOTIATION_METHODS,
++    _parse_parameters, _parse_rtp_ports,
+     _parse_transport_client_ports, _read_rtsp_message,
+ )
+ from .rtsp.rtsp_server import WFDRTSPServer
+@@ -71,7 +72,8 @@ def _active_rtsp_probe(
+         return
+ 
+     print(f"[FluxCast WFD RTSP] Active probe: connected to TV RTSP at {tv_ip}:{tv_port}")
+-    if not rtsp_server.claim_client(tv_ip):
++    claim = rtsp_server.claim_client(tv_ip, replace_unconfirmed=True)
++    if claim is None:
+         print(f"[FluxCast WFD RTSP] Active probe: rejected unverified or duplicate client {tv_ip}")
+         sock.close()
+         return
+@@ -83,7 +85,7 @@ def _active_rtsp_probe(
+     except (OSError, ValueError) as exc:
+         print(f"[FluxCast WFD RTSP] Active probe: socket setup failed: {exc}")
+         sock.close()
+-        rtsp_server.release_client(tv_ip)
++        rtsp_server.release_client(tv_ip, claim)
+         return
+     local_uri = f"rtsp://{local_ip}:{rtsp_server.port}/wfd1.0"
+     session_id = str(random.randint(1_000_000, 9_999_999))
+@@ -136,6 +138,9 @@ def _active_rtsp_probe(
+                     if not msg.status.startswith("200"):
+                         print(f"[FluxCast WFD RTSP] Active probe: {name} failed: {msg.status}")
+                         break
++                    if name != "UNKNOWN" and not rtsp_server.confirm_client(tv_ip, claim):
++                        print("[FluxCast WFD RTSP] Active probe ownership was superseded.")
++                        return
+                     print(f"[FluxCast WFD RTSP] Active probe <- OK for {name}")
+ 
+                     if name == "M1_OPTIONS":
+@@ -189,6 +194,12 @@ def _active_rtsp_probe(
+ 
+                 else:
+                     method = msg.method
++                    if (
++                        method in WFD_NEGOTIATION_METHODS
++                        and not rtsp_server.confirm_client(tv_ip, claim)
++                    ):
++                        print("[FluxCast WFD RTSP] Active probe ownership was superseded.")
++                        return
+                     print(f"[FluxCast WFD RTSP] Active probe <- TV request: {method}")
+ 
+                     if method in ("GET_PARAMETER", "SET_PARAMETER"):
+@@ -273,5 +284,5 @@ def _active_rtsp_probe(
+     finally:
+         if media is not None:
+             media.stop()
+-        rtsp_server.release_client(tv_ip)
++        rtsp_server.release_client(tv_ip, claim)
+     print("[FluxCast WFD RTSP] Active probe: session ended.")
+diff --git a/src/wfd/rtsp/handler.py b/src/wfd/rtsp/handler.py
+index d07e444..9d6ae46 100644
+--- a/src/wfd/rtsp/handler.py
++++ b/src/wfd/rtsp/handler.py
+@@ -17,7 +17,8 @@ from ..modes import (
+ )
+ from ..net import _netdev_tx_bytes, _safe_source_port
+ from .message import (
+-    RTSPMessage, RTSPMessageError, _parse_parameters, _parse_rtp_ports,
++    RTSPMessage, RTSPMessageError, WFD_NEGOTIATION_METHODS,
++    _parse_parameters, _parse_rtp_ports,
+     _parse_transport_client_ports, _read_rtsp_message, _sink_advertises_uibc,
+ )
+ 
+@@ -29,13 +30,38 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+     def handle(self) -> None:
+         client_ip = self.client_address[0]
+         parent = getattr(self.server, "parent_server", None)
+-        if parent is None or not parent.claim_client(client_ip):
++        claim = None if parent is None else parent.claim_client(client_ip)
++        if claim is None:
+             print(f"[FluxCast WFD RTSP] Rejected unverified client from {client_ip}")
+             return
++        self._parent_server = parent
++        self._client_ip = client_ip
++        self._client_claim = claim
+         try:
+             self._handle_verified_client()
+         finally:
+-            parent.release_client(client_ip)
++            parent.release_client(client_ip, claim)
++
++    def _is_negotiation_progress(self, msg: RTSPMessage) -> bool:
++        """Recognize protocol progress before allowing the claim to act on it."""
++        if msg.is_response:
++            return msg.cseq in self.pending and msg.status.startswith("200")
++        return msg.method in WFD_NEGOTIATION_METHODS
++
++    def _dispatch_message(self, msg: RTSPMessage) -> None:
++        if msg.is_response:
++            self._handle_response(msg)
++            return
++        self._handle_request(msg)
++
++    def _process_claimed_message(self, msg: RTSPMessage, peer: str) -> bool:
++        if self._is_negotiation_progress(msg) and not self._parent_server.confirm_client(
++            self._client_ip, self._client_claim
++        ):
++            print(f"[FluxCast WFD RTSP] Superseded unconfirmed client from {peer}")
++            return False
++        self._dispatch_message(msg)
++        return True
+ 
+     def _handle_verified_client(self) -> None:
+         peer = f"{self.client_address[0]}:{self.client_address[1]}"
+@@ -72,10 +98,8 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+                     print(f"[FluxCast WFD RTSP] TV disconnected from {peer}")
+                     return
+                 self._log_message(msg)
+-                if msg.is_response:
+-                    self._handle_response(msg)
+-                else:
+-                    self._handle_request(msg)
++                if not self._process_claimed_message(msg, peer):
++                    return
+         except WFDNotReady as exc:
+             print(f"[FluxCast WFD RTSP] ERROR: {exc}")
+         except RTSPMessageError as exc:
+diff --git a/src/wfd/rtsp/message.py b/src/wfd/rtsp/message.py
+index ee4ad8b..fe50560 100644
+--- a/src/wfd/rtsp/message.py
++++ b/src/wfd/rtsp/message.py
+@@ -7,6 +7,9 @@ RTSP_MAX_LINE_BYTES = 8 * 1024
+ RTSP_MAX_HEADER_BYTES = 64 * 1024
+ RTSP_MAX_HEADERS = 64
+ RTSP_MAX_BODY_BYTES = 64 * 1024
++WFD_NEGOTIATION_METHODS = frozenset(
++    {"OPTIONS", "GET_PARAMETER", "SET_PARAMETER", "SETUP", "PLAY", "TEARDOWN"}
++)
+ 
+ 
+ class RTSPMessageError(ValueError):
+diff --git a/src/wfd/rtsp/rtsp_server.py b/src/wfd/rtsp/rtsp_server.py
+index c1d9884..68b6153 100644
+--- a/src/wfd/rtsp/rtsp_server.py
++++ b/src/wfd/rtsp/rtsp_server.py
+@@ -52,27 +52,45 @@ class WFDRTSPServer:
+         self.interface = interface
+         self._server: Optional[socketserver.ThreadingTCPServer] = None
+         self._thread: Optional[threading.Thread] = None
++        # Socket acceptance is only a reservation. This becomes true after the
++        # selected receiver produces meaningful RTSP negotiation traffic.
+         self.has_connected_client = False
+         self._client_lock = threading.Lock()
+         self._connected_client: Optional[str] = None
++        self._client_claim = 0
+         self._media_lock = threading.Lock()
+         self._active_media: list[WFDMediaPipeline] = []
+         self._uibc_server = None  # opt-in UIBC input server; None unless enabled
+ 
+-    def claim_client(self, client_ip: str) -> bool:
+-        """Admit only the selected receiver, and only once at a time."""
++    def claim_client(
++        self,
++        client_ip: str,
++        *,
++        replace_unconfirmed: bool = False,
++    ) -> Optional[int]:
++        """Reserve the selected receiver and return an ownership generation."""
+         if not _is_expected_peer_ip(client_ip, self.peer_address, self.interface):
+-            return False
++            return None
+         with self._client_lock:
+             if self._connected_client is not None:
+-                return False
++                if not replace_unconfirmed or self.has_connected_client:
++                    return None
++            self._client_claim += 1
+             self._connected_client = client_ip
++            self.has_connected_client = False
++            return self._client_claim
++
++    def confirm_client(self, client_ip: str, claim: int) -> bool:
++        """Confirm that the current claim produced meaningful RTSP traffic."""
++        with self._client_lock:
++            if self._connected_client != client_ip or self._client_claim != claim:
++                return False
+             self.has_connected_client = True
+             return True
+ 
+-    def release_client(self, client_ip: str) -> None:
++    def release_client(self, client_ip: str, claim: int) -> None:
+         with self._client_lock:
+-            if self._connected_client == client_ip:
++            if self._connected_client == client_ip and self._client_claim == claim:
+                 self._connected_client = None
+                 self.has_connected_client = False
+ 
+diff --git a/tests/test_wfd_active_probe_claim.py b/tests/test_wfd_active_probe_claim.py
+new file mode 100644
+index 0000000..aa1204c
+--- /dev/null
++++ b/tests/test_wfd_active_probe_claim.py
+@@ -0,0 +1,39 @@
++import unittest
++from types import SimpleNamespace
++from unittest import mock
++
++from wfd.probe import _active_rtsp_probe
++
++
++class ActiveProbeClaimTest(unittest.TestCase):
++    def test_probe_atomically_supersedes_only_an_unconfirmed_passive_claim(self):
++        server = SimpleNamespace(
++            has_connected_client=False,
++            interface="wlan0",
++            port=7236,
++            claim_client=mock.Mock(return_value=None),
++        )
++        peer = SimpleNamespace(address="aa:bb:cc:dd:ee:ff", rtsp_port=7236)
++        sock = mock.Mock()
++
++        with mock.patch("wfd.probe.time.sleep"), mock.patch(
++            "wfd.probe._wait_for_peer_ip", return_value="192.168.49.1"
++        ), mock.patch("wfd.probe.socket.create_connection", return_value=sock):
++            _active_rtsp_probe(server, peer, SimpleNamespace())
++
++        server.claim_client.assert_called_once_with(
++            "192.168.49.1", replace_unconfirmed=True
++        )
++        sock.close.assert_called_once_with()
++
++    def test_confirmed_passive_client_cancels_probe_before_address_lookup(self):
++        server = SimpleNamespace(has_connected_client=True)
++        with mock.patch("wfd.probe.time.sleep"), mock.patch(
++            "wfd.probe._wait_for_peer_ip"
++        ) as lookup:
++            _active_rtsp_probe(server, SimpleNamespace(), SimpleNamespace())
++        lookup.assert_not_called()
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_wfd_rtsp_identity.py b/tests/test_wfd_rtsp_identity.py
+index cbd0ebf..1e65e5c 100644
+--- a/tests/test_wfd_rtsp_identity.py
++++ b/tests/test_wfd_rtsp_identity.py
+@@ -100,16 +100,41 @@ class RTSPClientClaimTest(unittest.TestCase):
+         with mock.patch(
+             "wfd.rtsp.rtsp_server._is_expected_peer_ip", return_value=True
+         ) as verify:
+-            self.assertTrue(self.server.claim_client("192.168.49.1"))
+-            self.assertFalse(self.server.claim_client("192.168.49.1"))
+-            self.assertTrue(self.server.has_connected_client)
+-            self.server.release_client("192.168.49.2")
+-            self.assertTrue(self.server.has_connected_client)
+-            self.server.release_client("192.168.49.1")
++            claim = self.server.claim_client("192.168.49.1")
++            self.assertIsNotNone(claim)
++            assert claim is not None
++            self.assertIsNone(self.server.claim_client("192.168.49.1"))
+             self.assertFalse(self.server.has_connected_client)
+-            self.assertTrue(self.server.claim_client("192.168.49.1"))
++            self.assertTrue(self.server.confirm_client("192.168.49.1", claim))
++            self.assertTrue(self.server.has_connected_client)
++            self.server.release_client("192.168.49.2", claim)
++            self.assertTrue(self.server.has_connected_client)
++            self.server.release_client("192.168.49.1", claim)
++            self.assertFalse(self.server.has_connected_client)
++            self.assertIsNotNone(self.server.claim_client("192.168.49.1"))
+         self.assertEqual(verify.call_count, 3)
+ 
++    def test_active_probe_can_supersede_only_an_unconfirmed_claim(self):
++        with mock.patch("wfd.rtsp.rtsp_server._is_expected_peer_ip", return_value=True):
++            passive = self.server.claim_client("192.168.49.1")
++            active = self.server.claim_client(
++                "192.168.49.1", replace_unconfirmed=True
++            )
++        self.assertIsNotNone(passive)
++        self.assertIsNotNone(active)
++        assert passive is not None and active is not None
++        self.assertNotEqual(passive, active)
++        self.assertFalse(self.server.confirm_client("192.168.49.1", passive))
++        self.server.release_client("192.168.49.1", passive)
++        self.assertTrue(self.server.confirm_client("192.168.49.1", active))
++        self.assertTrue(self.server.has_connected_client)
++        self.server.release_client("192.168.49.1", passive)
++        self.assertTrue(self.server.has_connected_client)
++        with mock.patch("wfd.rtsp.rtsp_server._is_expected_peer_ip", return_value=True):
++            self.assertIsNone(
++                self.server.claim_client("192.168.49.1", replace_unconfirmed=True)
++            )
++
+ 
+ class RTSPHandlerAdmissionTest(unittest.TestCase):
+     def _handler(self, parent):
+@@ -120,7 +145,7 @@ class RTSPHandlerAdmissionTest(unittest.TestCase):
+ 
+     def test_rejected_client_never_reaches_rtsp_negotiation(self):
+         parent = mock.Mock()
+-        parent.claim_client.return_value = False
++        parent.claim_client.return_value = None
+         handler = self._handler(parent)
+         with mock.patch.object(handler, "_handle_verified_client") as negotiate:
+             handler.handle()
+@@ -130,13 +155,42 @@ class RTSPHandlerAdmissionTest(unittest.TestCase):
+ 
+     def test_verified_client_ownership_is_released_after_handler_failure(self):
+         parent = mock.Mock()
+-        parent.claim_client.return_value = True
++        parent.claim_client.return_value = 7
+         handler = self._handler(parent)
+         with mock.patch.object(
+             handler, "_handle_verified_client", side_effect=RuntimeError("test failure")
+         ), self.assertRaisesRegex(RuntimeError, "test failure"):
+             handler.handle()
+-        parent.release_client.assert_called_once_with("192.168.49.1")
++        parent.release_client.assert_called_once_with("192.168.49.1", 7)
++
++    def test_only_meaningful_rtsp_messages_confirm_a_claim(self):
++        parent = mock.Mock()
++        parent.claim_client.return_value = 7
++        handler = self._handler(parent)
++        handler.pending = {"1": "M1_OPTIONS"}
++        malformed = SimpleNamespace(is_response=False, method="GARBAGE")
++        valid = SimpleNamespace(is_response=True, cseq="1", status="200 OK")
++        with mock.patch.object(handler, "_handle_request") as request:
++            self.assertFalse(handler._is_negotiation_progress(malformed))
++            handler._dispatch_message(malformed)
++        request.assert_called_once_with(malformed)
++        with mock.patch.object(handler, "_handle_response") as response:
++            self.assertTrue(handler._is_negotiation_progress(valid))
++            handler._dispatch_message(valid)
++        response.assert_called_once_with(valid)
++
++    def test_superseded_handler_cannot_dispatch_a_valid_message(self):
++        parent = mock.Mock()
++        parent.confirm_client.return_value = False
++        handler = self._handler(parent)
++        handler._parent_server = parent
++        handler._client_ip = "192.168.49.1"
++        handler._client_claim = 3
++        message = SimpleNamespace(is_response=False, method="PLAY")
++        with mock.patch.object(handler, "_dispatch_message") as dispatch:
++            self.assertFalse(handler._process_claimed_message(message, "peer"))
++        parent.confirm_client.assert_called_once_with("192.168.49.1", 3)
++        dispatch.assert_not_called()
+ 
+ 
+ if __name__ == "__main__":
+-- 
+2.55.0
+

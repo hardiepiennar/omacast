@@ -22,3 +22,4 @@
 0028-Bound-receiver-facing-RTSP-input.patch
 0029-Keep-WFD-progress-telemetry-bounded.patch
 0030-Clean-up-partial-WFD-media-startup.patch
+0031-Keep-active-RTSP-fallback-available.patch

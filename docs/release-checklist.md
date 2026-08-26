@@ -445,6 +445,15 @@
       regressions. The exact 24-patch reconstruction passes 125 FluxCast tests;
       the repository passes 163 tests and its validation and shell-lint gates.
       Package revision 49 carries the media-only change with guard API 9.
+- [ ] Production patch 31 keeps the active RTSP fallback available after an
+      idle or malformed passive reservation from the selected receiver. Claims
+      are generation-scoped, confirmation requires meaningful RTSP progress,
+      confirmed sessions cannot be replaced, and stale handlers cannot
+      dispatch or release the replacement. Identity, race, and fallback
+      regressions pass in the exact 25-patch, 130-test engine reconstruction;
+      all 163 repository tests and validation/lint gates pass. Package revision
+      50 retains guard API 9. Complete a short GUI connect/stream/Stop run
+      before closing this receiver-negotiation gate.
 
 Run this before every release:
 

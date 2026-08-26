@@ -273,8 +273,8 @@ compatible-channel tests pass.
   the complete controller suite without it.
 - The FluxCast compatibility history is preserved as 29 numbered patches under
   `patches/` and applied by the tracked Arch recipe to pinned upstream commit
-  `9d27c39`. The production series applies 24 receiver-relevant patches:
-  1–6, 9–22, and 27–30. Portal-only patches 7–8, rejected FLV patch 23,
+  `9d27c39`. The production series applies 25 receiver-relevant patches:
+  1–6, 9–22, and 27–31. Portal-only patches 7–8, rejected FLV patch 23,
   portal/window patches 24–25, and rejected MPEG-TS patch 26 remain tracked
   research and are excluded from shipping.
 - The live host now runs `fluxcast-omarchy-cast 0.1.5.r3.omarchy-36` with all
@@ -619,7 +619,7 @@ read-only doctor/monitor/status probes, live named-receiver discovery,
 versioned state and telemetry, guarded production connect, cooperative Stop,
 stale-state recovery, bounded private logs, and safe offline lifecycle and
 protocol fixtures. `scripts/bootstrap-fluxcast` and the Arch recipe recreate
-the pinned engine from upstream commit `9d27c39` plus the complete 24-patch
+the pinned engine from upstream commit `9d27c39` plus the complete 25-patch
 series. A fresh clone of release-candidate commit `1026b5b` passes the official
 Omarchy validator and all non-hardware controller tests without `work/`.
 
@@ -702,6 +702,14 @@ readiness closes the capture pipe and reaps every started child with bounded
 terminate/kill escalation; only a healthy pair becomes normal pipeline state.
 The five startup failure/success regressions pass in the exact reconstruction.
 
+Offline RTSP ownership note (2026-08-26): production patch 31 distinguishes a
+selected receiver's unconfirmed TCP reservation from validated RTSP progress.
+The active fallback may supersede only an unconfirmed generation; stale
+handlers cannot dispatch or release the replacement, while a confirmed passive
+session still cancels fallback. Offline race and identity regressions pass. A
+short receiver-backed negotiation and Stop run remains required because this
+changes the successful RTSP ownership path.
+
 ### Phase E — build the Omarchy plugin UI
 
 Implementation note (updated 2026-08-24): the repository contains a schema-version-1
@@ -722,7 +730,7 @@ the shell's native toggle route and the bar icon opens the same current-display
 workflow without reading window metadata, taking a screenshot, or opening a
 portal picker. Live discovery identifies receivers without a hard-coded MAC.
 `scripts/validate-plugin` stages the installable payload without the ignored
-local `work/` tree. The shipped 24-patch engine series contains the proven
+local `work/` tree. The shipped 25-patch engine series contains the proven
 display route plus fail-closed selected-receiver admission and bounded RTSP
 input/progress handling. Portal-only patches
 7–8, receiver-rejected FLV patch 23, portal

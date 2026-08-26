@@ -587,11 +587,11 @@ if record_session_interfaces; then exit 3; fi
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(series), 24)
+        self.assertEqual(len(series), 25)
         expected_numbers = (
             [f"{number:04d}" for number in range(1, 7)]
             + [f"{number:04d}" for number in range(9, 23)]
-            + ["0027", "0028", "0029", "0030"]
+            + ["0027", "0028", "0029", "0030", "0031"]
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:

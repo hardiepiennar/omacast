@@ -1856,3 +1856,32 @@ guard API change. All 163 repository tests, staged Omarchy validation,
 production ShellCheck, and git whitespace checks pass. This remediation does
 not change networking, privilege, receiver negotiation, or the successful
 media command line, so no live Fire TV test was run.
+
+### Validated RTSP progress ownership (2026-08-26)
+
+The initial exhaustive-audit wording said that any TCP connection could
+suppress the one-shot active RTSP fallback. Selected-receiver authentication
+in production patch 27 had already narrowed that prerequisite: an unrelated
+host cannot claim the server. The remaining availability bug was that a socket
+attributable to the selected receiver became `has_connected_client` before it
+produced a valid RTSP message. A silent or malformed passive connection could
+therefore cancel the four-second active fallback and later fail itself.
+
+Production patch 31 separates verified identity, unconfirmed socket
+reservation, and confirmed RTSP progress. Every claim receives a monotonically
+new ownership generation. A passive claim becomes confirmed only after an
+expected successful response or a recognized WFD method. The active fallback
+may atomically replace an unconfirmed claim, but it cannot replace a confirmed
+session. A superseded handler cannot confirm, dispatch a later valid command,
+or release the newer owner because all three operations require its exact
+generation token. Unverified peers still fail before obtaining any claim.
+
+Regressions cover unverified admission, unconfirmed supersession, confirmed
+session exclusion, stale confirmation and release, malformed traffic, stale
+`PLAY` dispatch, fallback replacement, and early cancellation after confirmed
+passive progress. The exact 25-patch reconstruction passes all 130 FluxCast
+tests. Package revision 50 carries the engine-only change with guard API 9.
+All 163 repository tests, staged Omarchy validation, production ShellCheck,
+and git whitespace checks pass. Because successful receiver negotiation state
+changed, a short GUI connect/stream/Stop run remains the hardware acceptance
+gate; no live network operation was run during this remediation.
