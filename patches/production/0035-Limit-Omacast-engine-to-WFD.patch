@@ -1,0 +1,248 @@
+From 396df0b379317c41bd2d44458a6ef5be240ad0c1 Mon Sep 17 00:00:00 2001
+From: Omacast contributors <noreply@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 22:42:18 +1200
+Subject: [PATCH] Limit Omacast engine to WFD
+
+---
+ pyproject.toml             | 15 ++++----
+ src/main.py                | 71 +++++++-------------------------------
+ tests/test_wfd_only_cli.py | 50 +++++++++++++++++++++++++++
+ 3 files changed, 71 insertions(+), 65 deletions(-)
+ create mode 100644 tests/test_wfd_only_cli.py
+
+diff --git a/pyproject.toml b/pyproject.toml
+index 321dcb8..4c63555 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
+ [project]
+ name = "fluxcast"
+ version = "0.1.5"
+-description = "Stream your Linux desktop to a Smart TV via Miracast/WFD, DLNA, or Chromecast"
++description = "Omacast's pinned Miracast/Wi-Fi Display engine"
+ readme = "README.md"
+ license = {text = "GPL-3.0-or-later"}
+ authors = [
+@@ -13,16 +13,11 @@ authors = [
+ ]
+ requires-python = ">=3.10"
+ dependencies = [
+-    "upnpclient>=1.0.3",
+-    "pychromecast>=14.0.5",
+     "dbus-next>=0.2.3",
+-    "Pillow>=10.0.0",
+-    "pystray>=0.19.0",
+     "pygobject>=3.42.0",
+ ]
+ keywords = [
+-    "miracast", "wfd", "dlna", "chromecast",
+-    "streaming", "tv", "linux", "wireless-display", "screen-cast",
++    "miracast", "wfd", "streaming", "tv", "linux", "wireless-display",
+ ]
+ classifiers = [
+     "Development Status :: 4 - Beta",
+@@ -54,6 +49,12 @@ include = [
+     "src/**/*.py",
+     "src/assets/*.png",
+ ]
++exclude = [
++    "src/cast/**",
++    "src/dlna/**",
++    "src/ui/**",
++    "src/server.py",
++]
+ 
+ [tool.hatch.build.targets.wheel.force-include]
+ "meta/pypi/pypi_sysinstall.py"             = "pypi_sysinstall.py"
+diff --git a/src/main.py b/src/main.py
+index 18c6ba3..671e5d1 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -5,10 +5,7 @@ Usage:
+     python main.py [OPTIONS]
+ 
+ General Options:
+-    --protocol dlna|cast|wfd wfd = Miracast/Wi-Fi Display (default)
+-                             dlna = UPnP native screening fallback
+-                             cast = pychromecast (needs Chromecast built-in)
+-    --tray                   Launch system tray interface (no terminal needed)
++    --protocol wfd           Miracast/Wi-Fi Display (default and only protocol)
+     --doctor                 Print passive system capability diagnostics and exit
+     --doctor-json            Print diagnostics as JSON and exit
+ 
+@@ -17,20 +14,6 @@ Streaming & Encoding Options:
+     --fps N                  Frames per second (default: 30)
+     --bitrate Xm             Video bitrate (default: 4M)
+ 
+-DLNA / Cast Options:
+-    --host HOST              LAN IP to advertise in the stream URL (default: auto)
+-    --port PORT              HTTP server port (default: 8080)
+-    --discover-timeout N     Discovery timeout in seconds (default: 5)
+-    --transport progressive-ts|hls|live-ts
+-                             progressive-ts = low-latency Samsung mode (default)
+-                             hls = stable Samsung HLS fallback
+-                             live-ts = experimental MPEG-TS mode
+-    --capture-backend auto|wf-recorder|x11grab
+-                             Desktop capture backend for dlna/cast (default: auto)
+-    --device-name NAME       Pre-select DLNA/Cast device by friendly name
+-    --monitor NAME           Pre-select monitor by name for any protocol, e.g. eDP-1
+-    --tv-ip IP               Direct IP connection (cast protocol only)
+-
+ Wi-Fi Display (Miracast) Options:
+     --wfd-scan               Run active Wi-Fi Direct discovery and exit
+     --wfd-peer PEER          Peer selector: index, MAC, or name
+@@ -68,10 +51,6 @@ import time
+ import sys
+ import termios
+ 
+-from capture import prompt_monitor, start_capture, stop_capture
+-from server import HLS_DIR, CorsHLSRequestHandler, HLSRequestHandler, StreamServer
+-
+-
+ def _wfd_sigterm(_signum, _frame) -> None:
+     """Turn service-manager termination into the WFD path's normal unwind."""
+     raise KeyboardInterrupt
+@@ -94,11 +73,8 @@ def parse_args() -> argparse.Namespace:
+     # General Options
+     general = parser.add_argument_group("General Options")
+     general.add_argument("--protocol", default="wfd",
+-                         choices=["dlna", "cast", "wfd"],
+-                         help="Connection protocol: wfd (Miracast, default), "
+-                              "dlna (UPnP fallback), or cast (Chromecast built-in)")
+-    general.add_argument("--tray", action="store_true",
+-                         help="Launch system tray interface (no terminal needed)")
++                         choices=["wfd"],
++                         help="Connection protocol: wfd (Miracast; only supported mode)")
+     general.add_argument("--doctor", action="store_true",
+                          help="Print passive system capability diagnostics and exit")
+     general.add_argument("--doctor-json", action="store_true", dest="doctor_json",
+@@ -113,31 +89,10 @@ def parse_args() -> argparse.Namespace:
+     stream_opts.add_argument("--bitrate", default="4M",
+                              help="Video bitrate (default: 4M)")
+ 
+-    # DLNA / Cast Options
+-    dlna_cast = parser.add_argument_group("DLNA / Cast Options")
+-    dlna_cast.add_argument("--host", default=None,
+-                           help="LAN IP to advertise in the stream URL (default: auto)")
+-    dlna_cast.add_argument("--port", type=int, default=8080,
+-                           help="HTTP server port (default: 8080)")
+-    dlna_cast.add_argument("--discover-timeout", type=int, default=5,
+-                           dest="discover_timeout",
+-                           help="Discovery timeout in seconds (default: 5)")
+-    dlna_cast.add_argument("--transport", default=None,
+-                           choices=["progressive-ts", "hls", "live-ts"],
+-                           help="Stream transport (default: hls for cast, progressive-ts "
+-                                "for dlna); live-ts is experimental")
+-    dlna_cast.add_argument("--capture-backend", default="auto", dest="capture_backend",
+-                           choices=["auto", "wf-recorder", "x11grab"],
+-                           help="Desktop capture backend for dlna/cast: auto (default), wf-recorder, or x11grab")
+-    dlna_cast.add_argument("--tv-ip", default=None, dest="tv_ip",
+-                           help="TV IP address (only applicable for --protocol cast)")
+-    dlna_cast.add_argument("--device-name", default=None, dest="device_name",
+-                           help="Pre-select DLNA/Cast device by friendly name (skips interactive picker)")
+-    dlna_cast.add_argument("--monitor", default=None, dest="monitor_name",
+-                           help="Pre-select monitor by name for any protocol (wfd/dlna/cast), e.g. eDP-1 (skips picker)")
+-
+     # Wi-Fi Display (Miracast) Options
+     wfd = parser.add_argument_group("Wi-Fi Display (Miracast) Options")
++    wfd.add_argument("--monitor", default=None, dest="monitor_name",
++                     help="Pre-select monitor by name, e.g. eDP-1")
+     wfd.add_argument("--wfd-scan", action="store_true", dest="wfd_scan",
+                      help="Run active Wi-Fi Direct discovery and exit")
+     wfd.add_argument("--wfd-peer", default=None, dest="wfd_peer",
+@@ -263,6 +218,8 @@ def _restore_term(saved) -> None:
+ 
+ 
+ def _wait_for_hls_segments(required_segments: int = 2, timeout: float = 15.0) -> bool:
++    from server import HLS_DIR
++
+     playlist = os.path.join(HLS_DIR, "stream.m3u8")
+     start = time.monotonic()
+ 
+@@ -296,14 +253,6 @@ def _wait_for_hls_segments(required_segments: int = 2, timeout: float = 15.0) ->
+ def main() -> None:
+     args = parse_args()
+ 
+-    if args.transport is None:
+-        args.transport = "hls" if args.protocol == "cast" else "progressive-ts"
+-
+-    if args.tray:
+-        from ui import run_tray
+-        run_tray()
+-        return
+-
+     if args.doctor or args.doctor_json:
+         from diagnostics import print_report, run_diagnostics
+         report = run_diagnostics(skip_firewall=getattr(args, "wfd_no_firewall", False))
+@@ -339,6 +288,12 @@ def main() -> None:
+             signal.signal(signal.SIGTERM, previous_sigterm)
+         return
+ 
++    # Unreachable in the Omacast WFD-only parser. Keep upstream's legacy branch
++    # isolated from import and package initialization while patches remain
++    # source-compatible with the pinned base.
++    from capture import prompt_monitor, start_capture, stop_capture
++    from server import CorsHLSRequestHandler, HLSRequestHandler, StreamServer
++
+     host = args.host or get_local_ip()
+     session_id = f"session-{int(time.time())}"
+     if args.transport == "live-ts":
+diff --git a/tests/test_wfd_only_cli.py b/tests/test_wfd_only_cli.py
+new file mode 100644
+index 0000000..3520520
+--- /dev/null
++++ b/tests/test_wfd_only_cli.py
+@@ -0,0 +1,50 @@
++import contextlib
++import io
++import pathlib
++import sys
++import unittest
++from unittest import mock
++
++import main as fluxcast_main
++
++
++class WFDOnlyCLITest(unittest.TestCase):
++    def parse(self, *arguments):
++        with mock.patch.object(sys, "argv", ["fluxcast", *arguments]):
++            return fluxcast_main.parse_args()
++
++    def test_default_and_explicit_wfd_remain_available(self):
++        self.assertEqual(self.parse().protocol, "wfd")
++        self.assertEqual(self.parse("--protocol", "wfd").protocol, "wfd")
++
++    def test_unused_protocols_are_rejected_by_the_parser(self):
++        for protocol in ("dlna", "cast"):
++            with self.subTest(protocol=protocol), contextlib.redirect_stderr(io.StringIO()):
++                with self.assertRaisesRegex(SystemExit, "2"):
++                    self.parse("--protocol", protocol)
++
++    def test_tray_mode_is_not_exposed(self):
++        for option in ("--tray", "--host", "--port", "--transport", "--tv-ip"):
++            with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()):
++                with self.assertRaisesRegex(SystemExit, "2"):
++                    self.parse(option)
++
++    def test_help_advertises_only_the_wfd_protocol(self):
++        output = io.StringIO()
++        with mock.patch.object(sys, "argv", ["fluxcast", "--help"]), contextlib.redirect_stdout(output):
++            with self.assertRaisesRegex(SystemExit, "0"):
++                fluxcast_main.parse_args()
++        help_text = output.getvalue()
++        self.assertIn("--protocol {wfd}", help_text)
++        self.assertNotIn("--tray", help_text)
++        self.assertNotIn("DLNA / Cast Options", help_text)
++
++    def test_wheel_excludes_unused_protocol_and_tray_modules(self):
++        project = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
++        metadata = project.read_text(encoding="utf-8")
++        for excluded in ("src/cast/**", "src/dlna/**", "src/ui/**", "src/server.py"):
++            self.assertIn(f'"{excluded}"', metadata)
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.55.0
+

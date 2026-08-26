@@ -752,6 +752,15 @@ session-created P2P interface disappeared, the user service became inactive,
 and no engine, guard, broker, capture, or mux process remained. This closes the
 revision-53 receiver-backed start/Stop gate.
 
+Offline package-scope note (2026-08-26): production patch 35 narrows the
+companion's public engine to the WFD product boundary. The parser accepts only
+`--protocol wfd`, no tray or LAN/Cast option is advertised, and the wheel
+excludes the tray, Chromecast, DLNA, and HTTP-server modules. Package revision
+54 also drops their Pillow, pystray, pychromecast, and upnpclient dependencies.
+CLI rejection tests, the exact 29-patch engine suite, the repository suite, the
+artifact audit, and a disposable package lifecycle pass. The accepted WFD
+capture, media, network, and privileged-helper paths are unchanged.
+
 ### Phase E — build the Omarchy plugin UI
 
 Implementation note (updated 2026-08-24): the repository contains a schema-version-1

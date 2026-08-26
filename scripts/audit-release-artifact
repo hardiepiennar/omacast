@@ -66,6 +66,9 @@ grep -Fxq "pkgver = $expected_version" <<<"$package_info" || die "package metada
 for dependency in python gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw polkit systemd iproute2 glib2; do
   grep -Fxq "depend = $dependency" <<<"$package_info" || die "missing runtime dependency: $dependency"
 done
+for dependency in python-pillow python-pystray python-pychromecast python-upnpclient; do
+  ! grep -Eq "^(depend|optdepend) = ${dependency}([: ]|$)" <<<"$package_info" || die "package retains an unused protocol dependency: $dependency"
+done
 
 bsdtar -xpf "$package" -C "$audit_root"
 engine="$audit_root/usr/bin/fluxcast"
@@ -140,6 +143,13 @@ site_packages="$(find "$audit_root/usr/lib" -type d -path '*/site-packages' -pri
 PYTHONPATH="$site_packages" PYSTRAY_BACKEND=dummy "$engine" --help > "$audit_root/fluxcast-help.txt"
 for flag in --wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-supplicant-broker --wfd-progress-log; do
   grep -Fq -- "$flag" "$audit_root/fluxcast-help.txt" || die "packaged engine is missing $flag"
+done
+grep -Fq -- '--protocol {wfd}' "$audit_root/fluxcast-help.txt" || die "packaged engine does not expose the WFD-only protocol contract"
+for surface in '--tray' '{dlna,cast,wfd}' 'DLNA / Cast Options'; do
+  ! grep -Fq -- "$surface" "$audit_root/fluxcast-help.txt" || die "packaged engine exposes a non-WFD protocol: $surface"
+done
+for module in cast dlna ui server.py; do
+  [[ ! -e "$site_packages/$module" ]] || die "packaged engine retains excluded module: $module"
 done
 
 pacman -Qp "$package" >/dev/null

@@ -18,12 +18,11 @@ build directory, and emits the package, checksum, package metadata, and source
 commit under `dist/`. The tagged GitHub release workflow runs that builder in a
 fresh Arch Linux container and attests the package provenance.
 
-For the Miracast/WFD profile, Arch dependencies include `python-dbus-next`,
-`python-pillow`, `python-pystray`, `python-gobject`, and
-`python-pychromecast`, plus FFmpeg, GPU Screen Recorder, NetworkManager,
-wpa_supplicant, iw, PipeWire's PulseAudio client, polkit, systemd, and iproute2.
-`upnpclient` is not in the official Arch repositories; it remains optional
-because it is used only for FluxCast's unrelated DLNA discovery path.
+Arch dependencies include `python-dbus-next` and `python-gobject`, plus FFmpeg,
+GPU Screen Recorder, NetworkManager, wpa_supplicant, iw, PipeWire's PulseAudio
+client, polkit, systemd, and iproute2. The packaged command exposes only the
+Miracast/WFD engine. Unused tray, Chromecast, DLNA, and LAN streaming modules
+and their Python dependencies are excluded from the wheel.
 
 The package provides the patched streaming engine, three immutable helper
 executables under `/usr/lib/omarchy-cast/`, and an exact-purpose Polkit action.

@@ -6,7 +6,7 @@
 
 pkgname=fluxcast-omarchy-cast
 pkgver=0.1.5.r3.omarchy
-pkgrel=53
+pkgrel=54
 pkgdesc='Pinned FluxCast WFD engine with Omacast compatibility patches'
 arch=('any')
 url='https://github.com/IlyaP358/fluxcast'
@@ -14,11 +14,8 @@ license=('GPL-3.0-or-later')
 depends=(
   'python'
   'python-dbus-next'
-  'python-pillow'
-  'python-pystray'
   'python-gobject'
   'glib2'
-  'python-pychromecast'
   'gpu-screen-recorder'
   'ffmpeg'
   'networkmanager'
@@ -30,10 +27,7 @@ depends=(
   'iproute2'
 )
 makedepends=('git' 'python-build' 'python-installer' 'python-hatchling')
-optdepends=(
-  'wf-recorder: optional wlroots capture fallback'
-  'python-upnpclient: optional DLNA discovery; not required for Miracast'
-)
+optdepends=('wf-recorder: optional wlroots capture fallback')
 provides=('fluxcast=0.1.5')
 conflicts=('fluxcast')
 source=(

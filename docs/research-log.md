@@ -2029,3 +2029,26 @@ user session service, an empty root session directory, and no FluxCast, guard,
 broker, capture, or mux process. This closes the patch-34 receiver gate; the
 user's separate picture/sound assessment was not recorded for this short
 shutdown-focused run.
+
+### WFD-only companion boundary (2026-08-26)
+
+The pinned FluxCast wheel previously retained its general tray, Chromecast,
+DLNA, and HTTP streaming entry paths even though Omacast invokes only WFD.
+Those unused paths used predictable shared temporary files and directories and
+expanded both local-file and network attack surface without serving the
+product.
+
+Production patch 35 restricts the parser to `--protocol wfd`, removes the tray
+and LAN/Cast option surface, and excludes the `ui`, `cast`, `dlna`, and
+`server.py` modules from the wheel. The package no longer depends on Pillow,
+pystray, pychromecast, or upnpclient. Tests prove default and explicit WFD
+remain accepted while the removed protocols, tray, and LAN-server options fail
+at argument parsing. The artifact audit independently inspects packaged help,
+module membership, and package dependencies so a future build cannot silently
+restore the surface.
+
+The exact 29-patch reconstruction passes 154 FluxCast tests. Package revision
+54 passes its build-time suite, no-root artifact audit, and disposable install/
+removal lifecycle. This is a package-boundary change only; it does not alter
+the receiver-tested WFD media or networking path. Experimental WFD UIBC remains
+a separate audit item.

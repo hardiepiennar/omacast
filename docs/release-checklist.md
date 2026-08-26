@@ -493,6 +493,13 @@
       complete cleanup, followed by idle state, connected infrastructure Wi-Fi,
       no session P2P interface, an inactive user service, an empty root session
       directory, and no remaining engine, helper, capture, or mux process.
+- [x] Production patch 35 restricts the companion CLI and wheel to WFD. Tray,
+      Chromecast, DLNA, their LAN-server module, and their four unused Python
+      dependencies are absent from package revision 54. Parser rejection tests,
+      the exact 29-patch/154-test engine reconstruction, all 177 repository
+      tests, Omarchy validation, shell lint, compilation, artifact audit, and
+      disposable package install/removal pass. The WFD media and network paths
+      are unchanged; experimental WFD UIBC remains a separate review item.
 
 Run this before every release:
 
