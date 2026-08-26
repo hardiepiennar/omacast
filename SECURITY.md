@@ -21,16 +21,23 @@ scheduling request, path, or privileged Stop action from the unprivileged
 session. Stop writes the current session's user-owned marker directly and does
 not request a second authorization.
 
-The helper restores NetworkManager, temporary systemd-networkd configuration,
-and any firewall rule during normal stop, controller failure, or its bounded
-recovery timeout. It does not install a per-user system-bus policy. Instead, a
-root-owned session broker exposes only fixed `connect` and `cleanup` requests
-through a private socket, with the adapter, receiver, and frequency pinned by
-the authenticated guard request. The broker and recovery helper clear WFD
-metadata only while its exact value and root-owned marker still prove Omacast
-ownership. The guard records P2P clients created after its clean baseline in
-root-owned session state and removes only those recorded devices. Omacast also
+During normal Stop, controller failure, or its bounded recovery timeout, the
+helper attempts every safe restoration step for NetworkManager, temporary
+systemd-networkd configuration, and any firewall rule even if an earlier step
+fails. Incomplete cleanup retains root-owned recovery evidence and is reported
+as recovery state instead of being silently treated as success. Omacast also
 exposes a panel recovery action when the unprivileged session owner disappears.
+The offline failure-injection suite covers partial initialization and
+independent restoration failures; the remaining receiver-backed privileged
+failure matrix is tracked in the release checklist.
+
+The helper does not install a per-user system-bus policy. Instead, a root-owned
+session broker exposes only fixed `connect` and `cleanup` requests through a
+private socket, with the adapter, receiver, and frequency pinned by the
+authenticated guard request. The broker and recovery helper clear WFD metadata
+only while its exact value and root-owned marker still prove Omacast ownership.
+The guard records P2P clients created after its clean baseline in root-owned
+session state and removes only those recorded devices.
 
 The detached user service holds a logind idle/sleep inhibitor while casting,
 applies a user-owned CPU weight to its complete supervised process tree, and
@@ -65,8 +72,10 @@ Mirroring sends the selected desktop output and its audio to the chosen local
 Miracast receiver. Anything visible or audible on that output—including
 notifications—may be disclosed to people near the receiver. Omacast does not
 send telemetry to an internet service. Runtime state and diagnostics are kept
-in private per-user directories, with history bounded to the newest 50
-sessions.
+in private per-user directories. Event history and telemetry archives retain
+only the newest 50 sessions; each persistent telemetry archive stops at 8 MiB,
+the recent engine-output tail retains at most 256 KiB, and live FFmpeg progress
+retains only its latest complete record.
 
 Removing the plugin or companion package does not silently erase user data.
 Legacy development preferences under `~/.config/omarchy-cast` and bounded

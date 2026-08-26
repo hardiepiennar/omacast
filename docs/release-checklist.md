@@ -488,8 +488,11 @@
       session cleanup regressions pass in the exact 28-patch, 149-test engine
       reconstruction. Package revision 53 retains guard API 10. Offline
       repository, artifact, fresh lifecycle, and revision-52 upgrade/removal
-      gates pass. One GUI start/Stop gate remains pending because the successful
-      Stop path changed.
+      gates pass. The installed revision-53 GUI gate reached a real
+      1280x720p60 Fire TV stream; UI Stop returned cooperative cancellation with
+      complete cleanup, followed by idle state, connected infrastructure Wi-Fi,
+      no session P2P interface, an inactive user service, an empty root session
+      directory, and no remaining engine, helper, capture, or mux process.
 
 Run this before every release:
 
