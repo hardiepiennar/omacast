@@ -707,8 +707,14 @@ selected receiver's unconfirmed TCP reservation from validated RTSP progress.
 The active fallback may supersede only an unconfirmed generation; stale
 handlers cannot dispatch or release the replacement, while a confirmed passive
 session still cancels fallback. Offline race and identity regressions pass. A
-short receiver-backed negotiation and Stop run remains required because this
+short receiver-backed negotiation and Stop run was retained because this
 changes the successful RTSP ownership path.
+
+Receiver acceptance (2026-08-26): revision 50 completed a normal GUI
+connect/stream/Stop run against the stock Fire TV. The controller returned to
+idle with complete helper cleanup, no media or session P2P processes, active
+NetworkManager, and connected infrastructure Wi-Fi. This closes the short
+patch-31 receiver gate; longer reliability gates remain unchanged.
 
 ### Phase E — build the Omarchy plugin UI
 

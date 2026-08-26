@@ -1885,3 +1885,12 @@ All 163 repository tests, staged Omarchy validation, production ShellCheck,
 and git whitespace checks pass. Because successful receiver negotiation state
 changed, a short GUI connect/stream/Stop run remains the hardware acceptance
 gate; no live network operation was run during this remediation.
+
+The audited revision-50 package and matching API-9 plugin controller were then
+installed on the live host and exercised through the normal GUI against the
+stock Fire TV. The session reached `streaming`, the user confirmed that it
+worked, and Stop completed cooperatively. The controller returned to `idle`
+with complete helper cleanup; media processes and the session P2P interface
+were absent, NetworkManager remained active, and infrastructure Wi-Fi remained
+connected. This closes patch 31's short receiver gate without claiming a soak
+test.
