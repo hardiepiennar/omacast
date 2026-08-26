@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -8,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from omarchy_cast.session import MAX_SESSION_LOGS, DryRunSupervisor, SessionError, SimulatedSupervisor, TransportTestSupervisor, append_event, event_log_path, read_session_events, recover_stale_session, request_stop, session_history, validate_request
+from omarchy_cast.session import MAX_SESSION_LOGS, DryRunSupervisor, SessionError, SimulatedSupervisor, TransportTestSupervisor, _stop_requested, append_event, event_log_path, read_session_events, recover_stale_session, request_stop, session_history, validate_request
 from omarchy_cast.state import idle_state, read_state, transition, write_state
 from omarchy_cast.transport import FakeTransportAdapter, TransportError, TransportResult
 
@@ -109,6 +110,130 @@ class SessionTest(unittest.TestCase):
             self.assertEqual(events["events"][0]["event"], "session-started")
             with self.assertRaisesRegex(SessionError, "controller-issued"):
                 read_session_events("not-a-session", environ=environment)
+
+    def test_event_append_rejects_links_and_fifo_without_changing_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = self.environment(temp)
+            session_id = "a" * 32
+            path = event_log_path(session_id, environment)
+            path.parent.mkdir(mode=0o700, parents=True)
+            target = Path(temp) / "unrelated-user-file"
+            target.write_text("preserve", encoding="utf-8")
+            target.chmod(0o644)
+
+            path.symlink_to(target)
+            with self.assertRaisesRegex(SessionError, "unavailable or unsafe"):
+                append_event(session_id, "test", environment)
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+
+            path.unlink()
+            os.link(target, path)
+            with self.assertRaisesRegex(SessionError, "link count"):
+                append_event(session_id, "test", environment)
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+
+            path.unlink()
+            os.mkfifo(path, mode=0o600)
+            with self.assertRaisesRegex(SessionError, "unavailable or unsafe"):
+                append_event(session_id, "test", environment)
+
+    def test_event_reads_reject_links_fifo_hardlinks_and_oversized_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = self.environment(temp)
+            session_id = "b" * 32
+            path = event_log_path(session_id, environment)
+            path.parent.mkdir(mode=0o700, parents=True)
+            target = Path(temp) / "event-target"
+            target.write_text('{"schemaVersion":1,"event":"test"}\n', encoding="utf-8")
+            target.chmod(0o600)
+
+            path.symlink_to(target)
+            with self.assertRaisesRegex(SessionError, "safe boundary"):
+                read_session_events(session_id, environ=environment)
+            path.unlink()
+
+            os.link(target, path)
+            with self.assertRaisesRegex(SessionError, "safe boundary"):
+                read_session_events(session_id, environ=environment)
+            path.unlink()
+
+            os.mkfifo(path, mode=0o600)
+            with self.assertRaisesRegex(SessionError, "safe boundary"):
+                read_session_events(session_id, environ=environment)
+            path.unlink()
+
+            path.write_bytes(b"x" * (1_048_576 + 1))
+            path.chmod(0o600)
+            with self.assertRaisesRegex(SessionError, "safe boundary"):
+                read_session_events(session_id, environ=environment)
+
+    def test_history_includes_only_safe_controller_issued_event_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = self.environment(temp)
+            accepted = "a" * 32
+            append_event(accepted, "session-started", environment)
+            directory = event_log_path(accepted, environment).parent
+            content = '{"schemaVersion":1,"event":"session-started"}\n'
+            (directory / "not-a-session.jsonl").write_text(content, encoding="utf-8")
+            target = Path(temp) / "history-target"
+            target.write_text(content, encoding="utf-8")
+            target.chmod(0o600)
+            (directory / ("b" * 32 + ".jsonl")).symlink_to(target)
+            os.link(target, directory / ("c" * 32 + ".jsonl"))
+            os.mkfifo(directory / ("d" * 32 + ".jsonl"), mode=0o600)
+
+            history = session_history(limit=10, environ=environment)
+            self.assertEqual([item["sessionId"] for item in history["sessions"]], [accepted])
+
+    def test_stop_request_replaces_links_without_touching_their_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = self.environment(temp)
+            session_id = "e" * 32
+            write_state(transition(idle_state(), "checking", sessionId=session_id), environment)
+            runtime = Path(environment["XDG_RUNTIME_DIR"]) / "omarchy-cast"
+            target = Path(temp) / "stop-target"
+            target.write_text("preserve", encoding="utf-8")
+            target.chmod(0o644)
+            (runtime / "stop-request.tmp").symlink_to(target)
+            (runtime / "stop-request.json").symlink_to(target)
+
+            self.assertTrue(request_stop(environment)["ok"])
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+            self.assertTrue((runtime / "stop-request.tmp").is_symlink())
+            self.assertFalse((runtime / "stop-request.json").is_symlink())
+            self.assertEqual((runtime / "stop-request.json").stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(runtime.glob(".stop-request-*.tmp")), [])
+            self.assertTrue(_stop_requested(session_id, environment))
+
+    def test_stop_reader_rejects_fifo_links_hardlinks_and_unexpected_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = self.environment(temp)
+            session_id = "f" * 32
+            runtime = Path(environment["XDG_RUNTIME_DIR"]) / "omarchy-cast"
+            runtime.mkdir(mode=0o700)
+            path = runtime / "stop-request.json"
+            target = Path(temp) / "stop-target"
+            target.write_text(json.dumps({"schemaVersion": 1, "sessionId": session_id}), encoding="utf-8")
+            target.chmod(0o600)
+
+            path.symlink_to(target)
+            self.assertFalse(_stop_requested(session_id, environment))
+            path.unlink()
+            os.link(target, path)
+            self.assertFalse(_stop_requested(session_id, environment))
+            path.unlink()
+            os.mkfifo(path, mode=0o600)
+            self.assertFalse(_stop_requested(session_id, environment))
+            path.unlink()
+            path.write_bytes(b"{" + b" " * 4_096 + b"}")
+            path.chmod(0o600)
+            self.assertFalse(_stop_requested(session_id, environment))
+            path.write_text("[]", encoding="utf-8")
+            path.chmod(0o600)
+            self.assertFalse(_stop_requested(session_id, environment))
 
     def test_recovery_clears_stale_active_state_under_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

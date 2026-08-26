@@ -435,6 +435,12 @@ include transition timestamps, selected topology, negotiated WFD mode,
 process exits, cleanup results, and useful radio counters, while excluding
 credentials and unrelated network data.
 
+Every active-state and durable-history session identifier is exactly 32
+lowercase hexadecimal characters. Event logs and Stop requests are opened or
+replaced relative to validated private directory descriptors. Reads are
+nonblocking, bounded, no-follow, current-user-owned, private, regular, and
+single-link; malformed or unsafe entries never become history or control data.
+
 Run the streaming supervisor outside `omarchy-shell`, preferably as a named
 transient `systemd --user` service. A shell reload must not orphan the stream;
 logout must stop it. The supervisor owns all child processes and performs

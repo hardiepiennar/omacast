@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import heapq
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import time
 from typing import Any, Mapping
 from uuid import uuid4
 
-from .state import SessionLock, StateError, idle_state, read_state, runtime_directory, transition, write_state
+from .bounds import BoundError, read_bounded_regular_file, validate_json_budget
+from .state import SessionLock, StateError, _open_session_runtime_descriptor, idle_state, read_state, transition, write_state
 from .telemetry import cleanup_live_telemetry
 from .transport import TransportAdapter, TransportError, TransportResult, result_payload, validate_transport_plan
 
@@ -20,6 +23,11 @@ PROFILES = frozenset({"safe"})
 MODES = frozenset({"mirror"})
 SOURCES = frozenset({"display"})
 _PEER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
+_EVENT_LOG_NAME = re.compile(r"^[a-f0-9]{32}\.jsonl$")
+_EVENT_LOG_BYTES = 1_048_576
+_STOP_REQUEST_BYTES = 4_096
+_STOP_REQUEST_NAME = "stop-request.json"
 MAX_SESSION_LOGS = 50
 
 
@@ -52,51 +60,147 @@ def _state_home(environ: Mapping[str, str] | None = None) -> Path:
 
 
 def event_log_path(session_id: str, environ: Mapping[str, str] | None = None) -> Path:
+    if not _SESSION_ID.fullmatch(session_id):
+        raise SessionError("session id must be a controller-issued identifier")
     return _state_home(environ) / "sessions" / f"{session_id}.jsonl"
 
 
-def _prune_session_logs(directory: Path, current: Path) -> None:
+def _open_event_directory(environ: Mapping[str, str] | None, *, create: bool) -> int:
+    directory = _state_home(environ) / "sessions"
+    if create:
+        try:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise SessionError("session history directory is unavailable or unsafe") from exc
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(directory, flags)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise SessionError("session history directory is unavailable or unsafe") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise SessionError("session history path is not a directory")
+        if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise SessionError("session history directory ownership or permissions are unsafe")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _event_candidates(directory_descriptor: int, *, exclude: str | None = None) -> list[tuple[int, str]]:
+    candidates: list[tuple[int, str]] = []
+    with os.scandir(directory_descriptor) as entries:
+        for entry in entries:
+            if entry.name == exclude or not _EVENT_LOG_NAME.fullmatch(entry.name):
+                continue
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if (
+                stat.S_ISREG(metadata.st_mode)
+                and metadata.st_uid == os.getuid()
+                and metadata.st_nlink == 1
+                and not metadata.st_mode & 0o077
+                and metadata.st_size <= _EVENT_LOG_BYTES
+            ):
+                candidates.append((metadata.st_mtime_ns, entry.name))
+    return candidates
+
+
+def _prune_session_logs(current_session_id: str, environ: Mapping[str, str] | None) -> None:
     """Keep bounded private history without ever following links."""
     try:
-        paths = sorted(
-            (
-                path for path in directory.glob("*.jsonl")
-                if path != current and path.is_file() and not path.is_symlink()
-                and re.fullmatch(r"[a-f0-9]{32}\.jsonl", path.name)
-            ),
-            key=lambda path: path.stat().st_mtime_ns,
-            reverse=True,
-        )
-        for path in paths[MAX_SESSION_LOGS - 1:]:
-            path.unlink(missing_ok=True)
-            (directory.parent / "telemetry" / path.name).unlink(missing_ok=True)
-    except OSError:
+        directory_descriptor = _open_event_directory(environ, create=False)
+        try:
+            candidates = sorted(
+                _event_candidates(directory_descriptor, exclude=f"{current_session_id}.jsonl"),
+                reverse=True,
+            )
+            removed: list[str] = []
+            for _, name in candidates[MAX_SESSION_LOGS - 1:]:
+                try:
+                    os.unlink(name, dir_fd=directory_descriptor)
+                except FileNotFoundError:
+                    continue
+                removed.append(name)
+        finally:
+            os.close(directory_descriptor)
+        telemetry = _state_home(environ) / "telemetry"
+        for name in removed:
+            (telemetry / name).unlink(missing_ok=True)
+    except (OSError, SessionError):
         # Retention housekeeping must never interrupt a cast lifecycle.
         return
 
 
 def append_event(session_id: str, event: str, environ: Mapping[str, str] | None = None, **fields: object) -> Path:
     path = event_log_path(session_id, environ)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     payload = {"schemaVersion": 1, "timestamp": _now(), "event": event, **fields}
-    with path.open("a", encoding="utf-8") as handle:
-        os.chmod(path, 0o600)
-        handle.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    try:
+        validate_json_budget(payload)
+        encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    except (BoundError, TypeError, ValueError) as exc:
+        raise SessionError("session event exceeds the safe data boundary") from exc
+    directory_descriptor = _open_event_directory(environ, create=True)
+    descriptor = -1
+    try:
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        try:
+            descriptor = os.open(path.name, flags, 0o600, dir_fd=directory_descriptor)
+        except OSError as exc:
+            raise SessionError("session event log is unavailable or unsafe") from exc
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SessionError("session event log is not a regular file")
+        if metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+            raise SessionError("session event log ownership or link count is unsafe")
+        if metadata.st_size + len(encoded) > _EVENT_LOG_BYTES:
+            raise SessionError("session event log exceeds the safe size limit")
+        os.fchmod(descriptor, 0o600)
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+    except OSError as exc:
+        raise SessionError("session event log is unavailable or unsafe") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_descriptor)
     if event == "session-started":
-        _prune_session_logs(path.parent, path)
+        _prune_session_logs(session_id, environ)
     return path
 
 
-def _read_events(path: Path) -> list[dict[str, object]]:
-    if not path.is_file() or path.stat().st_size > 1_048_576:
-        raise SessionError("session event log is unavailable or exceeds the safe size limit")
+def _read_events(path: Path, *, directory_fd: int | None = None) -> list[dict[str, object]]:
+    if not _EVENT_LOG_NAME.fullmatch(path.name):
+        raise SessionError("session event log name is invalid")
+    try:
+        encoded = read_bounded_regular_file(
+            path,
+            limit=_EVENT_LOG_BYTES,
+            require_owner=True,
+            require_private=True,
+            require_single_link=True,
+            directory_fd=directory_fd,
+        )
+        text = encoded.decode("utf-8")
+    except (OSError, UnicodeDecodeError, BoundError) as exc:
+        raise SessionError("session event log is unavailable or exceeds the safe boundary") from exc
     events: list[dict[str, object]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         try:
             event = json.loads(line)
-        except json.JSONDecodeError as exc:
+            validate_json_budget(event)
+        except (json.JSONDecodeError, BoundError, RecursionError) as exc:
             raise SessionError("session event log contains invalid JSON") from exc
         if not isinstance(event, dict) or event.get("schemaVersion") != 1 or not isinstance(event.get("event"), str):
             raise SessionError("session event log has an unsupported event")
@@ -108,61 +212,138 @@ def session_history(*, limit: int = 10, environ: Mapping[str, str] | None = None
     """Return bounded summaries only; detailed events require an explicit id."""
     if not 1 <= limit <= 50:
         raise SessionError("history limit must be between 1 and 50")
-    directory = _state_home(environ) / "sessions"
-    if not directory.exists():
+    try:
+        directory_descriptor = _open_event_directory(environ, create=False)
+    except FileNotFoundError:
         return {"schemaVersion": 1, "sessions": []}
-    paths = sorted((path for path in directory.glob("*.jsonl") if path.is_file()), key=lambda path: path.stat().st_mtime_ns, reverse=True)
     summaries: list[dict[str, object]] = []
-    for path in paths[:limit]:
-        events = _read_events(path)
-        if not events:
-            continue
-        started = next((event for event in events if event["event"] == "session-started"), None)
-        finished = next((event for event in reversed(events) if event["event"] == "session-finished"), None)
-        summaries.append({
-            "sessionId": path.stem,
-            "startedAt": started.get("timestamp") if isinstance(started, dict) else None,
-            "finishedAt": finished.get("timestamp") if isinstance(finished, dict) else None,
-            "reason": finished.get("reason") if isinstance(finished, dict) else None,
-            "dryRun": bool(started.get("dryRun")) if isinstance(started, dict) else False,
-            "simulated": bool(started.get("simulated")) if isinstance(started, dict) else False,
-            "eventCount": len(events),
-        })
+    try:
+        candidates = heapq.nlargest(limit, _event_candidates(directory_descriptor))
+        for _, name in candidates:
+            try:
+                events = _read_events(Path(name), directory_fd=directory_descriptor)
+            except SessionError:
+                continue
+            if not events:
+                continue
+            started = next((event for event in events if event["event"] == "session-started"), None)
+            finished = next((event for event in reversed(events) if event["event"] == "session-finished"), None)
+            summaries.append({
+                "sessionId": name.removesuffix(".jsonl"),
+                "startedAt": started.get("timestamp") if isinstance(started, dict) else None,
+                "finishedAt": finished.get("timestamp") if isinstance(finished, dict) else None,
+                "reason": finished.get("reason") if isinstance(finished, dict) else None,
+                "dryRun": bool(started.get("dryRun")) if isinstance(started, dict) else False,
+                "simulated": bool(started.get("simulated")) if isinstance(started, dict) else False,
+                "eventCount": len(events),
+            })
+    finally:
+        os.close(directory_descriptor)
     return {"schemaVersion": 1, "sessions": summaries}
 
 
 def read_session_events(session_id: str, *, environ: Mapping[str, str] | None = None) -> dict[str, object]:
-    if not re.fullmatch(r"[a-f0-9]{32}", session_id):
+    if not _SESSION_ID.fullmatch(session_id):
         raise SessionError("session id must be a controller-issued identifier")
-    return {"schemaVersion": 1, "sessionId": session_id, "events": _read_events(event_log_path(session_id, environ))}
+    try:
+        directory_descriptor = _open_event_directory(environ, create=False)
+    except FileNotFoundError as exc:
+        raise SessionError("session event log is unavailable") from exc
+    try:
+        events = _read_events(Path(f"{session_id}.jsonl"), directory_fd=directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+    return {"schemaVersion": 1, "sessionId": session_id, "events": events}
 
 
-def _stop_request_path(environ: Mapping[str, str] | None = None) -> Path:
-    return runtime_directory(environ) / "stop-request.json"
+def _open_runtime_directory(environ: Mapping[str, str] | None, *, create: bool) -> int:
+    try:
+        return _open_session_runtime_descriptor(environ, create=create)
+    except StateError as exc:
+        raise SessionError("session runtime directory is unavailable or unsafe") from exc
+
+
+def _clear_stop_request(environ: Mapping[str, str] | None = None) -> None:
+    directory_descriptor = _open_runtime_directory(environ, create=True)
+    try:
+        try:
+            os.unlink(_STOP_REQUEST_NAME, dir_fd=directory_descriptor)
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(directory_descriptor)
 
 
 def request_stop(environ: Mapping[str, str] | None = None) -> dict[str, object]:
     state = read_state(environ)
     session_id = state.get("sessionId")
-    if state["phase"] == "idle" or not isinstance(session_id, str):
+    if state["phase"] == "idle" or not isinstance(session_id, str) or not _SESSION_ID.fullmatch(session_id):
         raise SessionError("no active omarchy-cast session to stop")
-    directory = runtime_directory(environ)
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = _stop_request_path(environ)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"schemaVersion": 1, "sessionId": session_id}) + "\n", encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    encoded = (json.dumps({"schemaVersion": 1, "sessionId": session_id}, separators=(",", ":")) + "\n").encode("utf-8")
+    directory_descriptor = _open_runtime_directory(environ, create=True)
+    temporary_name = f".stop-request-{uuid4().hex}.tmp"
+    descriptor = -1
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(temporary_name, flags, 0o600, dir_fd=directory_descriptor)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+            raise SessionError("temporary Stop request is unavailable or unsafe")
+        os.fchmod(descriptor, 0o600)
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(
+            temporary_name,
+            _STOP_REQUEST_NAME,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+        )
+        os.fsync(directory_descriptor)
+    except OSError as exc:
+        raise SessionError("Stop request is unavailable or unsafe") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_name, dir_fd=directory_descriptor)
+        except FileNotFoundError:
+            pass
+        os.close(directory_descriptor)
     return {"schemaVersion": 1, "ok": True, "sessionId": session_id, "phase": state["phase"]}
 
 
 def _stop_requested(session_id: str, environ: Mapping[str, str] | None = None) -> bool:
-    path = _stop_request_path(environ)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    if not _SESSION_ID.fullmatch(session_id):
         return False
-    return payload.get("schemaVersion") == 1 and payload.get("sessionId") == session_id
+    try:
+        directory_descriptor = _open_runtime_directory(environ, create=False)
+    except SessionError:
+        return False
+    try:
+        encoded = read_bounded_regular_file(
+            Path(_STOP_REQUEST_NAME),
+            limit=_STOP_REQUEST_BYTES,
+            require_owner=True,
+            require_private=True,
+            require_single_link=True,
+            directory_fd=directory_descriptor,
+        )
+    except (FileNotFoundError, OSError, BoundError):
+        return False
+    finally:
+        os.close(directory_descriptor)
+    try:
+        payload = json.loads(encoded.decode("utf-8"))
+        validate_json_budget(payload, max_nodes=16, max_collection_items=8, max_string_chars=64)
+    except (UnicodeDecodeError, json.JSONDecodeError, BoundError, RecursionError):
+        return False
+    return isinstance(payload, dict) and payload.get("schemaVersion") == 1 and payload.get("sessionId") == session_id
 
 
 def recover_stale_session(environ: Mapping[str, str] | None = None) -> dict[str, object]:
@@ -190,7 +371,7 @@ def recover_stale_session(environ: Mapping[str, str] | None = None) -> dict[str,
                 cleanup_live_telemetry(session_id, environ)
             except ValueError:
                 pass
-        _stop_request_path(environ).unlink(missing_ok=True)
+        _clear_stop_request(environ)
         return {"schemaVersion": 1, "ok": True, "recovered": True, "previousPhase": phase, "sessionId": session_id}
 
 
@@ -218,7 +399,7 @@ class SimulatedSupervisor:
             if existing["phase"] != "idle":
                 raise SessionError("stale session state found; recover it before starting another session")
             session_id = uuid4().hex
-            _stop_request_path(self.environ).unlink(missing_ok=True)
+            _clear_stop_request(self.environ)
             state = transition(idle_state(), "checking", sessionId=session_id, request=request, simulated=True)
             write_state(state, self.environ)
             append_event(session_id, "session-started", self.environ, request=request, simulated=True)
@@ -245,7 +426,7 @@ class SimulatedSupervisor:
                 append_event(session_id, "session-error", self.environ, message=str(exc))
                 raise
             finally:
-                _stop_request_path(self.environ).unlink(missing_ok=True)
+                _clear_stop_request(self.environ)
 
 
 class DryRunSupervisor:
@@ -288,7 +469,7 @@ class DryRunSupervisor:
             if existing["phase"] != "idle":
                 raise SessionError("stale session state found; recover it before starting another session")
             session_id = uuid4().hex
-            _stop_request_path(self.environ).unlink(missing_ok=True)
+            _clear_stop_request(self.environ)
             state = transition(idle_state(), "checking", sessionId=session_id, request=request, dryRun=True)
             write_state(state, self.environ)
             append_event(session_id, "session-started", self.environ, request=request, dryRun=True)
@@ -311,7 +492,7 @@ class DryRunSupervisor:
                 append_event(session_id, "session-error", self.environ, message=str(exc), dryRun=True)
                 raise
             finally:
-                _stop_request_path(self.environ).unlink(missing_ok=True)
+                _clear_stop_request(self.environ)
 
 
 class TransportTestSupervisor:
@@ -335,7 +516,7 @@ class TransportTestSupervisor:
             session_id = session_id or uuid4().hex
             if not re.fullmatch(r"[a-f0-9]{32}", session_id):
                 raise SessionError("session id must be controller-issued")
-            _stop_request_path(self.environ).unlink(missing_ok=True)
+            _clear_stop_request(self.environ)
             state = transition(idle_state(), "checking", sessionId=session_id, request=request, transportTest=not production, production=production)
             write_state(state, self.environ)
             append_event(session_id, "session-started", self.environ, request=request, transportTest=not production, production=production)
@@ -374,4 +555,4 @@ class TransportTestSupervisor:
                     append_event(session_id, "session-error", self.environ, code=error_code, message=str(exc), transportTest=not production, production=production)
                 raise SessionError(str(exc)) from exc
             finally:
-                _stop_request_path(self.environ).unlink(missing_ok=True)
+                _clear_stop_request(self.environ)

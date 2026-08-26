@@ -1543,3 +1543,30 @@ A dedicated package regression requires the root recovery source to contain no
 auditor enforces the same rule. All 132 controller/plugin tests and staged
 payload validation pass. This narrows only the cleanup privilege boundary and
 needs no live receiver run.
+
+### Session event and Stop-file boundary (2026-08-26)
+
+The exhaustive review found that event appends and Stop writes followed
+predictable paths before validating their inodes. Event/history readers used
+separate path checks and unbounded reads, while active state accepted arbitrary
+nonempty session IDs that stale recovery later reused as event-log paths.
+
+The controller now requires 32-character lowercase hexadecimal session IDs in
+active state and event APIs. Event append, retention, history, and explicit
+reads operate through a validated private sessions-directory descriptor.
+Appends validate a current-user-owned, single-link regular file before writing;
+reads add no-follow/nonblocking opens, same-descriptor validation, a 1 MiB
+ceiling, and bounded JSON shape. History considers only safe filenames and
+inodes.
+
+Stop requests use unpredictable exclusive temporary names inside the validated
+runtime descriptor, then replace and fsync descriptor-relatively. The
+supervisor reads at most 4 KiB from a private, single-link regular file and
+rejects links, FIFOs, malformed JSON, unexpected shapes, and other-session
+requests. Cleanup unlinks only relative to the same validated directory.
+
+Adversarial tests preserve symlink and hard-link targets, reject FIFOs without
+blocking, reject oversized inputs and invalid state IDs, and retain normal
+simulation, history, Stop, stale recovery, and transport behavior. This changes
+no privileged helper, network, capture, or receiver path. All 139 offline tests,
+Python compilation, and staged payload validation pass.

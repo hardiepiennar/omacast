@@ -35,6 +35,8 @@ def read_bounded_regular_file(
     limit: int,
     require_owner: bool = False,
     require_private: bool = False,
+    require_single_link: bool = False,
+    directory_fd: int | None = None,
 ) -> bytes:
     """Read a regular file through one descriptor, never beyond ``limit``."""
     # A FIFO opened read-only can wait forever before descriptor validation.
@@ -42,7 +44,7 @@ def read_bounded_regular_file(
     # other file type through fstat without first joining its I/O protocol.
     flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+    descriptor = os.open(path, flags, dir_fd=directory_fd)
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
@@ -51,6 +53,8 @@ def read_bounded_regular_file(
             raise BoundError("runtime data is not owned by the current user")
         if require_private and metadata.st_mode & 0o077:
             raise BoundError("runtime data permissions are too broad")
+        if require_single_link and metadata.st_nlink != 1:
+            raise BoundError("runtime data has an unsafe link count")
         if metadata.st_size > limit:
             raise BoundError(f"runtime data exceeds the {limit}-byte limit")
         chunks: list[bytes] = []

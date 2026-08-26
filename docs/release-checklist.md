@@ -377,6 +377,11 @@
       cleanup; source and built-package contracts reject `/run/user/` and live
       telemetry names in the root recovery payload. All offline tests and staged
       validation pass; the media and network paths are unchanged.
+- [x] Session events, history, and Stop requests use validated directory and
+      file descriptors, bounded nonblocking reads, single-link ownership checks,
+      unpredictable atomic Stop temporaries, and strict controller-issued
+      session IDs. Adversarial and lifecycle tests pass; no privileged, media,
+      or network behavior changes.
 
 Run this before every release:
 

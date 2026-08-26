@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import tempfile
 from typing import Any, Mapping
@@ -16,6 +17,7 @@ from .bounds import BoundError, MAX_STATE_BYTES, bounded_text, read_bounded_regu
 
 SCHEMA_VERSION = 1
 IDLE_PHASE = "idle"
+_SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 PHASES = frozenset({"idle", "checking", "discovering", "preparing", "connecting", "streaming", "stopping", "error", "recovering"})
 TRANSITIONS = {
     "idle": {"checking", "discovering", "recovering"},
@@ -203,8 +205,10 @@ def validate_state(state: Mapping[str, Any]) -> dict[str, object]:
     session_id = state.get("sessionId")
     if phase == IDLE_PHASE and session_id is not None:
         raise StateError("idle state may not own a session")
-    if phase != IDLE_PHASE and (not isinstance(session_id, str) or not session_id):
-        raise StateError("active state requires a session id")
+    if phase != IDLE_PHASE and (
+        not isinstance(session_id, str) or not _SESSION_ID.fullmatch(session_id)
+    ):
+        raise StateError("active state requires a controller-issued session id")
     updated_at = state.get("updatedAt")
     if updated_at is not None and not isinstance(updated_at, str):
         raise StateError("updatedAt must be an ISO timestamp or null")

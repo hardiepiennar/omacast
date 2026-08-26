@@ -12,39 +12,47 @@ from omarchy_cast.bounds import MAX_STATE_BYTES
 from omarchy_cast.state import SessionLock, StateError, idle_state, read_state, session_lock_is_held, state_path, transition, write_state
 
 
+SESSION_ID = "a" * 32
+
+
 class StateTest(unittest.TestCase):
     def test_idle_to_discovery_requires_a_session_id(self) -> None:
         with self.assertRaises(StateError):
             transition(idle_state(), "discovering")
-        state = transition(idle_state(), "discovering", sessionId="session-1")
+        state = transition(idle_state(), "discovering", sessionId=SESSION_ID)
         self.assertEqual(state["phase"], "discovering")
+
+    def test_active_state_requires_controller_issued_session_id(self) -> None:
+        for session_id in ("", "session-1", "../outside", "A" * 32, "a" * 31, "a" * 33):
+            with self.subTest(session_id=session_id), self.assertRaisesRegex(StateError, "controller-issued"):
+                transition(idle_state(), "checking", sessionId=session_id)
 
     def test_rejects_illegal_transition(self) -> None:
         with self.assertRaises(StateError):
-            transition(idle_state(), "streaming", sessionId="session-1")
+            transition(idle_state(), "streaming", sessionId=SESSION_ID)
 
     def test_checking_can_stop_before_discovery(self) -> None:
-        checking = transition(idle_state(), "checking", sessionId="session-1")
+        checking = transition(idle_state(), "checking", sessionId=SESSION_ID)
         self.assertEqual(transition(checking, "stopping")["phase"], "stopping")
 
     def test_idle_transition_discards_prior_session_metadata(self) -> None:
-        active = transition(idle_state(), "checking", sessionId="session-1", request={"peer": "receiver"})
+        active = transition(idle_state(), "checking", sessionId=SESSION_ID, request={"peer": "receiver"})
         self.assertIsInstance(active["startedAt"], str)
         stopped = transition(active, "idle")
         self.assertEqual(set(stopped), {"schemaVersion", "phase", "sessionId", "updatedAt"})
 
     def test_session_start_time_survives_active_transitions(self) -> None:
-        checking = transition(idle_state(), "checking", sessionId="session-1")
+        checking = transition(idle_state(), "checking", sessionId=SESSION_ID)
         discovering = transition(checking, "discovering")
         self.assertEqual(discovering["startedAt"], checking["startedAt"])
 
     def test_writes_private_atomic_json_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             environment = {"XDG_RUNTIME_DIR": temp}
-            state = transition(idle_state(), "checking", sessionId="session-1")
+            state = transition(idle_state(), "checking", sessionId=SESSION_ID)
             path = write_state(state, environment)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(read_state(environment)["sessionId"], "session-1")
+            self.assertEqual(read_state(environment)["sessionId"], SESSION_ID)
             self.assertEqual(json.loads(path.read_text())["phase"], "checking")
 
     def test_no_runtime_state_is_idle(self) -> None:
@@ -59,6 +67,24 @@ class StateTest(unittest.TestCase):
             path.write_bytes(b"{" + b" " * MAX_STATE_BYTES + b"}")
             path.chmod(0o600)
             with self.assertRaisesRegex(StateError, "exceeds"):
+                read_state(environment)
+
+    def test_runtime_state_rejects_non_controller_session_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            path = state_path(environment)
+            path.parent.mkdir(mode=0o700)
+            path.write_text(
+                json.dumps({
+                    "schemaVersion": 1,
+                    "phase": "error",
+                    "sessionId": "../../outside",
+                    "updatedAt": None,
+                }),
+                encoding="utf-8",
+            )
+            path.chmod(0o600)
+            with self.assertRaisesRegex(StateError, "controller-issued"):
                 read_state(environment)
 
     def test_runtime_state_refuses_fifo_without_blocking_on_open(self) -> None:
@@ -101,7 +127,7 @@ class StateTest(unittest.TestCase):
         for _ in range(14):
             nested = {"next": nested}
         with self.assertRaisesRegex(StateError, "nested too deeply"):
-            transition(idle_state(), "checking", sessionId="session-1", request=nested)
+            transition(idle_state(), "checking", sessionId=SESSION_ID, request=nested)
 
     def test_session_lock_allows_exactly_one_owner(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
