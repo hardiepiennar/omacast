@@ -18,3 +18,4 @@
 0020-Pace-RTP-at-the-MPEG-TS-clock.patch
 0021-Restore-receiver-proven-Fire-TV-transport-timing.patch
 0022-Correct-measured-GSR-audio-capture-latency.patch
+0027-Authenticate-selected-WFD-receiver.patch

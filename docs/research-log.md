@@ -1495,3 +1495,29 @@ and hard links without blocking or changing their targets. Existing
 single-owner, Stop, recovery, dry-run, simulation, and fake-transport behavior
 continues to pass. This changes no privileged helper, networking, media, or
 receiver path and therefore does not require a new Fire TV acceptance run.
+
+### Selected-receiver RTSP admission (2026-08-26)
+
+The exhaustive review found that FluxCast's RTSP listener accepted any client
+that could reach its port, used that client's source address as the media
+destination, and allowed multiple handlers to start capture. Omacast's
+`--wfd-no-firewall` launch contract made engine-level receiver authentication
+the required safety boundary rather than an optional firewall optimization.
+
+Production patch 27 passes the selected discovery MAC and base Wi-Fi interface
+into the RTSP server. Before either passive negotiation or the active probe can
+claim a session, the peer address must resolve through the kernel neighbour
+table on the exact session-created `p2p-<interface>-*` link. An exact selected
+MAC is accepted. Because a receiver may use a distinct group-interface MAC,
+the sole neighbour on a clean, session-owned P2P interface is also accepted;
+multiple nonmatching neighbours fail closed. The active probe no longer falls
+back to a conventional unverified address.
+
+Admission is atomic and permits one authenticated receiver. Rejected sockets
+cannot set the connected state or enter RTSP negotiation, and ownership is
+released after normal or exceptional handler exit. Nine focused identity and
+handler-boundary tests pass. The exact 21-patch reconstruction passes all 103
+engine tests; the repository passes all 131 controller/plugin tests and its
+staged installable payload validates. Direct root validation still sees an
+ignored research symlink under `work/`, which is not part of that payload. Live
+receiver acceptance remains open; no network operation was needed here.

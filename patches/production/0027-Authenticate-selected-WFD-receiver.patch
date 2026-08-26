@@ -1,0 +1,454 @@
+From 3e7ec8e29beb88cecb6a2403e9a9ee5dfcf474e2 Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Wed, 26 Aug 2026 18:26:13 +1200
+Subject: [PATCH] Authenticate selected WFD receiver
+
+---
+ src/wfd/p2p/addressing.py       |  90 ++++++++++++++++++--
+ src/wfd/probe.py                |  37 ++++++---
+ src/wfd/rtsp/handler.py         |  14 +++-
+ src/wfd/rtsp/rtsp_server.py     |  24 ++++++
+ src/wfd/session.py              |   2 +
+ tests/test_wfd_rtsp_identity.py | 143 ++++++++++++++++++++++++++++++++
+ 6 files changed, 287 insertions(+), 23 deletions(-)
+ create mode 100644 tests/test_wfd_rtsp_identity.py
+
+diff --git a/src/wfd/p2p/addressing.py b/src/wfd/p2p/addressing.py
+index 5f6a6cc..f4da9fa 100644
+--- a/src/wfd/p2p/addressing.py
++++ b/src/wfd/p2p/addressing.py
+@@ -6,7 +6,62 @@ from typing import Optional
+ from ..proc import _run
+ 
+ 
+-def _get_peer_ip_from_arp(peer_mac: str) -> Optional[str]:
++def _normalized_mac(value: str) -> str:
++    compact = value.replace(":", "").replace("-", "")
++    return compact.lower() if re.fullmatch(r"[0-9a-fA-F]{12}", compact) else ""
++
++
++def _neighbor_identity(line: str) -> tuple[str, str, str] | None:
++    """Return (IP, interface, MAC) for one complete neighbour row."""
++    fields = line.split()
++    if len(fields) < 5 or "dev" not in fields or "lladdr" not in fields:
++        return None
++    try:
++        interface = fields[fields.index("dev") + 1]
++        mac = fields[fields.index("lladdr") + 1]
++    except (IndexError, ValueError):
++        return None
++    if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", fields[0]):
++        return None
++    normalized = _normalized_mac(mac)
++    return (fields[0], interface, normalized) if normalized else None
++
++
++def _is_expected_peer_ip(peer_ip: str, peer_mac: str, interface: str) -> bool:
++    """Prove that peer_ip is the receiver on this session's P2P link.
++
++    A P2P group-interface MAC may differ from its discovery device address. An
++    exact MAC match is strongest; a sole neighbour on the session-scoped group
++    interface is also attributable because the guard required a clean baseline
++    before forming this selected receiver's group. Ambiguous groups fail closed.
++    """
++    if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", peer_ip):
++        return False
++    expected_mac = _normalized_mac(peer_mac)
++    if not expected_mac or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", interface):
++        return False
++    if not shutil.which("ip"):
++        return False
++    try:
++        result = _run(["ip", "neigh", "show", "to", peer_ip], timeout=3.0)
++    except Exception:
++        return False
++    if result.returncode != 0:
++        return False
++    prefix = f"p2p-{interface}-"
++    candidates: list[tuple[str, str, str]] = []
++    for line in result.stdout.splitlines():
++        identity = _neighbor_identity(line)
++        if identity is None or not identity[1].startswith(prefix):
++            continue
++        candidates.append(identity)
++        if identity[0] == peer_ip and identity[2] == expected_mac:
++            return True
++    unique = {(candidate[0], candidate[2]) for candidate in candidates}
++    return len(unique) == 1 and candidates[0][0] == peer_ip
++
++
++def _get_peer_ip_from_arp(peer_mac: str, interface: Optional[str] = None) -> Optional[str]:
+     """Return the IP for peer_mac from the kernel ARP/neighbour table."""
+     if not shutil.which("ip"):
+         return None
+@@ -14,12 +69,23 @@ def _get_peer_ip_from_arp(peer_mac: str) -> Optional[str]:
+         result = _run(["ip", "neigh", "show"], timeout=3.0)
+         if result.returncode != 0:
+             return None
+-        mac = peer_mac.lower().replace("-", ":")
++        mac = _normalized_mac(peer_mac)
++        if not mac:
++            return None
++        candidates: list[tuple[str, str, str]] = []
+         for line in result.stdout.splitlines():
+-            if mac in line.lower():
+-                parts = line.split()
+-                if parts and re.fullmatch(r"\d+\.\d+\.\d+\.\d+", parts[0]):
+-                    return parts[0]
++            identity = _neighbor_identity(line)
++            if not identity:
++                continue
++            if interface is not None and not identity[1].startswith(f"p2p-{interface}-"):
++                continue
++            candidates.append(identity)
++            if identity[2] == mac:
++                return identity[0]
++        if interface is not None:
++            unique = {(candidate[0], candidate[2]) for candidate in candidates}
++            if len(unique) == 1:
++                return candidates[0][0]
+     except Exception:
+         pass
+     return None
+@@ -47,11 +113,19 @@ def _get_peer_ip_from_p2p_iface() -> Optional[str]:
+         pass
+     return None
+ 
+-def _wait_for_peer_ip(peer_mac: str, timeout: float = 12.0) -> Optional[str]:
++def _wait_for_peer_ip(
++    peer_mac: str,
++    timeout: float = 12.0,
++    *,
++    interface: Optional[str] = None,
++    allow_interface_fallback: bool = True,
++) -> Optional[str]:
+     """Poll ARP until the peer's IP appears (DHCP may take a few seconds)."""
+     deadline = time.monotonic() + timeout
+     while time.monotonic() < deadline:
+-        ip = _get_peer_ip_from_arp(peer_mac) or _get_peer_ip_from_p2p_iface()
++        ip = _get_peer_ip_from_arp(peer_mac, interface=interface)
++        if not ip and allow_interface_fallback:
++            ip = _get_peer_ip_from_p2p_iface()
+         if ip:
+             return ip
+         time.sleep(0.75)
+diff --git a/src/wfd/probe.py b/src/wfd/probe.py
+index d80a9d3..86df47f 100644
+--- a/src/wfd/probe.py
++++ b/src/wfd/probe.py
+@@ -38,16 +38,19 @@ def _active_rtsp_probe(
+     # A direct-supplicant client group needs to obtain its lease from the sink
+     # before the sink IP appears in the neighbour table. Fire TV took just over
+     # six seconds from group-object creation in the phase-1 trace.
+-    tv_ip = _wait_for_peer_ip(peer.address, timeout=8.0)
++    tv_ip = _wait_for_peer_ip(
++        peer.address,
++        timeout=8.0,
++        interface=rtsp_server.interface,
++        allow_interface_fallback=False,
++    )
+     if not tv_ip:
+         print(
+-            f"[FluxCast WFD RTSP] Active probe: TV IP not found for MAC {peer.address}; "
+-            "trying conventional Wi-Fi Direct client address 192.168.49.2."
++            f"[FluxCast WFD RTSP] Active probe: selected TV IP not found for MAC "
++            f"{peer.address} on p2p-{rtsp_server.interface}-*; refusing an "
++            "unverified fallback."
+         )
+-        # Some Miracast sinks use the conventional Android Wi-Fi Direct static
+-        # address and remain absent from ARP until the source contacts them.
+-        # Trying it also creates the ARP request needed to discover that sink.
+-        tv_ip = "192.168.49.2"
++        return
+ 
+     if rtsp_server.has_connected_client:
+         return
+@@ -68,10 +71,20 @@ def _active_rtsp_probe(
+         return
+ 
+     print(f"[FluxCast WFD RTSP] Active probe: connected to TV RTSP at {tv_ip}:{tv_port}")
+-    sock.settimeout(8.0)
+-    rfile = sock.makefile("rb")
+-    wfile = sock.makefile("wb")
+-    local_ip: str = sock.getsockname()[0]
++    if not rtsp_server.claim_client(tv_ip):
++        print(f"[FluxCast WFD RTSP] Active probe: rejected unverified or duplicate client {tv_ip}")
++        sock.close()
++        return
++    try:
++        sock.settimeout(8.0)
++        rfile = sock.makefile("rb")
++        wfile = sock.makefile("wb")
++        local_ip: str = sock.getsockname()[0]
++    except (OSError, ValueError) as exc:
++        print(f"[FluxCast WFD RTSP] Active probe: socket setup failed: {exc}")
++        sock.close()
++        rtsp_server.release_client(tv_ip)
++        return
+     local_uri = f"rtsp://{local_ip}:{rtsp_server.port}/wfd1.0"
+     session_id = str(random.randint(1_000_000, 9_999_999))
+ 
+@@ -228,7 +241,6 @@ def _active_rtsp_probe(
+                             local_ip=local_ip,
+                             sink_rtp_port=st["sink_rtp_port"],
+                         )
+-                        rtsp_server.has_connected_client = True
+                         print(
+                             f"[FluxCast WFD RTSP] Active probe: PLAY — "
+                             f"starting media ({mode.name})"
+@@ -261,4 +273,5 @@ def _active_rtsp_probe(
+     finally:
+         if media is not None:
+             media.stop()
++        rtsp_server.release_client(tv_ip)
+     print("[FluxCast WFD RTSP] Active probe: session ended.")
+diff --git a/src/wfd/rtsp/handler.py b/src/wfd/rtsp/handler.py
+index d7954be..c96d010 100644
+--- a/src/wfd/rtsp/handler.py
++++ b/src/wfd/rtsp/handler.py
+@@ -24,6 +24,17 @@ from .message import (
+ 
+ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+     def handle(self) -> None:
++        client_ip = self.client_address[0]
++        parent = getattr(self.server, "parent_server", None)
++        if parent is None or not parent.claim_client(client_ip):
++            print(f"[FluxCast WFD RTSP] Rejected unverified client from {client_ip}")
++            return
++        try:
++            self._handle_verified_client()
++        finally:
++            parent.release_client(client_ip)
++
++    def _handle_verified_client(self) -> None:
+         peer = f"{self.client_address[0]}:{self.client_address[1]}"
+         self.local_ip = self.request.getsockname()[0]
+         self.next_cseq = 1
+@@ -43,9 +54,6 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+         self.setup_ms: Optional[float] = None
+         self.first_tx_reported = False
+ 
+-        if hasattr(self.server, "parent_server"):
+-            self.server.parent_server.has_connected_client = True  # type: ignore[attr-defined]
+-
+         print(f"[FluxCast WFD RTSP] TV connected from {peer}; local={self.local_ip}")
+         _append_latency_log(
+             self.media_config.latency_log_path,
+diff --git a/src/wfd/rtsp/rtsp_server.py b/src/wfd/rtsp/rtsp_server.py
+index 15f41e2..9141163 100644
+--- a/src/wfd/rtsp/rtsp_server.py
++++ b/src/wfd/rtsp/rtsp_server.py
+@@ -5,6 +5,7 @@ from typing import Optional
+ from ..config import WFDMediaConfig
+ from ..constants import WFD_RTSP_PORT
+ from ..media.pipeline import WFDMediaPipeline
++from ..p2p.addressing import _is_expected_peer_ip
+ from .handler import _WFDRTSPHandler
+ 
+ 
+@@ -16,19 +17,42 @@ class WFDRTSPServer:
+     def __init__(
+         self,
+         media_config: WFDMediaConfig,
++        peer_address: str,
++        interface: str,
+         host: str = "0.0.0.0",
+         port: int = WFD_RTSP_PORT,
+     ) -> None:
+         self.host = host
+         self.port = port
+         self.media_config = media_config
++        self.peer_address = peer_address
++        self.interface = interface
+         self._server: Optional[socketserver.ThreadingTCPServer] = None
+         self._thread: Optional[threading.Thread] = None
+         self.has_connected_client = False
++        self._client_lock = threading.Lock()
++        self._connected_client: Optional[str] = None
+         self._media_lock = threading.Lock()
+         self._active_media: list[WFDMediaPipeline] = []
+         self._uibc_server = None  # opt-in UIBC input server; None unless enabled
+ 
++    def claim_client(self, client_ip: str) -> bool:
++        """Admit only the selected receiver, and only once at a time."""
++        if not _is_expected_peer_ip(client_ip, self.peer_address, self.interface):
++            return False
++        with self._client_lock:
++            if self._connected_client is not None:
++                return False
++            self._connected_client = client_ip
++            self.has_connected_client = True
++            return True
++
++    def release_client(self, client_ip: str) -> None:
++        with self._client_lock:
++            if self._connected_client == client_ip:
++                self._connected_client = None
++                self.has_connected_client = False
++
+     def _register_media(self, media: WFDMediaPipeline) -> None:
+         with self._media_lock:
+             self._active_media.append(media)
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 9868447..1ff3563 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -138,6 +138,8 @@ def start_experimental_backend(args) -> None:
+     rtsp_port = getattr(args, "wfd_rtsp_port", WFD_RTSP_PORT)
+     rtsp = WFDRTSPServer(
+         media_config=media_config,
++        peer_address=peer.address,
++        interface=args.wfd_interface,
+         port=rtsp_port,
+     )
+     firewall_opened = False
+diff --git a/tests/test_wfd_rtsp_identity.py b/tests/test_wfd_rtsp_identity.py
+new file mode 100644
+index 0000000..cbd0ebf
+--- /dev/null
++++ b/tests/test_wfd_rtsp_identity.py
+@@ -0,0 +1,143 @@
++import subprocess
++import unittest
++from types import SimpleNamespace
++from unittest import mock
++
++from wfd.config import WFDMediaConfig
++from wfd.p2p.addressing import _is_expected_peer_ip, _neighbor_identity
++from wfd.rtsp.handler import _WFDRTSPHandler
++from wfd.rtsp.rtsp_server import WFDRTSPServer
++
++
++class NeighborIdentityTest(unittest.TestCase):
++    def test_parses_one_complete_neighbor_row(self):
++        self.assertEqual(
++            _neighbor_identity(
++                "192.168.49.1 dev p2p-wlan0-0 lladdr AA:BB:CC:DD:EE:FF REACHABLE"
++            ),
++            ("192.168.49.1", "p2p-wlan0-0", "aabbccddeeff"),
++        )
++
++    def test_selected_mac_and_interface_are_both_required(self):
++        result = subprocess.CompletedProcess(
++            args=[],
++            returncode=0,
++            stdout=(
++                "192.168.49.1 dev wlan0 lladdr aa:bb:cc:dd:ee:ff REACHABLE\n"
++                "192.168.49.1 dev p2p-wlan0-0 lladdr 11:22:33:44:55:66 REACHABLE\n"
++                "192.168.49.2 dev p2p-wlan0-0 lladdr 22:33:44:55:66:77 REACHABLE\n"
++                "192.168.49.1 dev p2p-wlan1-0 lladdr aa:bb:cc:dd:ee:ff REACHABLE\n"
++            ),
++            stderr="",
++        )
++        with mock.patch("wfd.p2p.addressing.shutil.which", return_value="/usr/bin/ip"), mock.patch(
++            "wfd.p2p.addressing._run", return_value=result
++        ) as run:
++            self.assertFalse(
++                _is_expected_peer_ip("192.168.49.1", "aa:bb:cc:dd:ee:ff", "wlan0")
++            )
++        run.assert_called_once_with(
++            ["ip", "neigh", "show", "to", "192.168.49.1"], timeout=3.0
++        )
++
++    def test_selected_receiver_on_selected_p2p_interface_is_accepted(self):
++        result = subprocess.CompletedProcess(
++            args=[],
++            returncode=0,
++            stdout=(
++                "192.168.49.1 dev p2p-wlan0-0 lladdr aa:bb:cc:dd:ee:ff STALE\n"
++            ),
++            stderr="",
++        )
++        with mock.patch("wfd.p2p.addressing.shutil.which", return_value="/usr/bin/ip"), mock.patch(
++            "wfd.p2p.addressing._run", return_value=result
++        ):
++            self.assertTrue(
++                _is_expected_peer_ip("192.168.49.1", "AA-BB-CC-DD-EE-FF", "wlan0")
++            )
++
++    def test_sole_group_neighbor_allows_a_distinct_p2p_interface_mac(self):
++        result = subprocess.CompletedProcess(
++            args=[],
++            returncode=0,
++            stdout=(
++                "192.168.49.1 dev p2p-wlan0-0 lladdr 12:34:56:78:9a:bc REACHABLE\n"
++            ),
++            stderr="",
++        )
++        with mock.patch("wfd.p2p.addressing.shutil.which", return_value="/usr/bin/ip"), mock.patch(
++            "wfd.p2p.addressing._run", return_value=result
++        ):
++            self.assertTrue(
++                _is_expected_peer_ip("192.168.49.1", "aa:bb:cc:dd:ee:ff", "wlan0")
++            )
++
++    def test_invalid_identity_fails_closed_without_running_ip(self):
++        with mock.patch("wfd.p2p.addressing._run") as run:
++            self.assertFalse(_is_expected_peer_ip("not-an-ip", "aa:bb:cc:dd:ee:ff", "wlan0"))
++            self.assertFalse(_is_expected_peer_ip("192.168.49.1", "not-a-mac", "wlan0"))
++            self.assertFalse(_is_expected_peer_ip("192.168.49.1", "aa:bb:cc:dd:ee:ff!", "wlan0"))
++            self.assertFalse(_is_expected_peer_ip("192.168.49.1", "aa:bb:cc:dd:ee:ff", "bad/interface"))
++        run.assert_not_called()
++
++
++class RTSPClientClaimTest(unittest.TestCase):
++    def setUp(self):
++        self.server = WFDRTSPServer(
++            WFDMediaConfig(monitor=None),
++            peer_address="aa:bb:cc:dd:ee:ff",
++            interface="wlan0",
++        )
++
++    def test_unverified_client_is_rejected_without_changing_connection_state(self):
++        with mock.patch(
++            "wfd.rtsp.rtsp_server._is_expected_peer_ip", return_value=False
++        ):
++            self.assertFalse(self.server.claim_client("192.168.1.20"))
++        self.assertFalse(self.server.has_connected_client)
++
++    def test_only_one_verified_receiver_can_own_the_session(self):
++        with mock.patch(
++            "wfd.rtsp.rtsp_server._is_expected_peer_ip", return_value=True
++        ) as verify:
++            self.assertTrue(self.server.claim_client("192.168.49.1"))
++            self.assertFalse(self.server.claim_client("192.168.49.1"))
++            self.assertTrue(self.server.has_connected_client)
++            self.server.release_client("192.168.49.2")
++            self.assertTrue(self.server.has_connected_client)
++            self.server.release_client("192.168.49.1")
++            self.assertFalse(self.server.has_connected_client)
++            self.assertTrue(self.server.claim_client("192.168.49.1"))
++        self.assertEqual(verify.call_count, 3)
++
++
++class RTSPHandlerAdmissionTest(unittest.TestCase):
++    def _handler(self, parent):
++        handler = _WFDRTSPHandler.__new__(_WFDRTSPHandler)
++        handler.client_address = ("192.168.49.1", 7236)
++        handler.server = SimpleNamespace(parent_server=parent)
++        return handler
++
++    def test_rejected_client_never_reaches_rtsp_negotiation(self):
++        parent = mock.Mock()
++        parent.claim_client.return_value = False
++        handler = self._handler(parent)
++        with mock.patch.object(handler, "_handle_verified_client") as negotiate:
++            handler.handle()
++        parent.claim_client.assert_called_once_with("192.168.49.1")
++        negotiate.assert_not_called()
++        parent.release_client.assert_not_called()
++
++    def test_verified_client_ownership_is_released_after_handler_failure(self):
++        parent = mock.Mock()
++        parent.claim_client.return_value = True
++        handler = self._handler(parent)
++        with mock.patch.object(
++            handler, "_handle_verified_client", side_effect=RuntimeError("test failure")
++        ), self.assertRaisesRegex(RuntimeError, "test failure"):
++            handler.handle()
++        parent.release_client.assert_called_once_with("192.168.49.1")
++
++
++if __name__ == "__main__":
++    unittest.main()
+

@@ -7,8 +7,8 @@ reviewable without hiding the changes in a private fork.
 
 ## Production
 
-`production/series` is the sole build authority. Its 20 ordered patches cover
-four parts of the receiver-tested path:
+`production/series` is the sole build authority. Its 21 ordered patches cover
+five parts of the receiver-tested path:
 
 - Wi-Fi Direct and WFD negotiation: patches 1–2 and 5.
 - Hyprland, VAAPI, GPU Screen Recorder, and synchronized audio capture:
@@ -16,6 +16,7 @@ four parts of the receiver-tested path:
 - Receiver-compatible muxing, RTP pacing, buffering, and transport timing:
   patches 6, 9–11, 14–16, and 18–21.
 - Machine-readable live telemetry: patch 17.
+- Selected-receiver authentication and single-client admission: patch 27.
 
 The patches are intentionally atomic. Package builds apply them with `git am`,
 run FluxCast's tests, and fail if the pinned base or series no longer applies

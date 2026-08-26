@@ -235,8 +235,8 @@ compatible-channel tests pass.
   the complete controller suite without it.
 - The FluxCast compatibility history is preserved as 26 numbered patches under
   `patches/` and applied by the tracked Arch recipe to pinned upstream commit
-  `9d27c39`. The production series applies 20 receiver-relevant patches:
-  1–6 and 9–22. Portal-only patches 7–8, rejected FLV patch 23,
+  `9d27c39`. The production series applies 21 receiver-relevant patches:
+  1–6, 9–22, and 27. Portal-only patches 7–8, rejected FLV patch 23,
   portal/window patches 24–25, and rejected MPEG-TS patch 26 remain tracked
   research and are excluded from shipping.
 - The live host now runs `fluxcast-omarchy-cast 0.1.5.r3.omarchy-36` with all
@@ -412,6 +412,12 @@ Hyprland outputs, default audio monitor, render node/encoder, firewall state,
 and receiver identity. No user-specific MAC, interface, monitor, subnet, or
 home path may appear in production defaults.
 
+The media engine must authenticate every inbound or source-initiated RTSP peer
+against the selected receiver and the session-owned P2P interface before RTSP
+negotiation or capture begins. Only one authenticated receiver may own a media
+session. Ambiguous neighbour identity fails closed; a conventional LAN address
+must never be used as an unverified fallback.
+
 Use an explicit state machine:
 
 ```text
@@ -560,7 +566,7 @@ read-only doctor/monitor/status probes, live named-receiver discovery,
 versioned state and telemetry, guarded production connect, cooperative Stop,
 stale-state recovery, bounded private logs, and safe offline lifecycle and
 protocol fixtures. `scripts/bootstrap-fluxcast` and the Arch recipe recreate
-the pinned engine from upstream commit `9d27c39` plus the complete 20-patch
+the pinned engine from upstream commit `9d27c39` plus the complete 21-patch
 series. A fresh clone of release-candidate commit `1026b5b` passes the official
 Omarchy validator and all non-hardware controller tests without `work/`.
 
@@ -657,8 +663,9 @@ the shell's native toggle route and the bar icon opens the same current-display
 workflow without reading window metadata, taking a screenshot, or opening a
 portal picker. Live discovery identifies receivers without a hard-coded MAC.
 `scripts/validate-plugin` stages the installable payload without the ignored
-local `work/` tree. The shipped 20-patch engine series contains the proven
-display route. Portal-only patches 7–8, receiver-rejected FLV patch 23, portal
+local `work/` tree. The shipped 21-patch engine series contains the proven
+display route plus fail-closed selected-receiver admission. Portal-only patches
+7–8, receiver-rejected FLV patch 23, portal
 patches 24–25, and the receiver-rejected MPEG-TS patch 26 remain outside the
 series as preserved research. The
 cast icon is orange during setup, green only in measured streaming state, and

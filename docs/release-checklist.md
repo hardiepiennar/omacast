@@ -366,6 +366,12 @@
 - [ ] Bar icon and tooltip are verified across idle, scanning, preparation,
       connecting, streaming, stopping, error, recovery, shell reload, and lost
       ownership; color is never the only state cue.
+- [ ] Revision 42 authenticates passive and active RTSP peers as the selected
+      receiver on the session-owned P2P interface before negotiation or
+      capture, admits only one receiver, and fails closed on ambiguous identity
+      or conventional-address fallback. The exact 21-patch reconstruction and
+      all offline suites pass; a short selected-Fire-TV connect/Stop run remains
+      the receiver-backed release gate.
 
 Run this before every release:
 
