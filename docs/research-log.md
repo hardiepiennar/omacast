@@ -2112,3 +2112,28 @@ build, no-root artifact audit, and disposable install/removal pass. Patch 35
 already removed the unauthenticated Chromecast/DLNA HTTP half of the same audit
 finding, so no conditional desktop-output or input-injection network service
 remains in the companion. The normal WFD RTSP/RTP path is unchanged.
+
+### Bounded connection-start optimization candidate (2026-08-26)
+
+Startup inspection found two unconditional delays before P2P negotiation: the
+controller requested a fixed 10-second pause after triggering guarded
+networking, and an exact selected receiver still incurred the full 15-second
+discovery window. Revision 56 removes neither safety boundary nor timeout. The
+root broker now waits up to 10 seconds for the guard's root-owned, mode-0600
+`p2p-armed` marker and proceeds immediately when it appears; cancellation and
+failure remain bounded. Production patch 37 enables early scan completion only
+for a complete controller-selected MAC address. NetworkManager and `wpa_cli`
+poll at 500 ms, always stop discovery in cleanup, and retain the former full
+scan for interactive or name-based selection.
+
+The controller records identifier-free `engine-started`, `rtsp-established`,
+and `first-frame` elapsed-millisecond markers in the existing bounded engine
+log. The RTSP passive grace, active-probe timing, group timeout, and capture
+survival checks are unchanged. The exact 31-patch reconstruction passes 146
+FluxCast tests, and all 183 repository tests pass. Exact-clean revision 56 from
+`f8309f77b5243675303e499021e8dc02f70640ca` passes its package build, no-root
+artifact audit, candidate install/removal, and revision-41 upgrade/removal
+lifecycle. Its SHA-256 is
+`3c3ea4a7f0ea24a4582611fefe3819573c8febdaac436315efa9dbfc7374db20`.
+No live network state was changed. Receiver timing, stream quality, Stop, and
+cleanup remain the acceptance gate before this candidate is published.

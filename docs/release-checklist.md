@@ -508,6 +508,14 @@
       artifact audit, and disposable lifecycle pass. Together with patch 35,
       this removes every optional unauthenticated output/input service found by
       the audit without changing normal WFD RTSP/RTP streaming.
+- [ ] Revision 56 replaces the fixed 10-second pre-connect delay with a bounded
+      root-owned network-readiness acknowledgement and production patch 37 ends
+      discovery early only when the exact selected receiver appears. Bounded
+      identifier-free startup markers cover engine launch, RTSP establishment,
+      and first frame. The exact 31-patch/146-test engine reconstruction, all
+      183 repository tests, exact-clean package build, artifact audit, fresh
+      lifecycle, and revision-41 upgrade/removal pass. A receiver-backed timing,
+      quality, cooperative Stop, and cleanup gate remains open.
 
 Run this before every release:
 

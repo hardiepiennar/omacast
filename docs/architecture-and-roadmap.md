@@ -1149,6 +1149,9 @@ waiting in Display Mirroring and understands any temporary network change.
 - **Engine packaging:** `packaging/arch/PKGBUILD` pins the researched FluxCast
   base revision and applies the tracked compatibility/timing patches at build
   time. It ships no persistent D-Bus, firewall, or root networking policy.
+- **Startup latency:** wait on owned readiness evidence instead of fixed sleeps,
+  and end discovery early only for the exact validated receiver address. Keep
+  every wait bounded and record only identifier-free timing milestones.
 - **Release profile:** 1280x720p60 at 7 Mbps with the Fire-TV-proven wire pacer,
   zero mux delay, user-service CPU weighting, and measured 64 ms audio timestamp
   correction. There are no alternate production profiles.
