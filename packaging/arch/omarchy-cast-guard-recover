@@ -4,7 +4,7 @@ set -euo pipefail
 [[ ${EUID} -eq 0 && $# -eq 6 ]] || exit 2
 startup_seconds="$1"; lease_seconds="$2"; session="$3"; token="$4"; uid="$5"; interface="$6"
 [[ "$startup_seconds" =~ ^[0-9]+$ && "$lease_seconds" =~ ^[0-9]+$ && "$lease_seconds" -ge 60 && "$lease_seconds" -le 1800 && "$session" =~ ^[a-f0-9]{32}$ && "$token" =~ ^[a-f0-9]{48}$ && "$uid" =~ ^[1-9][0-9]{3,9}$ && "$interface" =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || exit 2
-root="/run/omarchy-cast/$session"; user_root="$root/user"; token_file="$root/token"; ready_file="$root/ready.json"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; stop_file="$user_root/stop"; heartbeat_fd=''; network_root='/run/systemd/network'; network_file="$network_root/80-omarchy-cast-$session.network"; policy_file="/etc/dbus-1/system.d/zz-omarchy-cast-$session.conf"; networkd_state_file="$root/networkd-units"; network_root_marker="$root/network-root-created"; interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"; recovery_cleanup_ok=true
+root="/run/omarchy-cast/$session"; user_root="$root/user"; token_file="$root/token"; ready_file="$root/ready.json"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; stop_file="$user_root/stop"; heartbeat_fd=''; network_root='/run/systemd/network'; network_file="$network_root/80-omarchy-cast-$session.network"; policy_file="/etc/dbus-1/system.d/zz-omarchy-cast-$session.conf"; networkd_state_file="$root/networkd-units"; networkd_state_pending_file="$root/networkd-units.pending"; network_root_marker="$root/network-root-created"; interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"; recovery_ready_file="$root/recovery-ready"; recovery_cleanup_ok=true
 record_session_interfaces() { local candidate listed; [[ -f "$interfaces_file" && ! -L "$interfaces_file" && "$(stat -c '%u:%a' "$interfaces_file" 2>/dev/null)" == "$EUID:600" ]] || return 1; listed="$(iw dev)" || return 1; while read -r candidate; do [[ -n "$candidate" && "$candidate" == "p2p-$interface-"* ]] || continue; grep -Fxq "$candidate" "$interfaces_file" || printf '%s\n' "$candidate" >> "$interfaces_file"; done < <(awk -v prefix="p2p-$interface-" '$1 == "Interface" && index($2, prefix) == 1 {print $2}' <<< "$listed"); }
 remove_session_interfaces() { local owned details type removed all_removed=true; [[ -f "$interfaces_file" && ! -L "$interfaces_file" && "$(stat -c '%u:%a' "$interfaces_file" 2>/dev/null)" == "$EUID:600" ]] || return 1; while read -r owned; do [[ -n "$owned" && "$owned" == "p2p-$interface-"* ]] || continue; if ! details="$(iw dev "$owned" info 2>/dev/null)"; then continue; fi; type="$(awk '$1 == "type" {print $2; exit}' <<< "$details")"; if [[ "$type" != P2P-client ]]; then all_removed=false; continue; fi; removed=false; for _ in 1 2 3; do iw dev "$owned" del 2>/dev/null || true; if ! iw dev "$owned" info >/dev/null 2>&1; then removed=true; break; fi; sleep 0.1; done; [[ "$removed" == true ]] || all_removed=false; done < "$interfaces_file"; [[ "$all_removed" == true ]]; }
 open_heartbeat() {
@@ -35,8 +35,20 @@ restore_networkd_state() {
   ! systemctl is-active --quiet systemd-networkd.service || systemctl reload systemd-networkd.service
 }
 remove_recovery_file() { if ! rm -f -- "$1"; then recovery_cleanup_ok=false; fi; return 0; }
+recovery_identity_valid() {
+  [[ -d "$root" && ! -L "$root" && "$(stat -c '%u:%a' "$root" 2>/dev/null)" == "$EUID:711" ]] || return 1
+  [[ -d "$user_root" && ! -L "$user_root" && "$(stat -c '%u:%a' "$user_root" 2>/dev/null)" == "$uid:700" ]] || return 1
+  [[ -f "$token_file" && ! -L "$token_file" && "$(stat -c '%u:%a' "$token_file" 2>/dev/null)" == "$EUID:600" ]] || return 1
+  [[ "$(<"$token_file")" == "$token" ]]
+}
+publish_recovery_ready() {
+  recovery_identity_valid || return 1
+  [[ ! -e "$recovery_ready_file" && ! -L "$recovery_ready_file" ]] || return 1
+  install -m600 /dev/null "$recovery_ready_file" || return 1
+  [[ -f "$recovery_ready_file" && ! -L "$recovery_ready_file" && "$(stat -c '%u:%a' "$recovery_ready_file" 2>/dev/null)" == "$EUID:600" ]]
+}
 recover_session() {
-  local remove_network_root=false interface_cleanup_ok=true networkd_cleanup_ok=true
+  local remove_network_root=false interface_cleanup_ok=true networkd_cleanup_ok=true policy_was_present=false
   if [[ -f "$interfaces_armed_file" && ! -L "$interfaces_armed_file" && "$(stat -c '%u:%a' "$interfaces_armed_file" 2>/dev/null)" == "$EUID:600" ]]; then
     record_session_interfaces || interface_cleanup_ok=false
     remove_session_interfaces || interface_cleanup_ok=false
@@ -46,6 +58,7 @@ recover_session() {
     ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1 || recovery_cleanup_ok=false
   fi
   [[ -f "$network_root_marker" ]] && remove_network_root=true
+  [[ -e "$policy_file" ]] && policy_was_present=true
 
   remove_recovery_file "$network_file"
   remove_recovery_file "$policy_file"
@@ -53,9 +66,10 @@ recover_session() {
   remove_recovery_file "$trigger_file"
   remove_recovery_file "$heartbeat_file"
   remove_recovery_file "$stop_file"
-  systemctl reload dbus.service 2>/dev/null || recovery_cleanup_ok=false
-  if ! restore_networkd_state; then recovery_cleanup_ok=false; networkd_cleanup_ok=false; fi
+  if [[ "$policy_was_present" == true ]]; then systemctl reload dbus.service 2>/dev/null || recovery_cleanup_ok=false; fi
+  if [[ -e "$networkd_state_file" ]] && ! restore_networkd_state; then recovery_cleanup_ok=false; networkd_cleanup_ok=false; fi
 
+  remove_recovery_file "$networkd_state_pending_file"
   if [[ "$networkd_cleanup_ok" == true ]]; then
     remove_recovery_file "$networkd_state_file"
     remove_recovery_file "$network_root_marker"
@@ -66,12 +80,14 @@ recover_session() {
   else
     recovery_cleanup_ok=false
   fi
+  if [[ "$recovery_cleanup_ok" == true ]]; then remove_recovery_file "$recovery_ready_file"; fi
   if [[ "$recovery_cleanup_ok" == true ]]; then remove_recovery_file "$token_file"; fi
   rmdir --ignore-fail-on-non-empty "$user_root" "$root" 2>/dev/null || true
   [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true
   return 0
 }
 started="$EPOCHSECONDS"
+publish_recovery_ready || exit 1
 while [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; do
   if [[ -n "$heartbeat_fd" ]] || open_heartbeat; then
     lease_fresh || break

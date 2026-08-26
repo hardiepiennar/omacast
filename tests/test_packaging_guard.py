@@ -23,7 +23,7 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         version = subprocess.run(("bash", str(guard), "--version"), check=False, capture_output=True, text=True)
         self.assertEqual(version.returncode, 0, version.stderr)
-        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 8})
+        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 9})
         source = guard.read_text(encoding="utf-8")
         self.assertIn('[[ "$action" == prepare ]] || usage', source)
         self.assertNotIn('"$action" == stop', source)
@@ -49,7 +49,7 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("systemd network runtime directory is unsafe", source)
         self.assertIn('restore_networkd_state', source)
         self.assertIn('runtime_dirs_created=false', source)
-        self.assertIn("api_revision=8", source)
+        self.assertIn("api_revision=9", source)
         self.assertIn('user_root="$session_root/user"', source)
         self.assertNotIn('user_root="/run/user/', source)
         self.assertIn('install -d -m711 "$session_root"', source)
@@ -71,9 +71,16 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("if systemctl is-active --quiet systemd-networkd.service", source)
         self.assertIn('"$1" == --version', source)
         prepare_body = source.split('prepare() {', 1)[1].split('}', 1)[0]
-        self.assertLess(prepare_body.index("trap 'cleanup' EXIT"), prepare_body.index('write_runtime_files'))
-        write_body = source.split('write_runtime_files() {', 1)[1].split('\n}', 1)[0]
-        self.assertLess(write_body.index('[[ ! -e "$session_root"'), write_body.index('install -d -m711 "$session_root"'))
+        self.assertLess(prepare_body.index("trap 'cleanup' EXIT"), prepare_body.index('create_session_identity'))
+        self.assertLess(prepare_body.index('create_session_identity'), prepare_body.index('arm_recovery'))
+        self.assertLess(prepare_body.index('arm_recovery'), prepare_body.index('write_privileged_runtime'))
+        identity_body = source.split('create_session_identity() {', 1)[1].split('\n}', 1)[0]
+        self.assertLess(identity_body.index('[[ ! -e "$session_root"'), identity_body.index('install -d -m711 "$session_root"'))
+        self.assertNotIn('systemctl', identity_body)
+        self.assertNotIn('prepare_network_runtime', identity_body)
+        privileged_body = source.split('write_privileged_runtime() {', 1)[1].split('\n}', 1)[0]
+        self.assertIn('prepare_network_runtime', privileged_body)
+        self.assertIn('systemctl reload dbus.service', privileged_body)
         recovery_source = recovery.read_text(encoding="utf-8")
         self.assertIn('lease_seconds="$2"', recovery_source)
         self.assertIn('heartbeat_file="$user_root/heartbeat"', recovery_source)
@@ -88,6 +95,8 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn('read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd"', recovery_source)
         self.assertNotIn('renewed="$(<"$heartbeat_file")"', recovery_source)
         self.assertIn('networkd_state_file="$root/networkd-units"', recovery_source)
+        self.assertIn('recovery_ready_file="$root/recovery-ready"', recovery_source)
+        self.assertIn('publish_recovery_ready || exit 1', recovery_source)
         for removed_surface in ("qos.pid", "qos_file", "apply_media_qos", "renice", "/proc/$root_pid"):
             self.assertNotIn(removed_surface, source)
             self.assertNotIn(removed_surface, recovery_source)
@@ -101,6 +110,126 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("remove_cleanup_file", source)
         self.assertIn("remove_recovery_file", recovery_source)
         self.assertIn("recover_session", recovery_source)
+
+    def test_guard_requires_recovery_readiness_before_returning(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+recovery_ready_file="$2/recovery-ready"
+duration=60
+session_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+uid=1000
+interface=wlan0
+setsid() { install -m600 /dev/null "$recovery_ready_file"; sleep 2; }
+arm_recovery
+recovery_ready_marker_valid
+for child in $(jobs -pr); do kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; done
+rm -f -- "$recovery_ready_file"
+setsid() { return 1; }
+if arm_recovery; then exit 3; fi
+[[ ! -e "$recovery_ready_file" ]]
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), temp),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_recovery_publishes_readiness_only_for_protected_identity(self) -> None:
+        recovery = ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover"
+        harness = r'''
+source <(sed -n '/^record_session_interfaces()/,/^publish_recovery_ready ||/p' "$1" | sed '$d')
+root="$2/session"
+user_root="$root/user"
+token_file="$root/token"
+recovery_ready_file="$root/recovery-ready"
+uid="$3"
+token=cccccccccccccccccccccccccccccccccccccccccccccccc
+install -d -m711 "$root"
+install -d -m700 "$user_root"
+printf '%s\n' "$token" > "$token_file"
+chmod 600 "$token_file"
+publish_recovery_ready
+[[ -f "$recovery_ready_file" && ! -L "$recovery_ready_file" ]]
+rm -f -- "$recovery_ready_file"
+chmod 644 "$token_file"
+if publish_recovery_ready; then exit 3; fi
+[[ ! -e "$recovery_ready_file" ]]
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(recovery), temp, str(os.getuid())),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_recovery_handles_every_partial_privileged_initialization_stage(self) -> None:
+        recovery = ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover"
+        harness = r'''
+source <(sed -n '/^record_session_interfaces()/,/^publish_recovery_ready ||/p' "$1" | sed '$d')
+root="$2/session"
+user_root="$root/user"
+network_root="$2/network"
+calls="$3"
+phase="$4"
+session=deadbeef
+interface=wlan0
+token_file="$root/token"
+ready_file="$root/ready.json"
+trigger_file="$user_root/trigger"
+heartbeat_file="$user_root/heartbeat"
+stop_file="$user_root/stop"
+network_file="$network_root/session.network"
+policy_file="$2/session.conf"
+networkd_state_file="$root/networkd-units"
+networkd_state_pending_file="$root/networkd-units.pending"
+network_root_marker="$root/network-root-created"
+interfaces_file="$root/p2p-interfaces"
+interfaces_armed_file="$root/p2p-armed"
+network_manager_resume_file="$root/network-manager-resume-required"
+recovery_ready_file="$root/recovery-ready"
+recovery_cleanup_ok=true
+mkdir -p "$user_root" "$network_root"
+touch "$token_file" "$recovery_ready_file"
+case "$phase" in
+  minimal) ;;
+  policy) touch "$policy_file" ;;
+  pending) touch "$networkd_state_pending_file" ;;
+  state) touch "$networkd_state_file" ;;
+  *) exit 4 ;;
+esac
+resume_network_manager() { return 0; }
+restore_networkd_state() { printf '%s\n' restore-networkd >> "$calls"; return 0; }
+systemctl() { printf '%s\n' "$*" >> "$calls"; }
+ufw() { return 1; }
+recover_session
+[[ "$recovery_cleanup_ok" == true ]]
+[[ ! -e "$token_file" && ! -e "$recovery_ready_file" && ! -e "$networkd_state_pending_file" ]]
+case "$phase" in
+  minimal|pending) [[ ! -e "$calls" ]] ;;
+  policy) grep -Fxq 'reload dbus.service' "$calls"; ! grep -Fq restore-networkd "$calls" ;;
+  state) grep -Fxq restore-networkd "$calls"; ! grep -Fq 'reload dbus.service' "$calls" ;;
+esac
+'''
+        for phase in ("minimal", "policy", "pending", "state"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temp:
+                calls = Path(temp) / "calls"
+                result = subprocess.run(
+                    ("bash", "-euo", "pipefail", "-c", harness, "_", str(recovery), temp, str(calls), phase),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_guard_cleanup_continues_after_user_marker_removal_failure(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
@@ -117,10 +246,12 @@ stop_file="$user_root/stop"
 network_file="$2/session.network"
 policy_file="$2/session.conf"
 networkd_state_file="$session_root/networkd-units"
+networkd_state_pending_file="$session_root/networkd-units.pending"
 network_root_marker="$session_root/network-root-created"
 interfaces_file="$session_root/p2p-interfaces"
 interfaces_armed_file="$session_root/p2p-armed"
 network_manager_resume_file="$session_root/network-manager-resume-required"
+recovery_ready_file="$session_root/recovery-ready"
 token=owned
 runtime_dirs_created=true
 mkdir -p "$user_root" "$user_root/$4"
@@ -154,7 +285,7 @@ grep -Fxq restore-networkd "$calls"
     def test_recovery_attempts_every_restoration_after_independent_failures(self) -> None:
         recovery = ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover"
         harness = r'''
-source <(sed -n '/^record_session_interfaces()/,/^started=/p' "$1" | sed '$d')
+source <(sed -n '/^record_session_interfaces()/,/^publish_recovery_ready ||/p' "$1" | sed '$d')
 root="$2/session"
 user_root="$root/user"
 network_root="$2/network"
@@ -169,10 +300,12 @@ stop_file="$user_root/stop"
 network_file="$network_root/session.network"
 policy_file="$2/session.conf"
 networkd_state_file="$root/networkd-units"
+networkd_state_pending_file="$root/networkd-units.pending"
 network_root_marker="$root/network-root-created"
 interfaces_file="$root/p2p-interfaces"
 interfaces_armed_file="$root/p2p-armed"
 network_manager_resume_file="$root/network-manager-resume-required"
+recovery_ready_file="$root/recovery-ready"
 recovery_cleanup_ok=true
 mkdir -p "$user_root" "$network_root" "$user_root/$4"
 touch "$token_file" "$ready_file" "$network_file" "$policy_file" "$networkd_state_file" "$interfaces_file"

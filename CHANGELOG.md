@@ -20,6 +20,8 @@
   race cannot redirect root's directory ownership or mode changes.
 - Record session-created P2P client interfaces in root-owned state and remove
   only those recorded devices during normal or recovery cleanup.
+- Require API-9 independent recovery to validate the protected session and
+  acknowledge readiness before any temporary network or D-Bus mutation.
 - Require the controller to validate the helper's final bounded cleanup status
   instead of reporting cleanup complete from process exit alone.
 - Render wireless and controller-derived labels as plain text and normalize the

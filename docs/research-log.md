@@ -1796,3 +1796,37 @@ passes all 120 FluxCast tests, the no-root artifact audit, and disposable
 candidate installation/removal. This is offline failure-injection evidence;
 forced privileged recovery on the live host remains part of the final
 acceptance matrix.
+
+### Pre-mutation recovery ownership (2026-08-26)
+
+The exhaustive review found that the primary root helper created the temporary
+networkd configuration and D-Bus policy, reloaded D-Bus, and only then launched
+independent recovery. `setsid ... &` was not checked. `SIGKILL`, a helper crash,
+or an immediately failing recovery executable could therefore leave a short
+interval in which privileged state existed without a verified cleanup owner.
+
+Package revision 48 / guard API revision 9 separates protected session identity
+from external privileged mutation. The primary helper first creates only the
+root-owned session parent, user marker directory, random root token, and empty
+P2P ownership record. It then launches the fixed recovery executable and waits
+up to five seconds. Recovery independently validates the protected parent,
+user-directory ownership, token type/mode/value, and then publishes a root-owned
+0600 readiness marker. The primary helper also verifies that marker and the
+child's liveness; failure blocks setup before networkd or D-Bus files exist.
+
+Only after acknowledgement does the helper prepare networkd and D-Bus state.
+The networkd service-state snapshot is written to a root-owned pending file and
+atomically renamed before later activation can begin. Both cleanup owners use
+presence-driven restoration, so interruption with only identity, a pending
+snapshot, a committed snapshot, or a policy file is handled without assuming a
+later initialization stage completed. Successful cleanup consumes the recovery
+marker with the token; incomplete cleanup retains both as ownership evidence.
+
+Deadline-bounded regressions prove successful acknowledgement, failed child
+startup, rejection of an unsafe token, ordering before privileged mutation,
+and all four partial initialization states. The controller explicitly rejects
+API revision 8. All 163 repository tests, staged Omarchy validation, Bash
+syntax, production ShellCheck, Python compilation, and git whitespace checks
+pass. The exact-clean revision-48 build passes all 120 FluxCast tests, the
+artifact audit, candidate installation/removal, and disposable revision-47 to
+revision-48 upgrade/removal. No live package or network state was changed.

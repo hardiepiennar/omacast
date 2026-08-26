@@ -97,8 +97,8 @@ bash -n "$guard"
 bash -n "$recovery"
 
 guard_version="$($guard --version)"
-python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":8}' "$guard_version" \
-  || die "guard API contract does not match revision 8"
+python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":9}' "$guard_version" \
+  || die "guard API contract does not match revision 9"
 for removed_surface in qos.pid qos_file apply_media_qos renice; do
   ! grep -Fq "$removed_surface" "$guard" || die "guard retains removed privileged QoS surface: $removed_surface"
   ! grep -Fq "$removed_surface" "$recovery" || die "recovery retains removed privileged QoS surface: $removed_surface"

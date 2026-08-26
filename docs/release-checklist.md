@@ -427,6 +427,16 @@
       ShellCheck, and git whitespace checks pass offline. Its exact-clean build
       also passes 120 FluxCast tests, the artifact audit, and disposable
       package installation/removal.
+- [x] Guard API revision 9 arms independent recovery before temporary network
+      or D-Bus mutation and requires a validated root-owned readiness marker
+      within five seconds. A failed launch blocks setup. The networkd-state
+      snapshot is published atomically, and recovery distinguishes identity,
+      pending-snapshot, committed-snapshot, and policy-only interruption
+      stages. Package revision 48 and the controller reject older API-8
+      companions. The 163-test repository suite, Omarchy validation, Bash
+      syntax, ShellCheck, compilation, and git whitespace checks pass offline.
+      The exact-clean build also passes 120 FluxCast tests, artifact audit,
+      candidate lifecycle, and revision-47 to revision-48 upgrade/removal.
 
 Run this before every release:
 
