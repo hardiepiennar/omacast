@@ -205,7 +205,11 @@ smoothness, continuous internet access, and audio/video sync all matter.
   snapshot continues, FluxCast output is continuously drained into a 256 KiB
   recent tail, and FFmpeg progress on the supported desktop path retains only
   its latest complete record. The production-only packet-trace override was
-  removed; no diagnostic quota stops or shortens the media session.
+  removed; no diagnostic quota stops or shortens the media session. A
+  revision-45 GUI run then negotiated 1280x720p60, exposed current progress in
+  Nerd Mode, stabilized around 60 fps without FFmpeg drops or duplicates, and
+  completed cooperative Stop with the P2P client removed and infrastructure
+  Wi-Fi connected.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the

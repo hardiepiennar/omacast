@@ -398,14 +398,15 @@
       reconstruction and offline adversarial suite pass. Revision 44 also
       completed a GUI Fire TV connect/stream/Stop run with user-accepted picture
       and sound, idle controller state, removed P2P client, and connected Wi-Fi.
-- [ ] Unlimited casts retain an 8 MiB persistent archive, a 256 KiB recent
+- [x] Unlimited casts retain an 8 MiB persistent archive, a 256 KiB recent
       engine-log tail, and one latest FFmpeg progress record while live status
       continues. The production packet-trace override is absent. Flood and
       quota tests, exact reconstruction, offline FFmpeg progress smoke, clean
       revision-45 package build, no-root artifact audit, and disposable
-      install/removal pass. A short receiver connect/Nerd Mode/Stop run remains
-      required because the supported media process now drains FFmpeg progress
-      through a pipe.
+      install/removal pass. Revision 45 also completed a GUI Fire TV
+      connect/Nerd Mode/Stop run at 1280x720p60. It stabilized around 60 fps
+      without FFmpeg drops or duplicates, returned to idle, removed its P2P
+      client, and left infrastructure Wi-Fi connected.
 
 Run this before every release:
 

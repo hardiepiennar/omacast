@@ -1711,3 +1711,14 @@ of the finding commit, passed the no-root artifact audit, and completed a
 disposable install/removal lifecycle. Receiver acceptance remains open because
 the supported media subprocess stderr/progress plumbing changed; no live
 network operation was run for this remediation.
+
+The clean revision-45 package and matching plugin commit were then installed on
+the live host and exercised through the normal GUI against the stock Fire TV.
+The session negotiated 1280x720p60 and entered `streaming`; Nerd Mode received
+the bounded latest-record progress data. After startup it measured roughly
+60–62 fps with realtime ratio near 1.0, zero FFmpeg drops or duplicates, no
+radio transmission failures, and no transport errors. The user completed the
+requested test and Stop was observed cooperatively. The controller returned to
+`idle`, the session P2P client and media processes were absent, and the original
+infrastructure Wi-Fi remained connected. This closes patch 29's short receiver
+gate without claiming a soak test.
