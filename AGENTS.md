@@ -30,6 +30,10 @@ Rules for future work:
   session. For an action that needs user authorization, use a visible desktop
   authorization flow such as `pkexec`, or ask the user to run the command in a
   terminal they can see.
+- After installing or upgrading the companion package for a live test, refresh
+  the installed Omarchy plugin from the current checkout, reload the shell, and
+  run readiness through the installed panel/controller path. A repository-local
+  `PYTHONPATH=src` doctor result alone does not prove that the GUI is current.
 - Preserve conflicting evidence in the research log; mark conclusions
   superseded instead of rewriting history.
 - Update the canonical plan and acceptance evidence as decisions change.
