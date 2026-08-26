@@ -48,8 +48,8 @@ jobs:
               chown -R builder:builder /build
               runuser -u builder -- /build/source/scripts/lint-shell
               runuser -u builder -- /build/source/scripts/build-release-artifact /build/dist
-              runuser -u builder -- /build/source/scripts/audit-release-artifact /build/dist/fluxcast-omarchy-cast-*.pkg.tar.zst
-              runuser -u builder -- /build/source/scripts/test-package-lifecycle /build/dist/fluxcast-omarchy-cast-*.pkg.tar.zst
+              runuser -u builder -- /build/source/scripts/audit-release-artifact --trusted-local-artifact /build/dist/fluxcast-omarchy-cast-*.pkg.tar.zst
+              runuser -u builder -- /build/source/scripts/test-package-lifecycle --trusted-local-artifact /build/dist/fluxcast-omarchy-cast-*.pkg.tar.zst
               cp -a /build/dist /workspace/dist
             '
 

@@ -8,7 +8,11 @@ die() {
   exit 1
 }
 
-[[ $# -eq 1 || $# -eq 2 ]] || die "usage: $0 [BASELINE.pkg.tar.zst] CANDIDATE.pkg.tar.zst"
+[[ "${1:-}" == "--trusted-local-artifact" ]] \
+  || die "refusing to install or execute package content; usage: $0 --trusted-local-artifact [BASELINE.pkg.tar.zst] CANDIDATE.pkg.tar.zst"
+shift
+[[ $# -eq 1 || $# -eq 2 ]] \
+  || die "usage: $0 --trusted-local-artifact [BASELINE.pkg.tar.zst] CANDIDATE.pkg.tar.zst"
 for command in bsdtar fakeroot find pacman realpath stat vercmp; do
   command -v "$command" >/dev/null || die "$command is required"
 done

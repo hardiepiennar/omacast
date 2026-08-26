@@ -75,6 +75,15 @@ use. Nonblocking open ensures a FIFO or other non-regular replacement reaches
 descriptor validation instead of stalling the controller. Receiver and
 controller-derived strings use plain-text rendering in the panel.
 
+## Developer package tools
+
+`scripts/audit-release-artifact` and `scripts/test-package-lifecycle` inspect a
+release candidate by executing or installing some of its content as the
+invoking user. They are not hostile-package sandboxes. Both require the
+`--trusted-local-artifact` acknowledgement and must be used only with a package
+built from the clean source commit under review. Checksums prove identity after
+that build; they do not make an untrusted package safe to execute.
+
 ## Data and display exposure
 
 Mirroring sends the selected desktop output and its audio to the chosen local

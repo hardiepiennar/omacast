@@ -5,12 +5,18 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-package="${1:-}"
+package=""
 
 die() {
   echo "audit-release-artifact: $*" >&2
   exit 1
 }
+
+[[ "${1:-}" == "--trusted-local-artifact" ]] \
+  || die "refusing to execute package content; usage: $0 --trusted-local-artifact [PACKAGE.pkg.tar.zst]"
+shift
+[[ $# -le 1 ]] || die "usage: $0 --trusted-local-artifact [PACKAGE.pkg.tar.zst]"
+package="${1:-}"
 
 for command in bsdtar pacman python3 realpath sha256sum; do
   command -v "$command" >/dev/null || die "$command is required"

@@ -514,11 +514,16 @@ Run this before every release:
 ```bash
 scripts/test
 scripts/build-release-artifact
-scripts/audit-release-artifact
-scripts/test-package-lifecycle CANDIDATE.pkg.tar.zst
-scripts/test-package-lifecycle BASELINE.pkg.tar.zst CANDIDATE.pkg.tar.zst
+scripts/audit-release-artifact --trusted-local-artifact
+scripts/test-package-lifecycle --trusted-local-artifact CANDIDATE.pkg.tar.zst
+scripts/test-package-lifecycle --trusted-local-artifact BASELINE.pkg.tar.zst CANDIDATE.pkg.tar.zst
 git diff --check
 ```
+
+The acknowledgement is required because these developer tools execute or
+install content from the supplied package. Use them only for a candidate built
+from the clean source commit being released; they do not sandbox an artifact
+obtained from an untrusted source.
 
 The ignored `work/` directory is a local research checkout and is intentionally
 not part of the marketplace payload. Validate through `scripts/validate-plugin`

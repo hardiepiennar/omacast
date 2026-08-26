@@ -737,6 +737,15 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn('pkgver = $expected_version', audit)
         self.assertNotIn("sudo", audit)
         self.assertNotIn("pacman -U", audit)
+        self.assertIn("--trusted-local-artifact", audit)
+        refused = subprocess.run(
+            (str(ROOT / "scripts" / "audit-release-artifact"),),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("refusing to execute package content", refused.stderr)
 
     def test_passwordless_policy_has_a_documented_narrow_boundary(self) -> None:
         policy = (ROOT / "packaging" / "arch" / "com.omacast.guard.policy").read_text(encoding="utf-8")
@@ -759,6 +768,15 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("com.omacast.guard.policy", lifecycle)
         self.assertIn("supplicant broker", lifecycle)
         self.assertNotIn("sudo", lifecycle)
+        self.assertIn("--trusted-local-artifact", lifecycle)
+        refused = subprocess.run(
+            (str(ROOT / "scripts" / "test-package-lifecycle"),),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("refusing to install or execute package content", refused.stderr)
 
     def test_release_workflow_pins_actions_and_attests_tagged_packages(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
@@ -768,6 +786,7 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("actions/attest-build-provenance@", workflow)
         self.assertIn("scripts/audit-release-artifact", workflow)
         self.assertIn("scripts/test-package-lifecycle", workflow)
+        self.assertGreaterEqual(workflow.count("--trusted-local-artifact"), 2)
         self.assertIn("scripts/lint-shell", workflow)
         self.assertIn("shellcheck", workflow)
         self.assertLess(workflow.index("scripts/lint-shell"), workflow.index("scripts/build-release-artifact"))

@@ -375,6 +375,14 @@ uses a private, randomly named `mktemp` directory under `/tmp`, verifies its
 owner and mode before cloning, and removes only that validated directory.
 Concurrent builds no longer share intermediate state.
 
+The same lower-risk review made the package-tool trust boundary executable.
+The artifact audit runs the packaged helper and engine, while the disposable
+fakeroot lifecycle installs the candidate and runs its helper as the invoking
+user. Neither operation is a sandbox for hostile input. Both tools now refuse
+to proceed without `--trusted-local-artifact`; CI supplies the acknowledgement
+only for its immediately preceding clean-commit build, and the release
+checklist warns maintainers not to use downloaded untrusted packages.
+
 ### Long-session cadence and lifecycle evidence (2026-08-23)
 
 A package-owned real-desktop cast ran for about 20.5 minutes and transmitted
