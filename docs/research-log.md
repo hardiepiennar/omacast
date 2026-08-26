@@ -1754,3 +1754,14 @@ built from a clean clone, passed all 120 FluxCast tests and the no-root artifact
 audit, and completed a disposable revision-45 to revision-46 upgrade/removal
 lifecycle. A live receiver run remains open because privileged pause/resume
 signalling changed.
+
+The final revision-46 package and matching API-8 plugin were then installed on
+the live host and exercised through the normal GUI against the stock Fire TV.
+The session negotiated 1280x720p60 and entered `streaming`. Its final sample
+measured 60.34 fps with realtime ratio 1.01, zero FFmpeg drops or duplicates,
+zero radio failures or retries, no transport errors, and healthy status. The
+user reported that it worked and stopped the session cooperatively. The
+controller returned to `idle`; NetworkManager was active and running; the P2P
+client and cast/media processes were absent; and infrastructure Wi-Fi remained
+connected. This closes finding 8's receiver gate without claiming a soak test
+or exercising forced independent recovery on the live network.

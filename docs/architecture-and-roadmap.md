@@ -195,7 +195,10 @@ smoothness, continuous internet access, and audio/video sync all matter.
   signal time rather than a numeric PID retained across authorization and cast
   lifetime. A private root-owned marker records that this session may require a
   resume; cleanup and independent recovery validate it, retry unit-scoped
-  `SIGCONT`, and never signal a recycled unrelated process ID.
+  `SIGCONT`, and never signal a recycled unrelated process ID. A revision-46
+  GUI run subsequently negotiated 1280x720p60, streamed at approximately
+  60 fps, and completed cooperative Stop with NetworkManager active, the P2P
+  client removed, and infrastructure Wi-Fi connected.
 - Receiver-facing RTSP input now has explicit line, header-count, aggregate
   header, and body ceilings. Negotiation and partial messages have a ten-second
   completion deadline, established sessions may remain legitimately idle, and

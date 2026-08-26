@@ -407,15 +407,16 @@
       connect/Nerd Mode/Stop run at 1280x720p60. It stabilized around 60 fps
       without FFmpeg drops or duplicates, returned to idle, removed its P2P
       client, and left infrastructure Wi-Fi connected.
-- [ ] Guard API revision 8 never carries NetworkManager's numeric PID across an
+- [x] Guard API revision 8 never carries NetworkManager's numeric PID across an
       authorization, cast, or recovery boundary. Pause and resume target only
       the systemd unit's current main process, and a validated root-owned marker
       makes resume ownership explicit and idempotent. Pause failure, repeated
       resume failure, marker retention, and source/package contract regressions
       pass. The clean revision-46 build, no-root artifact audit, and disposable
-      revision-45 to revision-46 upgrade/removal lifecycle also pass. A short
-      receiver connect/Stop run remains required because the live privileged
-      pause/resume mechanism changed.
+      revision-45 to revision-46 upgrade/removal lifecycle also pass. Revision
+      46 completed a GUI Fire TV connect/Stop run at 1280x720p60 with healthy
+      steady-state telemetry, then restored NetworkManager, removed its P2P
+      client, and left infrastructure Wi-Fi connected.
 
 Run this before every release:
 
