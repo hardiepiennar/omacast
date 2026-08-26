@@ -1967,3 +1967,22 @@ upgrade/removal lifecycle. Its SHA-256 is
 Revision 51's deferred group-ownership gate and revision 52's broker gate will
 be exercised together in one short GUI connect/stream/Stop session; no live
 network operation was run during this remediation.
+
+The combined receiver gate was then run through the installed API-10 plugin and
+revision-52 companion. The first attempt failed closed because the broker found
+pre-existing WFD metadata. A privileged read proved it was the exact legacy
+revision-50 source value containing this machine's old `xps` device label; it
+was explicitly cleared and verified empty before retrying. The retry connected
+to the selected Fire TV and reached streaming, with picture and sound accepted
+by the user. Two presentation issues were observed without affecting the
+stream: a late readiness/scan result could replace connection progress with an
+empty-display message, and Nerd Mode needed slightly more vertical space.
+Commit `df7cf31` fixes those panel-only issues without changing transport.
+
+The user stopped the successful cast through the GUI. Post-stop inspection
+found controller state `idle`, the user session service inactive,
+NetworkManager active, infrastructure Wi-Fi connected, only the normal managed
+radio interface present, no transient broker unit or `/run/omarchy-cast`
+session state, and no FluxCast, capture, or mux process. A final privileged
+read returned an empty supplicant `WFDIEs` array. This closes both revision 51's
+selected-group gate and revision 52's broker/cleanup gate.

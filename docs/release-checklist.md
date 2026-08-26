@@ -474,8 +474,12 @@
       exact ownership still holds. Production patch 33 adds the bounded engine
       client and package revision 52 installs the broker. Offline protocol,
       ownership, failure-injection, exact-engine, artifact, and lifecycle gates
-      pass. One GUI connect/stream/Stop run remains pending for revisions 51
-      and 52 together.
+      pass. The combined revision-51/52 GUI gate also passes: after a
+      fail-closed refusal of verified revision-50 WFD residue and its explicit
+      removal, the retry connected and streamed with user-accepted picture and
+      sound. GUI Stop returned the controller to idle, restored connected
+      infrastructure Wi-Fi, cleared WFD metadata, and left no session P2P
+      interface, broker/runtime state, or media process.
 
 Run this before every release:
 

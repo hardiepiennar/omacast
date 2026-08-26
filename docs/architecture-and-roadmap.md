@@ -732,9 +732,10 @@ operations; the authenticated guard pins adapter, receiver, frequency, and
 session before the broker starts. Connect is single-use and waits for the
 root-owned network-ready marker. P2P cleanup begins only after this session
 attempts Connect, and WFD metadata is cleared only while its exact value and
-root-owned marker still prove ownership. Package revision 52 retains a short
-receiver-backed connect/stream/Stop gate, combined with revision 51's deferred
-gate.
+root-owned marker still prove ownership. The combined revision-51/52 receiver
+gate passed: the retry connected and streamed cleanly, and GUI Stop restored an
+idle controller, connected infrastructure Wi-Fi, empty WFD metadata, and no
+session P2P interface, broker state, or media process.
 
 ### Phase E — build the Omarchy plugin UI
 
