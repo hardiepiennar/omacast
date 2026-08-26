@@ -19,3 +19,4 @@
 0021-Restore-receiver-proven-Fire-TV-transport-timing.patch
 0022-Correct-measured-GSR-audio-capture-latency.patch
 0027-Authenticate-selected-WFD-receiver.patch
+0028-Bound-receiver-facing-RTSP-input.patch

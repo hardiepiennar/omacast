@@ -1,0 +1,365 @@
+From 6f8a0e05ee9760a3b71f900eb30258c7d7fe44e2 Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Wed, 26 Aug 2026 19:25:09 +1200
+Subject: [PATCH] Bound receiver-facing RTSP input
+
+---
+ src/wfd/probe.py              |   4 +-
+ src/wfd/rtsp/handler.py       |  23 +++++-
+ src/wfd/rtsp/message.py       |  56 ++++++++++++--
+ src/wfd/rtsp/rtsp_server.py   |  23 ++++++
+ tests/test_wfd_rtsp_limits.py | 133 ++++++++++++++++++++++++++++++++++
+ 5 files changed, 228 insertions(+), 11 deletions(-)
+ create mode 100644 tests/test_wfd_rtsp_limits.py
+
+diff --git a/src/wfd/probe.py b/src/wfd/probe.py
+index 86df47f..ec26ef8 100644
+--- a/src/wfd/probe.py
++++ b/src/wfd/probe.py
+@@ -16,7 +16,7 @@ from .modes import (
+ from .net import _safe_source_port
+ from .p2p.addressing import _wait_for_peer_ip
+ from .rtsp.message import (
+-    RTSPMessage, _parse_parameters, _parse_rtp_ports,
++    RTSPMessage, RTSPMessageError, _parse_parameters, _parse_rtp_ports,
+     _parse_transport_client_ports, _read_rtsp_message,
+ )
+ from .rtsp.rtsp_server import WFDRTSPServer
+@@ -268,7 +268,7 @@ def _active_rtsp_probe(
+                     else:
+                         _reply(msg, status="405 Method Not Allowed")
+ 
+-    except OSError as exc:
++    except (OSError, RTSPMessageError) as exc:
+         print(f"[FluxCast WFD RTSP] Active probe: I/O error: {exc}")
+     finally:
+         if media is not None:
+diff --git a/src/wfd/rtsp/handler.py b/src/wfd/rtsp/handler.py
+index c96d010..d07e444 100644
+--- a/src/wfd/rtsp/handler.py
++++ b/src/wfd/rtsp/handler.py
+@@ -17,11 +17,14 @@ from ..modes import (
+ )
+ from ..net import _netdev_tx_bytes, _safe_source_port
+ from .message import (
+-    RTSPMessage, _parse_parameters, _parse_rtp_ports,
++    RTSPMessage, RTSPMessageError, _parse_parameters, _parse_rtp_ports,
+     _parse_transport_client_ports, _read_rtsp_message, _sink_advertises_uibc,
+ )
+ 
+ 
++RTSP_MESSAGE_TIMEOUT = 10.0
++
++
+ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+     def handle(self) -> None:
+         client_ip = self.client_address[0]
+@@ -64,7 +67,7 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+         try:
+             self._send_m1_options()
+             while True:
+-                msg = _read_rtsp_message(self.rfile)
++                msg = self._read_next_message()
+                 if msg is None:
+                     print(f"[FluxCast WFD RTSP] TV disconnected from {peer}")
+                     return
+@@ -75,12 +78,28 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+                     self._handle_request(msg)
+         except WFDNotReady as exc:
+             print(f"[FluxCast WFD RTSP] ERROR: {exc}")
++        except RTSPMessageError as exc:
++            print(f"[FluxCast WFD RTSP] Rejected invalid message: {exc}")
+         except OSError as exc:
+             print(f"[FluxCast WFD RTSP] Socket closed: {exc}")
+         finally:
+             self._keepalive_active = False
+             self._stop_media()
+ 
++    def _read_next_message(self) -> Optional[RTSPMessage]:
++        # Negotiation must begin promptly. Once media is established a sink may
++        # legitimately stay silent for a long time, so wait without an idle
++        # deadline but bound completion after the first buffered byte arrives.
++        if self.media is not None:
++            self.request.settimeout(None)
++            if not self.rfile.peek(1):
++                return None
++        self.request.settimeout(RTSP_MESSAGE_TIMEOUT)
++        try:
++            return _read_rtsp_message(self.rfile)
++        finally:
++            self.request.settimeout(None)
++
+     @property
+     def media_config(self) -> WFDMediaConfig:
+         return self.server.media_config  # type: ignore[attr-defined]
+diff --git a/src/wfd/rtsp/message.py b/src/wfd/rtsp/message.py
+index 469ecd6..ee4ad8b 100644
+--- a/src/wfd/rtsp/message.py
++++ b/src/wfd/rtsp/message.py
+@@ -3,6 +3,16 @@ from dataclasses import dataclass
+ from typing import Optional
+ 
+ 
++RTSP_MAX_LINE_BYTES = 8 * 1024
++RTSP_MAX_HEADER_BYTES = 64 * 1024
++RTSP_MAX_HEADERS = 64
++RTSP_MAX_BODY_BYTES = 64 * 1024
++
++
++class RTSPMessageError(ValueError):
++    """The peer sent a malformed or oversized RTSP message."""
++
++
+ @dataclass
+ class RTSPMessage:
+     start: str
+@@ -33,33 +43,65 @@ class RTSPMessage:
+ 
+ def _read_rtsp_message(rfile) -> Optional[RTSPMessage]:
+     lines = []
++    header_bytes = 0
+     while True:
+-        raw = rfile.readline(8192)
++        raw = rfile.readline(RTSP_MAX_LINE_BYTES + 1)
+         if not raw:
++            if lines:
++                raise RTSPMessageError("RTSP headers ended before the blank line")
+             return None
++        if len(raw) > RTSP_MAX_LINE_BYTES:
++            raise RTSPMessageError("RTSP line exceeds the byte limit")
++        if not raw.endswith(b"\n"):
++            raise RTSPMessageError("RTSP line is incomplete")
++        header_bytes += len(raw)
++        if header_bytes > RTSP_MAX_HEADER_BYTES:
++            raise RTSPMessageError("RTSP headers exceed the aggregate byte limit")
+         line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+         if line == "":
+             break
+         lines.append(line)
++        if len(lines) - 1 > RTSP_MAX_HEADERS:
++            raise RTSPMessageError("RTSP message has too many headers")
+ 
+     if not lines:
+         return None
+ 
+     headers: dict[str, str] = {}
++    content_length_values: list[str] = []
+     for line in lines[1:]:
+         key, sep, value = line.partition(":")
+         if sep:
+-            headers[key.strip().lower()] = value.strip()
++            normalized_key = key.strip().lower()
++            normalized_value = value.strip()
++            if normalized_key == "content-length":
++                content_length_values.append(normalized_value)
++            headers[normalized_key] = normalized_value
+ 
+     content_length = 0
+-    try:
+-        content_length = int(headers.get("content-length", "0"))
+-    except ValueError:
+-        content_length = 0
++    if len(content_length_values) > 1:
++        raise RTSPMessageError("RTSP message has duplicate Content-Length headers")
++    if content_length_values:
++        value = content_length_values[0]
++        if not value or not value.isascii() or not value.isdecimal():
++            raise RTSPMessageError("RTSP Content-Length is not an unsigned decimal")
++        if len(value) > 10:
++            raise RTSPMessageError("RTSP Content-Length exceeds the body limit")
++        content_length = int(value, 10)
++        if content_length > RTSP_MAX_BODY_BYTES:
++            raise RTSPMessageError("RTSP body exceeds the byte limit")
+ 
+     body = ""
+     if content_length > 0:
+-        body = rfile.read(content_length).decode("utf-8", errors="replace")
++        chunks = []
++        remaining = content_length
++        while remaining:
++            chunk = rfile.read(remaining)
++            if not chunk:
++                raise RTSPMessageError("RTSP body ended before Content-Length")
++            chunks.append(chunk)
++            remaining -= len(chunk)
++        body = b"".join(chunks).decode("utf-8", errors="replace")
+ 
+     return RTSPMessage(
+         start=lines[0],
+diff --git a/src/wfd/rtsp/rtsp_server.py b/src/wfd/rtsp/rtsp_server.py
+index 9141163..c1d9884 100644
+--- a/src/wfd/rtsp/rtsp_server.py
++++ b/src/wfd/rtsp/rtsp_server.py
+@@ -9,10 +9,33 @@ from ..p2p.addressing import _is_expected_peer_ip
+ from .handler import _WFDRTSPHandler
+ 
+ 
++RTSP_MAX_CONNECTION_WORKERS = 4
++
++
+ class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
+     allow_reuse_address = True
+     daemon_threads = True
+ 
++    def __init__(self, *args, **kwargs) -> None:
++        self._worker_slots = threading.BoundedSemaphore(RTSP_MAX_CONNECTION_WORKERS)
++        super().__init__(*args, **kwargs)
++
++    def process_request(self, request, client_address) -> None:
++        if not self._worker_slots.acquire(blocking=False):
++            self.shutdown_request(request)
++            return
++        try:
++            super().process_request(request, client_address)
++        except BaseException:
++            self._worker_slots.release()
++            raise
++
++    def process_request_thread(self, request, client_address) -> None:
++        try:
++            super().process_request_thread(request, client_address)
++        finally:
++            self._worker_slots.release()
++
+ class WFDRTSPServer:
+     def __init__(
+         self,
+diff --git a/tests/test_wfd_rtsp_limits.py b/tests/test_wfd_rtsp_limits.py
+new file mode 100644
+index 0000000..f10e22a
+--- /dev/null
++++ b/tests/test_wfd_rtsp_limits.py
+@@ -0,0 +1,133 @@
++import io
++import socket
++import socketserver
++import unittest
++from unittest import mock
++
++from wfd.rtsp.handler import _WFDRTSPHandler
++from wfd.rtsp.message import (
++    RTSP_MAX_BODY_BYTES,
++    RTSP_MAX_HEADER_BYTES,
++    RTSP_MAX_HEADERS,
++    RTSP_MAX_LINE_BYTES,
++    RTSPMessageError,
++    _read_rtsp_message,
++)
++from wfd.rtsp.rtsp_server import RTSP_MAX_CONNECTION_WORKERS, _ThreadingTCPServer
++
++
++def message(headers=(), body=b""):
++    lines = [b"OPTIONS * RTSP/1.0", *headers, b"", body]
++    return io.BytesIO(b"\r\n".join(lines))
++
++
++class RTSPMessageLimitTest(unittest.TestCase):
++    def test_normal_message_is_accepted(self):
++        parsed = _read_rtsp_message(
++            message((b"CSeq: 1", b"Content-Length: 4"), b"test")
++        )
++        self.assertEqual(parsed.start, "OPTIONS * RTSP/1.0")
++        self.assertEqual(parsed.body, "test")
++
++    def test_maximum_body_is_accepted(self):
++        body = b"x" * RTSP_MAX_BODY_BYTES
++        parsed = _read_rtsp_message(
++            message((f"Content-Length: {len(body)}".encode(),), body)
++        )
++        self.assertEqual(len(parsed.body), RTSP_MAX_BODY_BYTES)
++
++    def test_overlong_start_line_is_rejected(self):
++        stream = io.BytesIO(b"X" * (RTSP_MAX_LINE_BYTES + 1) + b"\r\n\r\n")
++        with self.assertRaisesRegex(RTSPMessageError, "line exceeds"):
++            _read_rtsp_message(stream)
++
++    def test_overlong_header_line_is_rejected(self):
++        stream = message((b"X: " + b"a" * RTSP_MAX_LINE_BYTES,))
++        with self.assertRaisesRegex(RTSPMessageError, "line exceeds"):
++            _read_rtsp_message(stream)
++
++    def test_header_count_is_bounded(self):
++        headers = tuple(f"X-{index}: y".encode() for index in range(RTSP_MAX_HEADERS + 1))
++        with self.assertRaisesRegex(RTSPMessageError, "too many headers"):
++            _read_rtsp_message(message(headers))
++
++    def test_aggregate_header_bytes_are_bounded(self):
++        line = b"X: " + b"a" * (RTSP_MAX_LINE_BYTES - 5)
++        with self.assertRaisesRegex(RTSPMessageError, "aggregate byte limit"):
++            _read_rtsp_message(message((line,) * 9))
++
++    def test_invalid_content_lengths_are_rejected(self):
++        for value in (b"-1", b"+1", b"1x", b"", str(RTSP_MAX_BODY_BYTES + 1).encode()):
++            with self.subTest(value=value), self.assertRaises(RTSPMessageError):
++                _read_rtsp_message(message((b"Content-Length: " + value,)))
++
++    def test_duplicate_content_length_is_rejected(self):
++        with self.assertRaisesRegex(RTSPMessageError, "duplicate"):
++            _read_rtsp_message(
++                message((b"Content-Length: 0", b"Content-Length: 0"))
++            )
++
++    def test_truncated_body_is_rejected(self):
++        with self.assertRaisesRegex(RTSPMessageError, "body ended"):
++            _read_rtsp_message(message((b"Content-Length: 10",), b"short"))
++
++    def test_incomplete_headers_are_rejected(self):
++        with self.assertRaisesRegex(RTSPMessageError, "before the blank line"):
++            _read_rtsp_message(io.BytesIO(b"OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n"))
++
++
++class RTSPDeadlineTest(unittest.TestCase):
++    def setUp(self):
++        self.reader_sock, self.writer_sock = socket.socketpair()
++        self.handler = _WFDRTSPHandler.__new__(_WFDRTSPHandler)
++        self.handler.request = self.reader_sock
++        self.handler.rfile = self.reader_sock.makefile("rb")
++        self.handler.media = None
++
++    def tearDown(self):
++        self.handler.rfile.close()
++        self.reader_sock.close()
++        self.writer_sock.close()
++
++    def test_negotiation_idle_has_a_deadline(self):
++        with mock.patch("wfd.rtsp.handler.RTSP_MESSAGE_TIMEOUT", 0.05):
++            with self.assertRaises(socket.timeout):
++                self.handler._read_next_message()
++
++    def test_established_partial_message_has_a_deadline(self):
++        self.handler.media = object()
++        self.writer_sock.sendall(b"O")
++        with mock.patch("wfd.rtsp.handler.RTSP_MESSAGE_TIMEOUT", 0.05):
++            with self.assertRaises(socket.timeout):
++                self.handler._read_next_message()
++
++
++class RTSPWorkerLimitTest(unittest.TestCase):
++    def setUp(self):
++        self.server = _ThreadingTCPServer.__new__(_ThreadingTCPServer)
++        self.server._worker_slots = __import__("threading").BoundedSemaphore(
++            RTSP_MAX_CONNECTION_WORKERS
++        )
++
++    def test_excess_connection_is_closed_without_starting_a_worker(self):
++        requests = [mock.Mock() for _ in range(RTSP_MAX_CONNECTION_WORKERS + 1)]
++        with mock.patch.object(socketserver.ThreadingTCPServer, "process_request") as start, \
++             mock.patch.object(self.server, "shutdown_request") as close:
++            for request in requests:
++                self.server.process_request(request, ("192.0.2.1", 7236))
++        self.assertEqual(start.call_count, RTSP_MAX_CONNECTION_WORKERS)
++        close.assert_called_once_with(requests[-1])
++
++    def test_failed_worker_start_releases_its_slot(self):
++        with mock.patch.object(
++            socketserver.ThreadingTCPServer,
++            "process_request",
++            side_effect=RuntimeError("cannot start"),
++        ):
++            with self.assertRaisesRegex(RuntimeError, "cannot start"):
++                self.server.process_request(mock.Mock(), ("192.0.2.1", 7236))
++        self.assertTrue(self.server._worker_slots.acquire(blocking=False))
++
++
++if __name__ == "__main__":
++    unittest.main()

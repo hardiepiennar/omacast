@@ -369,7 +369,7 @@
 - [ ] Revision 42 authenticates passive and active RTSP peers as the selected
       receiver on the session-owned P2P interface before negotiation or
       capture, admits only one receiver, and fails closed on ambiguous identity
-      or conventional-address fallback. The exact 21-patch reconstruction and
+      or conventional-address fallback. The exact 22-patch reconstruction and
       all offline suites pass; a short selected-Fire-TV connect/Stop run remains
       the receiver-backed release gate.
 - [x] Revision 43 removes user-owned telemetry from the independent root
@@ -392,6 +392,11 @@
       size, and link count before truncation, and renews one pinned descriptor
       until Stop. FIFO, link, oversized/public-file, unsafe-parent, and
       post-open replacement regressions pass without changing unrelated data.
+- [ ] Production patch 28 bounds every receiver-facing RTSP line, header set,
+      and body; rejects malformed or truncated lengths; times out negotiation
+      and partial messages; and limits passive workers to four. The exact
+      reconstruction and offline adversarial suite pass. A short Fire TV
+      connect/stream/Stop run remains required because RTSP timing changed.
 
 Run this before every release:
 

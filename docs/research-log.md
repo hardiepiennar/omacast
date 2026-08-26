@@ -1631,3 +1631,34 @@ Additional offline regressions reject symlinks, hard links, FIFOs, oversized or
 public files, and unsafe parent directories before modification. The change is
 limited to the unprivileged lease writer and requires no receiver or network
 test.
+
+### Receiver-facing RTSP resource bounds (2026-08-26)
+
+The exhaustive review found that FluxCast read receiver RTSP input without an
+aggregate header count or byte ceiling, accepted arbitrary `Content-Length`
+values, and used an unbounded thread-per-connection server. The passive path
+also had no read deadline, so an authenticated but stalled or defective sink
+could retain its worker indefinitely before streaming.
+
+Production patch 28 limits a start/header line to 8 KiB, a message to 64
+headers and 64 KiB of aggregate headers, and a body to 64 KiB. Content length
+must be one non-negative ASCII decimal value within that body ceiling, and the
+reader requires the complete declared body. Invalid, duplicate, oversized,
+truncated, and incomplete messages close the session rather than being treated
+as a partial negotiation.
+
+The passive listener now permits four concurrent workers. Negotiation and any
+message already in progress must complete within ten seconds. After media has
+started, the receiver may remain silent indefinitely; once its first next byte
+arrives, the same completion deadline applies. This distinction preserves
+long-lived receivers that do not send periodic requests while preventing a
+partial message from pinning the selected session. The already bounded active
+probe now also handles parser rejection as a normal I/O failure.
+
+Fourteen focused regressions cover normal and maximum accepted messages,
+per-line/header-count/aggregate/body ceilings, malformed and duplicate lengths,
+truncated input, negotiation and established-message stalls, excess workers,
+and worker-start failure. The exact 22-patch reconstruction passes all 117
+engine tests. A short receiver connect/stream/Stop acceptance remains open
+because this changes the RTSP timing path; no live network operation was run
+during the offline remediation.
