@@ -1672,3 +1672,42 @@ and transient session service were absent; the session P2P client was removed;
 and the original infrastructure Wi-Fi remained connected. This closes the
 receiver acceptance gate for patch 28 without claiming a soak or broader
 receiver result.
+
+### Unlimited-session diagnostic quotas (2026-08-26)
+
+The exhaustive review found that the supported until-stopped cast could append
+diagnostics for its complete lifetime. Bounded readers protected JSON parsing
+and UI memory but did not cap the files themselves. Local archives measured
+about 1.5 KiB per one-second sample, enough for roughly 130 MiB per day from the
+persistent archive alone. The FFmpeg progress file updated four times per
+second, FluxCast stdout appended for the session, and the hidden packet-trace
+environment override could enable a much higher-rate framecrc output.
+
+The controller now stops the per-session archive at 8 MiB and marks the live
+snapshot `historyCapped` while continuing one-second live Nerd Mode updates.
+FluxCast and descendant output is continuously drained through a pipe into a
+256 KiB recent-tail collector bound to the preopened engine-log inode. The
+collector reads fixed 8 KiB chunks, so even a producer without newlines cannot
+create an unbounded in-memory line. The supported production command no longer
+honors `OMARCHY_CAST_PACKET_TELEMETRY`; packet tracing remains preserved only as
+engine/research capability rather than a latent product output.
+
+Production patch 29 changes only the supported GSR/wlroots progress path.
+FFmpeg writes progress to its stderr pipe; a FluxCast drain thread separates
+bounded progress records from diagnostics and replaces the preopened progress
+inode with only the latest complete record, capped at 16 KiB. Each replacement
+revalidates a private, current-user-owned regular descriptor before truncation.
+This avoids truncating behind an independent append writer, which could have
+created sparse files while leaving the writer's offset unbounded.
+
+Controller regressions fill the complete archive quota without exceeding it,
+prove live snapshot writes continue, flood the engine collector beyond its
+limit, and prove the removed environment override cannot restore packet output.
+Engine regressions feed ten thousand progress records, oversized partial lines,
+and unsafe link/public targets. The exact 23-patch engine passes 120 tests and
+the repository passes 156 tests. A real local FFmpeg run retained only its
+180-byte final record after 60 frames. Revision 45 then built from a clean clone
+of the finding commit, passed the no-root artifact audit, and completed a
+disposable install/removal lifecycle. Receiver acceptance remains open because
+the supported media subprocess stderr/progress plumbing changed; no live
+network operation was run for this remediation.

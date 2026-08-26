@@ -200,6 +200,12 @@ smoothness, continuous internet access, and audio/video sync all matter.
   stock Fire TV, streamed with picture and sound accepted by the user, and
   returned to idle through GUI Stop with the P2P client removed and normal
   infrastructure Wi-Fi connected.
+- Unlimited casts now keep diagnostics bounded independently of cast lifetime.
+  The persistent per-session telemetry archive stops at 8 MiB while the live
+  snapshot continues, FluxCast output is continuously drained into a 256 KiB
+  recent tail, and FFmpeg progress on the supported desktop path retains only
+  its latest complete record. The production-only packet-trace override was
+  removed; no diagnostic quota stops or shortens the media session.
 - A correctly targeted Super+C run has now completed Fire TV P2P, DHCP, RTSP,
   and 1280x720p30 negotiation. It exposed a media-boundary incompatibility:
   GPU Screen Recorder rejects the shared-memory frames produced when the
@@ -253,10 +259,10 @@ compatible-channel tests pass.
 - `work/` remains ignored research state and is not a production dependency.
   A fresh local clone of `1026b5b` passed the official Omarchy validator and
   the complete controller suite without it.
-- The FluxCast compatibility history is preserved as 28 numbered patches under
+- The FluxCast compatibility history is preserved as 29 numbered patches under
   `patches/` and applied by the tracked Arch recipe to pinned upstream commit
-  `9d27c39`. The production series applies 22 receiver-relevant patches:
-  1–6, 9–22, and 27–28. Portal-only patches 7–8, rejected FLV patch 23,
+  `9d27c39`. The production series applies 23 receiver-relevant patches:
+  1–6, 9–22, and 27–29. Portal-only patches 7–8, rejected FLV patch 23,
   portal/window patches 24–25, and rejected MPEG-TS patch 26 remain tracked
   research and are excluded from shipping.
 - The live host now runs `fluxcast-omarchy-cast 0.1.5.r3.omarchy-36` with all
@@ -601,7 +607,7 @@ read-only doctor/monitor/status probes, live named-receiver discovery,
 versioned state and telemetry, guarded production connect, cooperative Stop,
 stale-state recovery, bounded private logs, and safe offline lifecycle and
 protocol fixtures. `scripts/bootstrap-fluxcast` and the Arch recipe recreate
-the pinned engine from upstream commit `9d27c39` plus the complete 22-patch
+the pinned engine from upstream commit `9d27c39` plus the complete 23-patch
 series. A fresh clone of release-candidate commit `1026b5b` passes the official
 Omarchy validator and all non-hardware controller tests without `work/`.
 
@@ -698,9 +704,9 @@ the shell's native toggle route and the bar icon opens the same current-display
 workflow without reading window metadata, taking a screenshot, or opening a
 portal picker. Live discovery identifies receivers without a hard-coded MAC.
 `scripts/validate-plugin` stages the installable payload without the ignored
-local `work/` tree. The shipped 22-patch engine series contains the proven
+local `work/` tree. The shipped 23-patch engine series contains the proven
 display route plus fail-closed selected-receiver admission and bounded RTSP
-input handling. Portal-only patches
+input/progress handling. Portal-only patches
 7–8, receiver-rejected FLV patch 23, portal
 patches 24–25, and the receiver-rejected MPEG-TS patch 26 remain outside the
 series as preserved research. The

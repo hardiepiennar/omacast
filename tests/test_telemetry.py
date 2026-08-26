@@ -10,6 +10,9 @@ import unittest
 
 from omarchy_cast.bounds import MAX_TELEMETRY_BYTES
 from omarchy_cast.telemetry import (
+    BoundedOutputCollector,
+    MAX_ARCHIVED_TELEMETRY_BYTES,
+    MAX_ENGINE_LOG_BYTES,
     TelemetrySampler,
     TelemetryWorkspace,
     _bounded_read,
@@ -191,6 +194,67 @@ class TelemetryTest(unittest.TestCase):
             finally:
                 workspace.close()
             self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+
+    def test_archive_stops_at_its_quota_without_stopping_live_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            workspace = TelemetryWorkspace("a" * 32, environment)
+            try:
+                payload = {"schemaVersion": 1, "sample": "x" * 1024}
+                while workspace.append_sample(payload):
+                    pass
+                self.assertTrue(workspace.archive_capped)
+                self.assertLessEqual(workspace.paths["samples"].stat().st_size, MAX_ARCHIVED_TELEMETRY_BYTES)
+                workspace.write_current({"schemaVersion": 1, "historyCapped": True})
+                self.assertIn("historyCapped", workspace.paths["current"].read_text())
+            finally:
+                workspace.close()
+
+    def test_engine_output_collector_drains_and_keeps_only_its_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            workspace = TelemetryWorkspace("a" * 32, environment)
+            workspace.prepare_engine_outputs()
+            read_descriptor, write_descriptor = os.pipe()
+            stream = os.fdopen(read_descriptor, "rb", buffering=0)
+            collector = BoundedOutputCollector(stream, workspace)
+            collector.start()
+            try:
+                os.write(write_descriptor, b"old\n" + b"x" * MAX_ENGINE_LOG_BYTES)
+                os.write(write_descriptor, b"\nlatest failure\n")
+            finally:
+                os.close(write_descriptor)
+            collector.stop()
+            try:
+                retained = workspace.read_text("engineLog", MAX_ENGINE_LOG_BYTES)
+                self.assertNotIn("old", retained)
+                self.assertTrue(retained.endswith("latest failure\n"))
+                self.assertLessEqual(workspace.paths["engineLog"].stat().st_size, MAX_ENGINE_LOG_BYTES)
+            finally:
+                workspace.close()
+
+    def test_engine_output_collector_keeps_its_preopened_output_after_path_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            workspace = TelemetryWorkspace("a" * 32, environment)
+            workspace.prepare_engine_outputs()
+            visible = workspace.paths["engineLog"]
+            visible.unlink()
+            visible.write_text("preserve", encoding="utf-8")
+            visible.chmod(0o600)
+            read_descriptor, write_descriptor = os.pipe()
+            collector = BoundedOutputCollector(os.fdopen(read_descriptor, "rb", buffering=0), workspace)
+            collector.start()
+            try:
+                os.write(write_descriptor, b"latest diagnostic\n")
+            finally:
+                os.close(write_descriptor)
+            collector.stop()
+            try:
+                self.assertEqual(workspace.read_text("engineLog"), "latest diagnostic\n")
+                self.assertEqual(visible.read_text(encoding="utf-8"), "preserve")
+            finally:
+                workspace.close()
 
     def test_bounded_reader_rejects_fifo_and_hardlink_without_blocking(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

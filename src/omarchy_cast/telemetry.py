@@ -21,6 +21,8 @@ from .state import _open_session_runtime_descriptor, runtime_directory
 
 _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _NUMBER = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
+MAX_ARCHIVED_TELEMETRY_BYTES = 8 * 1024 * 1024
+MAX_ENGINE_LOG_BYTES = 256 * 1024
 _LIVE_FILENAMES = frozenset({"current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log"})
 _PATH_KEYS = {
     "current": "current.json",
@@ -137,6 +139,7 @@ class TelemetryWorkspace:
             self.live_descriptor = -1
             raise
         self._outputs: dict[str, int] = {}
+        self.archive_capped = False
         self.paths = _telemetry_path_values(session_id, self.environ)
 
     def close(self) -> None:
@@ -175,8 +178,28 @@ class TelemetryWorkspace:
         process_fd_root = Path(f"/proc/{os.getpid()}/fd")
         return {key: process_fd_root / str(descriptor) for key, descriptor in self._outputs.items()}
 
-    def engine_log_handle(self):
-        return os.fdopen(os.dup(self._outputs["engineLog"]), "w", encoding="utf-8")
+    def replace_output(self, key: str, payload: bytes, *, limit: int) -> None:
+        if limit <= 0:
+            raise ValueError("telemetry output limit must be positive")
+        descriptor = self._outputs[key]
+        bounded = payload[-limit:]
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_mode & 0o077
+            or metadata.st_nlink not in (0, 1)
+        ):
+            raise ValueError("telemetry output is unsafe")
+        os.ftruncate(descriptor, 0)
+        view = memoryview(bounded)
+        offset = 0
+        while view:
+            written = os.pwrite(descriptor, view, offset)
+            if written <= 0:
+                raise OSError("telemetry output write made no progress")
+            offset += written
+            view = view[written:]
 
     def read_text(self, key: str, limit: int = MAX_TELEMETRY_BYTES) -> str:
         descriptor = self._outputs.get(key)
@@ -194,9 +217,9 @@ class TelemetryWorkspace:
     def write_current(self, payload: Mapping[str, Any]) -> None:
         _atomic_json(self.live_descriptor, _PATH_KEYS["current"], payload)
 
-    def append_sample(self, payload: Mapping[str, Any]) -> None:
+    def append_sample(self, payload: Mapping[str, Any]) -> bool:
         if self.archive_descriptor is None:
-            return
+            return False
         encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
         flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -206,9 +229,72 @@ class TelemetryWorkspace:
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
                 raise ValueError("telemetry archive is unsafe")
             os.fchmod(descriptor, 0o600)
+            if metadata.st_size + len(encoded) > MAX_ARCHIVED_TELEMETRY_BYTES:
+                self.archive_capped = True
+                return False
             _write_all(descriptor, encoded)
+            return True
         finally:
             os.close(descriptor)
+
+
+class BoundedOutputCollector:
+    """Continuously drain a child pipe while retaining only its bounded tail."""
+
+    def __init__(self, stream, workspace: TelemetryWorkspace, key: str = "engineLog", limit: int = MAX_ENGINE_LOG_BYTES) -> None:
+        if limit <= 0:
+            raise ValueError("collector limit must be positive")
+        self.stream = stream
+        self.workspace = workspace
+        self.key = key
+        self.limit = limit
+        self._tail = bytearray()
+        self._thread = threading.Thread(target=self._run, name="omarchy-cast-engine-log", daemon=True)
+        self._started = False
+
+    def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self._started:
+            return
+        self._thread.join(timeout=2)
+        self._snapshot()
+
+    def _snapshot(self) -> None:
+        try:
+            self.workspace.replace_output(self.key, bytes(self._tail), limit=self.limit)
+        except (KeyError, OSError, ValueError):
+            pass
+
+    def _run(self) -> None:
+        try:
+            read_chunk = getattr(self.stream, "read1", self.stream.read)
+            while True:
+                chunk = read_chunk(8192)
+                if not chunk:
+                    break
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8", errors="replace")
+                if len(chunk) >= self.limit:
+                    self._tail = bytearray(chunk[-self.limit:])
+                else:
+                    self._tail.extend(chunk)
+                    excess = len(self._tail) - self.limit
+                    if excess > 0:
+                        del self._tail[:excess]
+                self._snapshot()
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                self.stream.close()
+            except OSError:
+                pass
+            self._snapshot()
 
 
 def _telemetry_path_values(session_id: str, environ: Mapping[str, str]) -> dict[str, Path]:
@@ -746,8 +832,12 @@ class TelemetrySampler:
         return payload
 
     def _record(self, payload: Mapping[str, object]) -> None:
-        self._workspace.write_current(payload)
-        self._workspace.append_sample(payload)
+        document = dict(payload)
+        document["historyCapped"] = self._workspace.archive_capped
+        self._workspace.write_current(document)
+        if not self._workspace.append_sample(document) and self._workspace.archive_capped:
+            document["historyCapped"] = True
+            self._workspace.write_current(document)
 
     def _run(self) -> None:
         deadline = time.monotonic()

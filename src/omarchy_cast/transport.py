@@ -15,7 +15,7 @@ import time
 from typing import Any, Callable, Mapping, Protocol
 
 from .guard import GuardRequest, prepare_command, validate_helper_result
-from .telemetry import TelemetrySampler, TelemetryWorkspace, _bounded_read, cleanup_live_telemetry
+from .telemetry import BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, cleanup_live_telemetry
 
 
 CONNECT_TIMEOUT_SECONDS = 75
@@ -360,8 +360,6 @@ class GuardedTransportAdapter:
         """Attach session-owned instrumentation without coupling it to cast lifetime."""
         command = [str(value) for value in plan["command"]]
         command.extend(("--wfd-progress-log", str(paths["progress"]), "--wfd-latency-log", str(paths["latency"])))
-        if self.env.get("OMARCHY_CAST_PACKET_TELEMETRY") == "1":
-            command.extend(("--wfd-packet-log", str(paths["packets"])))
         command.extend((
             "--wfd-supplicant-network-trigger", trigger,
             "--wfd-supplicant-hold", str(SUPPLICANT_GROUP_TIMEOUT_SECONDS),
@@ -410,7 +408,7 @@ class GuardedTransportAdapter:
         sampler: TelemetrySampler | None = None
         telemetry: TelemetryWorkspace | None = None
         lease: SessionLease | None = None
-        engine_log = None
+        engine_output_collector: BoundedOutputCollector | None = None
         guard_ready = False
         guard_cleanup_confirmed = False
         try:
@@ -423,13 +421,16 @@ class GuardedTransportAdapter:
             lease.start()
             telemetry = TelemetryWorkspace(self.request.session_id, self.env)
             engine_paths = telemetry.prepare_engine_outputs()
-            # Per-packet framecrc is a valuable trace, but it creates a second
-            # FFmpeg output and continuous disk I/O. Keep it explicitly opt-in
-            # so production monitoring cannot steal time from capture.
+            # Per-packet framecrc remains a research-only engine capability. It
+            # is deliberately absent here so production diagnostics cannot add
+            # a second unbounded FFmpeg output or steal time from capture.
             command = self._engine_command(plan, engine_paths, trigger)
             stage("connecting")
-            engine_log = telemetry.engine_log_handle()
-            engine = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=engine_log, stderr=subprocess.STDOUT, text=True, env=self.env)
+            engine = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=self.env)
+            if engine.stdout is None:
+                raise TransportError("FluxCast did not expose its diagnostic stream", code="engine-exited")
+            engine_output_collector = BoundedOutputCollector(engine.stdout, telemetry)
+            engine_output_collector.start()
             sampler = TelemetrySampler(
                 session_id=self.request.session_id,
                 engine_pid=engine.pid,
@@ -485,7 +486,8 @@ class GuardedTransportAdapter:
                 if not streaming:
                     return TransportResult("failed", "Desktop capture produced no video frames.", True, "capture-failed")
                 return TransportResult("timeout", "guarded stream duration elapsed", True)
-            engine_log.flush()
+            if engine_output_collector is not None:
+                engine_output_collector.stop()
             engine_output = telemetry.read_text("engineLog")
             detail = self._bounded_detail(engine_output, "FluxCast exited" if engine.returncode == 0 else f"FluxCast exited with status {engine.returncode}")
             return TransportResult("completed", detail, True) if engine.returncode == 0 else TransportResult("failed", detail, True, self._failure_code(engine_output))
@@ -526,8 +528,8 @@ class GuardedTransportAdapter:
                         pass
                 if guard_ready:
                     guard_cleanup_confirmed = self._cleanup_confirmed(helper, self.request)
-            if engine_log is not None:
-                engine_log.close()
+            if engine_output_collector is not None:
+                engine_output_collector.stop()
             if telemetry is not None:
                 telemetry.close()
             cleanup_live_telemetry(self.request.session_id, self.env)

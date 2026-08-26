@@ -20,3 +20,4 @@
 0022-Correct-measured-GSR-audio-capture-latency.patch
 0027-Authenticate-selected-WFD-receiver.patch
 0028-Bound-receiver-facing-RTSP-input.patch
+0029-Keep-WFD-progress-telemetry-bounded.patch

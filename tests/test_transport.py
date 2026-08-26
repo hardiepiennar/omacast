@@ -91,6 +91,13 @@ class TransportTest(unittest.TestCase):
         adapter = GuardedTransportAdapter(GuardRequest(1, "a" * 32, 1000, "wlan42", 60), env={})
         command = adapter._engine_command(executable, paths, "/run/user/1000/omarchy-cast/session/trigger")
         self.assertEqual(command[command.index("--wfd-supplicant-hold") + 1], "45")
+        self.assertNotIn("--wfd-packet-log", command)
+
+        traced = GuardedTransportAdapter(
+            GuardRequest(1, "a" * 32, 1000, "wlan42", 60),
+            env={"OMARCHY_CAST_PACKET_TELEMETRY": "1"},
+        )._engine_command(executable, paths, "/run/user/1000/omarchy-cast/session/trigger")
+        self.assertNotIn("--wfd-packet-log", traced)
 
     def test_session_lease_is_private_and_renewable(self) -> None:
         self.assertEqual(GUARD_LEASE_SECONDS, 60)

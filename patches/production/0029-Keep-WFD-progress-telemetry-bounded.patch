@@ -1,0 +1,301 @@
+From 0cf11ca3c7520ca89026f25e813d1324924841cc Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Wed, 26 Aug 2026 19:46:50 +1200
+Subject: [PATCH] Keep WFD progress telemetry bounded
+
+---
+ src/wfd/media/pipeline.py         |   6 +-
+ src/wfd/media/wlroots.py          |  14 +++-
+ src/wfd/progress.py               | 105 ++++++++++++++++++++++++++++++
+ tests/test_wfd.py                 |   3 +-
+ tests/test_wfd_progress_bounds.py |  73 +++++++++++++++++++++
+ 5 files changed, 197 insertions(+), 4 deletions(-)
+ create mode 100644 src/wfd/progress.py
+ create mode 100644 tests/test_wfd_progress_bounds.py
+
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+index c9ac238..d8a1eb4 100644
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -1,5 +1,6 @@
+ import shutil
+ import subprocess
++import threading
+ from typing import Optional
+ 
+ from capture.portal_capture import PortalCaptureSession, close_portal_capture
+@@ -33,6 +34,7 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+         self._portal_gst_cmd: Optional[list[str]] = None
+         self._portal_pw_fd: Optional[int] = None
+         self._lpcm_muxer = None   # WFDLPCMMuxer instance for Microsoft adapter
++        self._progress_threads: list[threading.Thread] = []
+ 
+     def start(self) -> None:
+         if self.processes:
+@@ -89,6 +91,9 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+                 proc.kill()
+                 proc.wait(timeout=1)
+         self.processes.clear()
++        for thread in self._progress_threads:
++            thread.join(timeout=2)
++        self._progress_threads.clear()
+         if self._lpcm_muxer is not None:
+             self._lpcm_muxer.stop()
+             self._lpcm_muxer = None
+@@ -219,4 +224,3 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+ 
+ 
+ 
+-
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index f119de1..6080c3a 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -10,6 +10,7 @@ from ..encoding import (
+ from ..env import _detect_audio_monitor
+ from ..modes import _h264_level_for_mode
+ from ..net import _ffmpeg_sender_args
++from ..progress import _start_ffmpeg_progress_drain
+ 
+ 
+ class WlrootsMixin:
+@@ -66,8 +67,9 @@ class WlrootsMixin:
+             "-c", "mkv",
+         ]
+ 
++        progress_target = "pipe:2" if self.config.progress_log_path else None
+         ffmpeg_cmd = [
+-            *_ffmpeg_sender_args(self.config.ffmpeg_stats, self.config.progress_log_path),
++            *_ffmpeg_sender_args(self.config.ffmpeg_stats, progress_target),
+             "-fflags", "+genpts",
+             "-f", "matroska",
+             "-i", "pipe:0",
+@@ -116,8 +118,16 @@ class WlrootsMixin:
+             capture_proc.kill()
+             raise WFDNotReady("gpu-screen-recorder did not expose stdout.")
+ 
+-        ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=capture_proc.stdout, stderr=None)
++        ffmpeg_proc = subprocess.Popen(
++            ffmpeg_cmd,
++            stdin=capture_proc.stdout,
++            stderr=subprocess.PIPE if self.config.progress_log_path else None,
++        )
+         capture_proc.stdout.close()
++        if self.config.progress_log_path and ffmpeg_proc.stderr is not None:
++            self._progress_threads.append(
++                _start_ffmpeg_progress_drain(ffmpeg_proc.stderr, self.config.progress_log_path)
++            )
+         time.sleep(1.0)
+ 
+         if capture_proc.poll() is not None:
+diff --git a/src/wfd/progress.py b/src/wfd/progress.py
+new file mode 100644
+index 0000000..233ae37
+--- /dev/null
++++ b/src/wfd/progress.py
+@@ -0,0 +1,105 @@
++import os
++import re
++import stat
++import sys
++import threading
++from typing import BinaryIO, Optional
++
++
++MAX_PROGRESS_LINE_BYTES = 8 * 1024
++MAX_PROGRESS_RECORD_BYTES = 16 * 1024
++_CONTROLLER_FD_PATH = re.compile(r"^/proc/[1-9][0-9]*/fd/[0-9]+$")
++_PROGRESS_KEYS = frozenset({
++    b"frame", b"fps", b"stream_0_0_q", b"bitrate", b"total_size",
++    b"out_time_us", b"out_time_ms", b"out_time", b"dup_frames",
++    b"drop_frames", b"speed", b"progress",
++})
++
++
++def _write_progress_snapshot(path: str, payload: bytes) -> None:
++    if len(payload) > MAX_PROGRESS_RECORD_BYTES:
++        raise ValueError("FFmpeg progress record exceeds its byte limit")
++    flags = os.O_WRONLY | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
++    if not _CONTROLLER_FD_PATH.fullmatch(path):
++        flags |= getattr(os, "O_NOFOLLOW", 0)
++    descriptor = os.open(path, flags)
++    try:
++        metadata = os.fstat(descriptor)
++        if (
++            not stat.S_ISREG(metadata.st_mode)
++            or metadata.st_uid != os.getuid()
++            or metadata.st_mode & 0o077
++            or metadata.st_nlink not in (0, 1)
++        ):
++            raise ValueError("FFmpeg progress output is unsafe")
++        os.ftruncate(descriptor, 0)
++        view = memoryview(payload)
++        offset = 0
++        while view:
++            written = os.pwrite(descriptor, view, offset)
++            if written <= 0:
++                raise OSError("FFmpeg progress write made no progress")
++            offset += written
++            view = view[written:]
++    finally:
++        os.close(descriptor)
++
++
++def _drain_ffmpeg_progress(
++    stream: BinaryIO,
++    path: str,
++    diagnostic: Optional[BinaryIO] = None,
++) -> None:
++    """Drain FFmpeg stderr, retaining only its latest complete progress record."""
++    diagnostic = diagnostic or sys.stderr.buffer
++    record = bytearray()
++    collecting = False
++    output_failed = False
++    try:
++        while True:
++            line = stream.readline(MAX_PROGRESS_LINE_BYTES + 1)
++            if not line:
++                break
++            if len(line) > MAX_PROGRESS_LINE_BYTES or not line.endswith(b"\n"):
++                while line and not line.endswith(b"\n"):
++                    line = stream.readline(MAX_PROGRESS_LINE_BYTES + 1)
++                record.clear()
++                collecting = False
++                continue
++            key, separator, _ = line.partition(b"=")
++            if separator and key == b"frame":
++                record = bytearray(line)
++                collecting = True
++                continue
++            if collecting and separator and key in _PROGRESS_KEYS:
++                if len(record) + len(line) > MAX_PROGRESS_RECORD_BYTES:
++                    record.clear()
++                    collecting = False
++                    continue
++                record.extend(line)
++                if key == b"progress":
++                    try:
++                        _write_progress_snapshot(path, bytes(record))
++                    except (OSError, ValueError) as exc:
++                        if not output_failed:
++                            diagnostic.write(f"[FluxCast WFD] progress output disabled: {exc}\n".encode())
++                            diagnostic.flush()
++                        output_failed = True
++                    record.clear()
++                    collecting = False
++                continue
++            diagnostic.write(line)
++            diagnostic.flush()
++    finally:
++        stream.close()
++
++
++def _start_ffmpeg_progress_drain(stream: BinaryIO, path: str) -> threading.Thread:
++    thread = threading.Thread(
++        target=_drain_ffmpeg_progress,
++        args=(stream, path),
++        name="fluxcast-wfd-progress",
++        daemon=True,
++    )
++    thread.start()
++    return thread
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index 5f97fb0..f1b1eb3 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -134,6 +134,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         class Proc:
+             def __init__(self):
+                 self.stdout = io.BytesIO()
++                self.stderr = io.BytesIO()
+ 
+             def poll(self):
+                 return None
+@@ -177,7 +178,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+         )
+         self.assertEqual(ffmpeg_cmd.count("-i"), 1)
+         self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-stats_period") + 1], "0.25")
+-        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-progress") + 1], "/tmp/wfd-progress.log")
++        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-progress") + 1], "pipe:2")
+         self.assertEqual(ffmpeg_cmd[-1], "/tmp/wfd-packets.csv")
+         self.assertEqual(ffmpeg_cmd[-2], "framecrc")
+         self.assertEqual(ffmpeg_cmd[-4], "1")
+diff --git a/tests/test_wfd_progress_bounds.py b/tests/test_wfd_progress_bounds.py
+new file mode 100644
+index 0000000..c6d3565
+--- /dev/null
++++ b/tests/test_wfd_progress_bounds.py
+@@ -0,0 +1,73 @@
++import io
++import os
++from pathlib import Path
++import tempfile
++import unittest
++
++from wfd.progress import (
++    MAX_PROGRESS_LINE_BYTES,
++    MAX_PROGRESS_RECORD_BYTES,
++    _drain_ffmpeg_progress,
++    _write_progress_snapshot,
++)
++
++
++def record(frame: int) -> bytes:
++    return (
++        f"frame={frame}\n"
++        "fps=60.0\n"
++        f"out_time_us={frame * 16667}\n"
++        "dup_frames=0\n"
++        "drop_frames=0\n"
++        "speed=1.0x\n"
++        "progress=continue\n"
++    ).encode()
++
++
++class WFDProgressBoundsTest(unittest.TestCase):
++    def test_many_records_leave_only_the_latest_bounded_snapshot(self):
++        with tempfile.TemporaryDirectory() as temp:
++            path = Path(temp) / "progress"
++            path.write_bytes(b"")
++            path.chmod(0o600)
++            diagnostic = io.BytesIO()
++            payload = b"warning before progress\n" + b"".join(record(index) for index in range(10_000))
++            _drain_ffmpeg_progress(io.BytesIO(payload), str(path), diagnostic)
++            retained = path.read_bytes()
++            self.assertLessEqual(len(retained), MAX_PROGRESS_RECORD_BYTES)
++            self.assertIn(b"frame=9999\n", retained)
++            self.assertNotIn(b"frame=9998\n", retained)
++            self.assertEqual(diagnostic.getvalue(), b"warning before progress\n")
++
++    def test_oversized_partial_line_is_discarded_without_hiding_later_progress(self):
++        with tempfile.TemporaryDirectory() as temp:
++            path = Path(temp) / "progress"
++            path.write_bytes(b"")
++            path.chmod(0o600)
++            payload = b"frame=" + b"9" * (MAX_PROGRESS_LINE_BYTES * 2) + b"\n" + record(7)
++            _drain_ffmpeg_progress(io.BytesIO(payload), str(path), io.BytesIO())
++            self.assertIn(b"frame=7\n", path.read_bytes())
++
++    def test_linked_or_public_output_is_rejected_before_truncation(self):
++        with tempfile.TemporaryDirectory() as temp:
++            root = Path(temp)
++            for kind in ("symlink", "hardlink", "public"):
++                with self.subTest(kind=kind):
++                    target = root / f"target-{kind}"
++                    target.write_bytes(b"preserve")
++                    target.chmod(0o600)
++                    candidate = root / f"candidate-{kind}"
++                    if kind == "symlink":
++                        candidate.symlink_to(target)
++                    elif kind == "hardlink":
++                        os.link(target, candidate)
++                    else:
++                        candidate = target
++                        candidate.chmod(0o644)
++                    with self.assertRaises((OSError, ValueError)):
++                        _write_progress_snapshot(str(candidate), record(1))
++                    self.assertEqual(target.read_bytes(), b"preserve")
++
++
++if __name__ == "__main__":
++    unittest.main()
