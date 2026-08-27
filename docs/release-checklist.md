@@ -282,9 +282,9 @@
       zero findings, `review-required`, `blocksApproval: false`, and only the
       expected privilege, package-management, and service-management
       capabilities. A public GitHub snapshot remains mandatory at submission.
-- [x] Official-format marketplace issue body prepared in
-      `docs/marketplace-submission.md`; its ownership/checklist boxes remain
-      deliberately unchecked pending the public URL and explicit owner review.
+- [x] The original marketplace issue body was prepared and used for the now
+      published listing. Its evidence remains in repository and issue history;
+      `docs/marketplace-update.md` now records the exact newer-commit workflow.
 - [x] The marketplace V3 scanner from exact marketplace commit
       `55f3491b665e72e72ad12ec8718ee49609db09b6` was run over the tracked local
       snapshot with the marketplace's real scope rules. It reports
@@ -303,9 +303,8 @@
 - [ ] Complete the documented 30-minute repeatability and forced-cleanup gates
       before describing 0.1.0 as broadly supported rather than a release
       candidate.
-- [ ] Replace the URL in `docs/marketplace-submission.md`, review its body,
-      confirm ownership and every submission checkbox, then explicitly approve
-      creating the listing issue.
+- [ ] After the exact release candidate is pushed, submit its full SHA through
+      the newer-upstream action documented in `docs/marketplace-update.md`.
 
 ## Production and competition finish
 

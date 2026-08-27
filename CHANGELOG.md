@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3 — 2026-08-27
+
+- Remove the supplicant broker's fixed eight-minute lifetime. Healthy casts
+  now run until stopped while the renewable safety lease still recovers an
+  abandoned session.
+- Require companion revision 61 / guard API 11 so the plugin rejects packages
+  containing the broker lifetime defect.
+- Allow bounded controller discovery to publish session state on slower hosts
+  before the panel cancels a stalled launch.
+
 ## 0.1.2 — 2026-08-27
 
 - Reduce receiver connection time by waiting on owned network readiness and

@@ -142,23 +142,11 @@ class ManifestTest(unittest.TestCase):
         self.assertNotIn('hl.unbind("SUPER + C")', readme)
         self.assertIn("does not silently erase user data", security)
 
-    def test_marketplace_submission_draft_is_safe_and_complete(self) -> None:
-        draft = (REPO_ROOT / "docs" / "marketplace-submission.md").read_text(encoding="utf-8")
-        headings = (
-            "### Repository URL",
-            "### Category",
-            "### Tags",
-            "### Suggest a missing tag",
-            "### Maintainer notes",
-            "### Submission checklist",
-        )
-        positions = [draft.index(heading) for heading in headings]
-        self.assertEqual(positions, sorted(positions))
-        self.assertIn("Hardware", draft)
-        self.assertIn("bar, media, quickshell", draft)
-        self.assertIn("55f3491b665e72e72ad12ec8718ee49609db09b6", draft)
-        self.assertIn("approved-and-verified", draft)
-        self.assertEqual(draft.count("- [ ]"), 5)
-        self.assertNotIn("- [x]", draft)
-        self.assertIn("https://github.com/hardiepiennar/omacast", draft)
-        self.assertNotIn("<repository-url>", draft)
+    def test_marketplace_update_handoff_targets_the_published_plugin(self) -> None:
+        handoff = (REPO_ROOT / "docs" / "marketplace-update.md").read_text(encoding="utf-8")
+        self.assertIn("Verify and publish a newer upstream commit", handoff)
+        self.assertIn("hardie.omarchy-cast", handoff)
+        self.assertIn("https://github.com/hardiepiennar/omacast", handoff)
+        self.assertIn("full 40-character SHA", handoff)
+        self.assertIn("approved-and-verified", handoff)
+        self.assertIn("Do not edit or reopen the closed initial submission", handoff)
