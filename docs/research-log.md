@@ -2232,3 +2232,7 @@ connected, and no session P2P interface, engine, capture, mux, guard, recovery,
 broker, root session path, or current-session runtime remained. This closes the
 greater-than-nine-minute lifetime regression and normal cleanup gate. Forced
 recovery and the canonical three consecutive 30-minute sessions remain open.
+On 2026-08-27 the maintainer explicitly deferred both to a future reliability
+release. Version 0.1.3 is scoped to the confirmed broker-lifetime defect, API-11
+compatibility boundary, and bounded startup-discovery fix; it does not claim
+that the deferred soak or forced-recovery coverage passed.

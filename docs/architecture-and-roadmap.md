@@ -941,6 +941,15 @@ result. Do not store Wi-Fi credentials, browser data, or unrelated system logs.
 
 ## 6. Release acceptance criteria
 
+Version 0.1.3 is a narrowly scoped breaking-defect release rather than the
+broad-support milestone described below. Its required receiver boundary is the
+direct regression for the removed eight-minute broker cutoff plus normal owned
+cleanup on the exact API-11/revision-61 candidate. That boundary passed on
+2026-08-27. By maintainer decision, the three consecutive 30-minute sessions
+and live forced-recovery exercise are deferred to a future reliability release;
+they are not claimed as passed by 0.1.3. Existing Fire TV-only and hardware-
+specific support qualifications remain unchanged.
+
 The first supported release is complete only when all are true:
 
 - install, validation, enable, update, disable, and removal work through
@@ -977,9 +986,11 @@ independent acceptance remain required:
    signed release artifact. Omarchy's plugin manager cannot install it.
 3. Test `omarchy plugin add`, enable, Super+Alt+C summon, update, disable, and
    removal from a clean clone/account.
-4. Complete repeated 30-minute 720p60 sessions and one forced-failure cleanup
-   matrix on the supported topology before changing “release candidate” to
-   “supported release”.
+4. In a future reliability release, complete repeated 30-minute 720p60 sessions
+   and one forced-failure cleanup matrix on the supported topology before
+   making broader long-duration or recovery claims. These gates were explicitly
+   deferred from the narrowly scoped 0.1.3 breaking-defect release on
+   2026-08-27.
 5. Validate real browser live/replay playback before claiming protected or
    online video compatibility. Portal source selection remains gated until its
    own tests pass.

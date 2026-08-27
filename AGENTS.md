@@ -63,6 +63,12 @@ Pre-production release gate:
   media, or network-lifecycle change cannot validate the changed stack. Run the
   canonical repeated soak and failure-injection gates on the exact installed
   release candidate.
+- An urgent compatibility or breaking-defect release may defer broader soak or
+  failure-injection coverage only when the maintainer explicitly records that
+  scope decision, the exact installed candidate passes a direct regression and
+  normal cleanup test, product claims remain conservative, and the deferred
+  gates stay tracked for the next reliability release. Never report deferred
+  coverage as passed.
 - When companion behavior changes incompatibly, bump its helper API and package
   revision, update controller readiness and artifact/lifecycle tests, and prove
   that the new plugin rejects the old installed helper. Test through the
