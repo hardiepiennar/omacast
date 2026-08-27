@@ -155,6 +155,18 @@ if arm_recovery; then exit 3; fi
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_broker_lifetime_is_owned_by_the_renewable_session_lease(self) -> None:
+        guard = (ROOT / "packaging" / "arch" / "omarchy-cast-guard").read_text(encoding="utf-8")
+        recovery = (ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover").read_text(encoding="utf-8")
+        broker_body = guard.split("start_broker() {", 1)[1].split("\n}", 1)[0]
+
+        self.assertIn('systemd-run --quiet --collect --unit="$broker_unit"', broker_body)
+        self.assertNotIn("RuntimeMaxSec", broker_body)
+        self.assertNotIn("runtime_max", broker_body)
+        self.assertIn('while owns_session && [[ ! -e "$stop_file" ]]; do', guard)
+        self.assertIn("lease_fresh || break", guard)
+        self.assertIn("lease_fresh || break", recovery)
+
     def test_broker_socket_cleanup_is_exact_type_owner_and_mode_only(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
         harness = r'''
@@ -800,6 +812,7 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("omarchy-cast-guard-version", audit)
         self.assertIn("apiRevision", audit)
         self.assertIn("omarchy-cast-supplicant-broker", audit)
+        self.assertIn("fixed wall-clock lifetime", audit)
         self.assertIn("temporary system-bus policy", audit)
         self.assertIn("pinned heartbeat descriptor", audit)
         self.assertIn("bound pinned heartbeat reads", audit)

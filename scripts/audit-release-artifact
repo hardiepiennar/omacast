@@ -112,6 +112,7 @@ python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"s
   || die "guard API contract does not match revision 10"
 ! grep -Fq '/etc/dbus-1/system.d' "$guard" || die "guard still writes a temporary system-bus policy"
 grep -Fq 'omarchy-cast-supplicant-broker' "$guard" || die "guard does not start the session-scoped supplicant broker"
+! grep -Fq 'RuntimeMaxSec' "$guard" || die "guard imposes a fixed wall-clock lifetime on a healthy broker"
 grep -Fq 'set(payload) != {"schemaVersion", "op"}' "$broker" || die "broker request shape is not closed"
 grep -Fq 'operation == "connect"' "$broker" || die "broker lacks its fixed connect operation"
 grep -Fq 'operation == "cleanup"' "$broker" || die "broker lacks its fixed cleanup operation"

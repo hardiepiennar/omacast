@@ -91,8 +91,8 @@ write_privileged_runtime() {
 }
 broker_socket_valid() { [[ -S "$broker_socket" && ! -L "$broker_socket" && "$(stat -c '%u:%a' "$broker_socket" 2>/dev/null)" == "$uid:600" ]]; }
 start_broker() {
-  local deadline=$((SECONDS + recovery_ready_timeout_seconds)) runtime_max=$((wait_for_trigger_seconds + duration + 120))
-  systemd-run --quiet --collect --unit="$broker_unit" --property=Type=exec --property="RuntimeMaxSec=$runtime_max" -- /usr/lib/omarchy-cast/omarchy-cast-supplicant-broker --session "$session_id" --uid "$uid" --interface "$interface" --peer "$peer" --frequency "$frequency" || return 1
+  local deadline=$((SECONDS + recovery_ready_timeout_seconds))
+  systemd-run --quiet --collect --unit="$broker_unit" --property=Type=exec -- /usr/lib/omarchy-cast/omarchy-cast-supplicant-broker --session "$session_id" --uid "$uid" --interface "$interface" --peer "$peer" --frequency "$frequency" || return 1
   broker_started=true
   while (( SECONDS <= deadline )); do
     broker_socket_valid && systemctl is-active --quiet "$broker_unit" && return 0
