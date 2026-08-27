@@ -40,10 +40,43 @@ Rules for future work:
 - Keep marketplace and review comments terse and human: state the relevant
   change, exact commit, and requested action. Do not add test-result recitals,
   promotional detail, or release-summary prose unless the reviewer requires it.
-- After pushing marketplace review fixes, update the existing submission issue
-  body to name the full current remote HEAD while preserving its required
-  headings and checked checklist. Editing the issue reruns commit-bound
-  validation; posting a review comment alone does not.
+- For an unpublished submission under review, update the existing submission
+  issue body to name the full current remote HEAD while preserving its required
+  headings and checked checklist. Once the plugin is published, do not reuse
+  or edit the closed submission to publish a new commit: use the marketplace's
+  newer-upstream plugin-verification workflow with the exact tested HEAD.
+
+Pre-production release gate:
+
+- Before calling a candidate production-ready, trace every lifetime clock from
+  QML through the controller, transient user and system services, privileged
+  guard and recovery process, broker, engine, and RTSP/media protocol. Classify
+  each as a startup deadline, renewable failure lease, shutdown bound, or
+  session wall clock. A cast advertised as "until stopped" must have no fixed
+  wall-clock limit in any healthy nested process or service.
+- Add a regression for every lifetime defect at the layer that caused it. The
+  suite must prove that a healthy renewable session survives beyond every
+  former cutoff and that owner death, missed heartbeat, Stop, and cleanup still
+  finish within their documented bounds. A longer fixed timeout is not a fix.
+- Acceptance evidence must postdate the production architecture it is meant to
+  validate. A long soak performed before a helper, broker, service, recovery,
+  media, or network-lifecycle change cannot validate the changed stack. Run the
+  canonical repeated soak and failure-injection gates on the exact installed
+  release candidate.
+- When companion behavior changes incompatibly, bump its helper API and package
+  revision, update controller readiness and artifact/lifecycle tests, and prove
+  that the new plugin rejects the old installed helper. Test through the
+  installed plugin/controller path, not only repository-local imports.
+- Before publishing, reconcile `manifest.json`, `pyproject.toml`, the changelog,
+  README URLs, helper API, package revision, tag, artifact metadata, and
+  marketplace target SHA. Confirm that every documented release URL and asset
+  exists and installs the required API; passing source tests does not prove a
+  usable distribution path.
+- Run the final timer search, clean-clone build, controller/plugin/engine tests,
+  shell lint, plugin validation, artifact audit, disposable install/upgrade/
+  removal, installed readiness check, and required receiver acceptance against
+  one exact commit. Any code or packaging change after that invalidates the
+  candidate and requires the proportionate gates to be rerun.
 
 Security review checklist:
 
