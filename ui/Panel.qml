@@ -42,6 +42,7 @@ Panel {
   property bool stopAwaitingIdle: false
   property bool recoverRunning: false
   property bool autoScanDone: false
+  readonly property int startStateTimeoutMs: 45000
   property bool doctorComplete: false
   property bool nerdMode: false
 
@@ -791,7 +792,10 @@ Panel {
   Timer { interval: 3000; running: !root.opened && !root.sessionBusy; repeat: true; onTriggered: if (!statusProc.running) statusProc.running = true }
   Timer {
     id: startDeadline
-    interval: 10000
+    // The detached controller performs bounded host discovery before it can
+    // publish `checking`. Allow that complete bounded stage, then cancel a
+    // launcher that still owns no session instead of racing slower machines.
+    interval: root.startStateTimeoutMs
     repeat: false
     onTriggered: {
       if (root.startPending) {
