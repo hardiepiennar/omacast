@@ -2208,3 +2208,27 @@ Companion revision 61 advances the helper contract to API 11 so the updated
 plugin rejects installed API-10 packages containing the defect. Offline tests
 cover the new contract; exact-clean package, installed upgrade, greater-than-
 nine-minute receiver, forced-recovery, and repeated soak gates remain open.
+
+The exact revision-61 package from `d589caa4f8737aeee532508c8199c7693f9657f1`
+then passed its clean build, 148-test engine suite, artifact audit, and
+disposable revision-60 to revision-61 upgrade/removal. It installed with 160
+package files and zero alterations; every installed helper matched the source,
+reported guard API 11, and made the installed version-0.1.3 panel/controller
+report the complete casting path ready.
+
+That installed candidate completed the targeted receiver regression against
+the stock Fire TV. Streaming began at 21:24 local time and remained live past
+the former 480-second broker cutoff and the full nine-minute test margin. The
+receiver negotiated 1280x720p60. Most samples were healthy near 60 fps and
+realtime ratio 1.0 with zero FFmpeg drops or duplicates and zero radio retries
+or failures. A temporary cadence oscillation appeared around minutes seven to
+nine (approximately 49, 91, and 46 measured fps) without disconnection,
+network errors, or a persistent send queue; it recovered to a healthy 60 fps.
+The user accepted picture, motion, and audio.
+
+Cooperative controller Stop returned idle with `cleanup_complete: true`. The
+user service was inactive, NetworkManager was active, infrastructure Wi-Fi was
+connected, and no session P2P interface, engine, capture, mux, guard, recovery,
+broker, root session path, or current-session runtime remained. This closes the
+greater-than-nine-minute lifetime regression and normal cleanup gate. Forced
+recovery and the canonical three consecutive 30-minute sessions remain open.

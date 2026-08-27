@@ -533,10 +533,15 @@
       480-second supplicant-broker wall clock. Source and artifact regressions
       reject a fixed healthy-session `RuntimeMaxSec`; revision 61 / guard API 11
       makes the controller reject the affected API-10 companion.
-- [ ] Build and install the exact revision-61 candidate, prove an uninterrupted
-      receiver session beyond nine minutes, exercise forced recovery, and then
-      complete the canonical repeated 30-minute acceptance gate. Revision 60's
-      short run and pre-broker 20.5-minute soak do not satisfy this gate.
+- [x] The exact revision-61/API-11 candidate passed its clean build, artifact
+      audit, revision-60 upgrade/removal, installed integrity/readiness checks,
+      and an uninterrupted receiver session beyond nine minutes. It remained
+      live past the former 480-second cutoff, recovered from a temporary cadence
+      oscillation, passed user picture/motion/audio assessment, and completed
+      cooperative owned-session cleanup.
+- [ ] Exercise forced recovery and complete the canonical three consecutive
+      30-minute acceptance sessions. Revision 60's short run and pre-broker
+      20.5-minute soak do not satisfy these gates.
 - [x] GitHub private vulnerability reporting is enabled for the public
       repository, and `SECURITY.md` links directly to the private report form.
 
