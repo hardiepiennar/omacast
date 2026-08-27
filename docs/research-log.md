@@ -2186,3 +2186,25 @@ session telemetry. Post-stop inspection found the user service inactive with
 no engine, guard, broker, capture, or mux process, and no root-owned recovery
 state or current-session runtime directory. Older user-runtime entries dated
 2026-08-23 remain preserved because the accepted session did not own them.
+
+### Broker lifetime regression and release-path audit (2026-08-27)
+
+A full production lifetime trace found that revision 60's root-owned transient
+supplicant broker carried `RuntimeMaxSec=480`. The value was derived from the
+five-minute trigger window, the renewable 60-second guard lease, and a
+two-minute allowance, but systemd applied it as an unconditional broker
+wall-clock lifetime. Broker SIGTERM enters owned supplicant cleanup, so a
+healthy cast was disconnected slightly before eight minutes even though the
+controller, user service, guard, and engine all otherwise supported an
+until-stopped session. The earlier 20.5-minute soak predates the broker and
+therefore does not validate this architecture; revision 60 received only a
+short receiver run.
+
+Commit `9841cdd` removes the broker `RuntimeMaxSec`. Healthy lifetime is now
+owned only by the controller-renewed 60-second lease, while the primary guard
+and independent recovery process retain bounded owner-death cleanup. A source
+regression and release-artifact audit reject any fixed broker wall clock.
+Companion revision 61 advances the helper contract to API 11 so the updated
+plugin rejects installed API-10 packages containing the defect. Offline tests
+cover the new contract; exact-clean package, installed upgrade, greater-than-
+nine-minute receiver, forced-recovery, and repeated soak gates remain open.

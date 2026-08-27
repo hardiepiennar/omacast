@@ -124,7 +124,7 @@ REQUIRED_COMMANDS = (
 )
 COMPANION_COMMANDS = frozenset(name for name in REQUIRED_COMMANDS if name != "hyprctl")
 HELPER_NAMES = ("omarchy-cast-guard", "omarchy-cast-guard-recover", "omarchy-cast-supplicant-broker")
-GUARD_API_REVISION = 10
+GUARD_API_REVISION = 11
 
 
 def _check_command(name: str, finder: Callable[[str], str | None]) -> dict[str, object]:

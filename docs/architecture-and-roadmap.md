@@ -803,7 +803,7 @@ root `manifest.json`, a thin `ui/Panel.qml` bar widget, and a package-owned
 session helper. The controller issues a fixed, versioned `pkexec` request for a
 validated UID/interface/session/duration; the helper generates only
 session-named network state and a closed-operation supplicant broker, and an
-independent recovery process bounds cleanup. Guard API revision 10 binds the
+independent recovery process bounds cleanup. Guard API revision 11 binds the
 requested UID to
 Polkit's authenticated caller, while the installed declarative action permits
 only the exact guard executable with `prepare` as its first argument for an

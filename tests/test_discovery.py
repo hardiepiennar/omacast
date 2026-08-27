@@ -15,7 +15,7 @@ class DiscoveryTest(unittest.TestCase):
         if args[0] == "fluxcast":
             return CommandResult(tuple(args), 0, "--wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-supplicant-broker --wfd-progress-log", "")
         if Path(args[0]).name == "omarchy-cast-guard":
-            return CommandResult(tuple(args), 0, json.dumps({"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 10}), "")
+            return CommandResult(tuple(args), 0, json.dumps({"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 11}), "")
         if args[0] == "nmcli":
             return CommandResult(tuple(args), 0, "wlan42:wifi:connected\n", "")
         if args[0] == "iw":
@@ -91,7 +91,7 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(snapshot["readiness"]["issues"], [])
         self.assertEqual(snapshot["readiness"]["summary"], "Casting support ready")
         guard = next(helper for helper in snapshot["helpers"] if helper["name"] == "omarchy-cast-guard")
-        self.assertEqual(guard["apiRevision"], 10)
+        self.assertEqual(guard["apiRevision"], 11)
 
     def test_readiness_rejects_an_old_or_unversioned_companion(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -120,24 +120,24 @@ class DiscoveryTest(unittest.TestCase):
         self.assertIn("engine-incompatible", codes)
         self.assertIn("helper-incompatible", codes)
 
-    def test_readiness_rejects_guard_api_eight(self) -> None:
+    def test_readiness_rejects_buggy_guard_api_ten(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             helpers = root / "helpers"
             helpers.mkdir()
             self.install_fake_helpers(helpers)
 
-            def revision_eight_runner(args, *, timeout=5.0):
+            def revision_ten_runner(args, *, timeout=5.0):
                 if Path(args[0]).name == "omarchy-cast-guard":
                     return CommandResult(tuple(args), 0, json.dumps({
                         "schemaVersion": 1,
                         "kind": "omarchy-cast-guard-version",
-                        "apiRevision": 8,
+                        "apiRevision": 10,
                     }), "")
                 return self.ready_runner(args, timeout=timeout)
 
             snapshot = discover_host(
-                runner=revision_eight_runner,
+                runner=revision_ten_runner,
                 render_root=root / "dri",
                 guard_root=helpers,
                 command_finder=lambda name: f"/usr/bin/{name}",

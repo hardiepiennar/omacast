@@ -530,6 +530,14 @@
       idle with a successful inactive service, connected infrastructure Wi-Fi,
       no session P2P interface or process, no current runtime directory, and no
       root-owned recovery state.
+- [x] The pre-production lifetime trace found and removed revision 60's fixed
+      480-second supplicant-broker wall clock. Source and artifact regressions
+      reject a fixed healthy-session `RuntimeMaxSec`; revision 61 / guard API 11
+      makes the controller reject the affected API-10 companion.
+- [ ] Build and install the exact revision-61 candidate, prove an uninterrupted
+      receiver session beyond nine minutes, exercise forced recovery, and then
+      complete the canonical repeated 30-minute acceptance gate. Revision 60's
+      short run and pre-broker 20.5-minute soak do not satisfy this gate.
 - [x] GitHub private vulnerability reporting is enabled for the public
       repository, and `SECURITY.md` links directly to the private report form.
 
