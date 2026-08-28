@@ -15,6 +15,9 @@ _RECEIVER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _ALLOWED_CAPABILITIES = frozenset({"miracast", "audio", "video"})
 MAX_RECEIVERS = 64
 MAX_DISCOVERY_PEERS = 256
+# Evidence that a peer advertises Wi-Fi Display, across the NetworkManager and
+# wpa_cli peer-detail formats FluxCast can return.
+_WFD_MARKERS = ("wfd_ies=", "wfd_dev_info=", "sink_rtsp_port=")
 
 
 class ReceiverError(ValueError):
@@ -120,20 +123,21 @@ class FluxCastReceiverDiscovery:
             # NetworkManager exposes every nearby Wi-Fi Direct peer, including
             # printers. An explicitly empty WFD IE array proves that the peer
             # is not a Miracast sink and must never appear as a cast target.
-            if "wfd_ies=" in details.casefold() and "@ay []" in details.casefold():
+            lowered_details = details.casefold()
+            if "wfd_ies=" in lowered_details and "@ay []" in lowered_details:
+                continue
+            # A Miracast sink always advertises a Wi-Fi Display IE. Peers with
+            # no WFD advertisement at all are plain Wi-Fi Direct devices and
+            # stay filtered out.
+            if not any(marker in lowered_details for marker in _WFD_MARKERS):
                 continue
             address = str(getattr(peer, "address", "")).upper()
             advertised_name = str(getattr(peer, "name", "")).strip()
-            # The first release supports the receiver class that completed the
-            # full media and cleanup gate. Generic WFD advertisements are not
-            # actionable release targets yet, even if they claim Miracast.
-            if "fire tv" not in advertised_name.casefold():
-                continue
             name = advertised_name or f"Miracast display · {address[-5:]}"
             records.append({
                 "id": address,
                 "name": name,
-                "kind": "fire-tv",
+                "kind": "fire-tv" if "fire tv" in advertised_name.casefold() else "wfd-display",
                 "capabilities": ["miracast", "audio", "video"],
             })
         return normalize_receivers(records)
