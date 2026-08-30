@@ -16,7 +16,8 @@
   implementations and require companion revision 65 / guard API 13.
 - Let the explicit Restore action reclaim only fully inactive orphaned P2P
   clients after fresh administrator approval; ordinary startup never deletes
-  an unowned interface. Require companion revision 66 / guard API 14.
+  an unowned interface, and every candidate is revalidated immediately before
+  removal. Require companion revision 66 / guard API 14.
 
 ## 0.1.3 — 2026-08-27
 

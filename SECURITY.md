@@ -55,8 +55,8 @@ only while its exact value and root-owned marker still prove Omacast ownership.
 The guard records P2P clients created after its clean baseline in root-owned
 session state and removes only those recorded devices automatically. Explicit
 administrator-approved reclaim prevalidates every matching device before any
-deletion and accepts only down, disconnected P2P clients without IPv4 or global
-IPv6 addresses.
+deletion, repeats the safety check immediately before each removal, and accepts
+only down, disconnected P2P clients without IPv4 or global IPv6 addresses.
 
 The detached user service holds a logind idle/sleep inhibitor while casting,
 applies a user-owned CPU weight to its complete supervised process tree, and

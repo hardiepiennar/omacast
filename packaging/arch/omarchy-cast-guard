@@ -74,27 +74,33 @@ verify_no_guard_session() {
     [[ -e "$entry" ]] && die 'an Omacast network session still owns runtime state; wait for cleanup before restoring P2P clients'
   done
 }
+validate_reclaim_candidate() {
+  local candidate="$1" details state link
+  [[ -n "$candidate" && "$candidate" == "p2p-$interface-"* ]] || die 'an existing P2P interface has an unexpected name'
+  valid_interface "$candidate" || die 'an existing P2P interface has an invalid name'
+  [[ -e "$network_sys_root/$candidate/operstate" ]] || die 'an existing P2P interface has no kernel state'
+  state="$(<"$network_sys_root/$candidate/operstate")"
+  details="$(iw dev "$candidate" info 2>/dev/null)" || die 'could not inspect an existing P2P interface'
+  [[ "$state" == down && "$(awk '$1 == "type" {print $2; exit}' <<< "$details")" == P2P-client ]] || die 'an existing P2P interface may still be active'
+  link="$(iw dev "$candidate" link 2>/dev/null)" || die 'could not inspect an existing P2P link'
+  grep -Fxq 'Not connected.' <<< "$link" || die 'an existing P2P client is still connected'
+  ! ip -4 -o address show dev "$candidate" | grep -q . || die 'an existing P2P client still has an IPv4 address'
+  ! ip -6 -o address show dev "$candidate" scope global | grep -q . || die 'an existing P2P client still has a global IPv6 address'
+}
 reclaim_orphan_interfaces() {
-  local listed candidate details state link reclaimed=0
+  local listed candidate reclaimed=0
   local -a candidates=()
   verify_interface
   verify_no_guard_session
   command -v ip >/dev/null || die 'ip is required'
   listed="$(iw dev)" || die 'could not inspect P2P interfaces'
   while read -r candidate; do
-    [[ -n "$candidate" && "$candidate" == "p2p-$interface-"* ]] || continue
-    valid_interface "$candidate" || die 'an existing P2P interface has an invalid name'
-    [[ -e "$network_sys_root/$candidate/operstate" ]] || die 'an existing P2P interface has no kernel state'
-    state="$(<"$network_sys_root/$candidate/operstate")"
-    details="$(iw dev "$candidate" info 2>/dev/null)" || die 'could not inspect an existing P2P interface'
-    [[ "$state" == down && "$(awk '$1 == "type" {print $2; exit}' <<< "$details")" == P2P-client ]] || die 'an existing P2P interface may still be active'
-    link="$(iw dev "$candidate" link 2>/dev/null)" || die 'could not inspect an existing P2P link'
-    grep -Fxq 'Not connected.' <<< "$link" || die 'an existing P2P client is still connected'
-    ! ip -4 -o address show dev "$candidate" | grep -q . || die 'an existing P2P client still has an IPv4 address'
-    ! ip -6 -o address show dev "$candidate" scope global | grep -q . || die 'an existing P2P client still has a global IPv6 address'
+    [[ -n "$candidate" ]] || continue
+    validate_reclaim_candidate "$candidate"
     candidates+=("$candidate")
   done < <(awk -v prefix="p2p-$interface-" '$1 == "Interface" && index($2, prefix) == 1 {print $2}' <<< "$listed")
   for candidate in "${candidates[@]}"; do
+    validate_reclaim_candidate "$candidate"
     iw dev "$candidate" del || die 'could not remove an inactive P2P client'
     ! iw dev "$candidate" info >/dev/null 2>&1 || die 'an inactive P2P client remained after recovery'
     reclaimed=$((reclaimed + 1))

@@ -794,6 +794,52 @@ reclaim_orphan_interfaces
             self.assertIn("still connected", result.stderr)
             self.assertFalse(deleted.exists())
 
+    def test_explicit_recovery_revalidates_candidate_immediately_before_deletion(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+interface=wlan42
+network_sys_root="$2"
+deleted_file="$3"
+link_checked_file="$4"
+verify_interface() { :; }
+verify_no_guard_session() { :; }
+iw() {
+  if [[ "$#" -eq 1 && "$1" == dev ]]; then
+    printf '%s\n' '  Interface p2p-wlan42-0'
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == info ]]; then
+    printf '%s\n' 'type P2P-client'
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == link ]]; then
+    if [[ -e "$link_checked_file" ]]; then
+      printf '%s\n' 'Connected to 00:11:22:33:44:55'
+    else
+      : > "$link_checked_file"
+      printf '%s\n' 'Not connected.'
+    fi
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == del ]]; then
+    printf '%s\n' "$2" >> "$deleted_file"
+  else
+    return 2
+  fi
+}
+ip() { return 0; }
+reclaim_orphan_interfaces
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            state = root / "p2p-wlan42-0"
+            state.mkdir()
+            (state / "operstate").write_text("down\n", encoding="ascii")
+            deleted = root / "deleted"
+            link_checked = root / "link-checked"
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(root), str(deleted), str(link_checked)),
+                check=False, capture_output=True, text=True, timeout=2,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("still connected", result.stderr)
+            self.assertFalse(deleted.exists())
+
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(series), 39)

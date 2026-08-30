@@ -2374,7 +2374,9 @@ candidate before any deletion. Each candidate must match the selected adapter,
 remain a down `P2P-client`, report `Not connected.`, and have neither IPv4 nor
 global IPv6; link-local IPv6 left by the temporary network is permitted. A
 mixed safe/connected test proves that one unsafe candidate prevents all
-deletion. Prepare and reclaim also hold the same validated root-owned runtime
+deletion. Each candidate is checked again immediately before removal so an
+external Wi-Fi actor cannot reactivate it after prevalidation and still have it
+deleted. Prepare and reclaim also hold the same validated root-owned runtime
 directory lock, closing the check/delete race with a newly starting cast.
 Companion revision 66 carries this new privileged contract.
 
