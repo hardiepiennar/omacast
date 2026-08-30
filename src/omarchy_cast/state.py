@@ -30,6 +30,10 @@ TRANSITIONS = {
     "error": {"idle", "recovering"},
     "recovering": {"idle", "error"},
 }
+_BASE_STATE_FIELDS = frozenset({"schemaVersion", "phase", "sessionId", "updatedAt"})
+_ACTIVE_STATE_FIELDS = frozenset({
+    "startedAt", "request", "simulated", "dryRun", "transportTest", "production",
+})
 
 
 class StateError(ValueError):
@@ -215,6 +219,15 @@ def validate_state(state: Mapping[str, Any]) -> dict[str, object]:
     phase = state.get("phase")
     if phase not in PHASES:
         raise StateError("invalid session phase")
+    allowed = set(_BASE_STATE_FIELDS)
+    if phase != IDLE_PHASE:
+        allowed.update(_ACTIVE_STATE_FIELDS)
+    if phase in {"stopping", "error", "recovering"}:
+        allowed.add("reason")
+    if phase in {"error", "recovering"}:
+        allowed.add("error")
+    if set(state) - allowed:
+        raise StateError("runtime state contains unexpected fields")
     session_id = state.get("sessionId")
     if phase == IDLE_PHASE and session_id is not None:
         raise StateError("idle state may not own a session")
@@ -226,8 +239,28 @@ def validate_state(state: Mapping[str, Any]) -> dict[str, object]:
     if updated_at is not None and not isinstance(updated_at, str):
         raise StateError("updatedAt must be an ISO timestamp or null")
     started_at = state.get("startedAt")
-    if started_at is not None and not isinstance(started_at, str):
-        raise StateError("startedAt must be an ISO timestamp or null")
+    if phase != IDLE_PHASE and (not isinstance(started_at, str) or len(started_at) > 64):
+        raise StateError("active state requires a bounded start timestamp")
+    if phase == IDLE_PHASE and "startedAt" in state:
+        raise StateError("idle state may not retain a start timestamp")
+    if isinstance(updated_at, str) and len(updated_at) > 64:
+        raise StateError("updatedAt must be a bounded ISO timestamp or null")
+    for field in ("simulated", "dryRun", "transportTest", "production"):
+        if field in state and type(state[field]) is not bool:
+            raise StateError(f"{field} must be a JSON boolean")
+    if "request" in state and not isinstance(state["request"], dict):
+        raise StateError("session request metadata must be an object")
+    if "reason" in state and (not isinstance(state["reason"], str) or len(state["reason"]) > 8_192):
+        raise StateError("session reason must be a bounded string")
+    if phase in {"error", "recovering"}:
+        error = state.get("error")
+        if (
+            not isinstance(error, dict)
+            or set(error) != {"code", "message"}
+            or not isinstance(error.get("code"), str)
+            or not isinstance(error.get("message"), str)
+        ):
+            raise StateError("error state requires a closed error object")
     return dict(state)
 
 

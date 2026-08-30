@@ -204,6 +204,19 @@ class StateTest(unittest.TestCase):
             with self.assertRaises(StateError):
                 read_state(environment)
 
+    def test_runtime_state_has_closed_phase_specific_fields(self) -> None:
+        checking = transition(idle_state(), "checking", sessionId=SESSION_ID)
+        for candidate in (
+            {**checking, "unexpected": True},
+            {**checking, "error": {"code": "wrong-phase", "message": "no"}},
+            {**checking, "dryRun": 1},
+            {**checking, "request": []},
+        ):
+            with self.subTest(candidate=candidate), self.assertRaises(StateError):
+                transition(candidate, "discovering")
+        with self.assertRaisesRegex(StateError, "closed error object"):
+            transition(checking, "error", error={"code": "failed", "message": "x", "extra": True})
+
     def test_session_lock_allows_exactly_one_owner(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             environment = {"XDG_RUNTIME_DIR": temp}
