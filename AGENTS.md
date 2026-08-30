@@ -149,6 +149,9 @@ Security review checklist:
   make entry floods or many tiny records safe.
 - Audit the built artifact for dormant entry points, package data, service
   policies, and assets—not only reachable CLI options and imported modules.
+- Apply production input bounds to shipped offline diagnostics as well. A
+  fixture or probe being non-networked does not justify unbounded messages,
+  headers, duplicate fields, or numeric conversions in an installed CLI.
 - For Python artifacts installed into a minor-versioned `site-packages` path,
   encode and audit the compatible interpreter-minor range. On a Python-minor
   transition, rebuild and bump the package instead of allowing a silently

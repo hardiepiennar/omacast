@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import re
 from typing import Mapping, Sequence
 
 
 class WFDProtocolError(ValueError):
     pass
+
+
+MAX_FIXTURE_MESSAGE_BYTES = 65_536
+MAX_FIXTURE_HEADERS = 64
+_HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+_DECIMAL = re.compile(r"^[0-9]{1,10}$")
 
 
 @dataclass(frozen=True)
@@ -36,6 +43,8 @@ class WFDNegotiationResult:
 
 
 def parse_rtsp_fixture(raw: str) -> RTSPFixtureMessage:
+    if not isinstance(raw, str) or len(raw) > MAX_FIXTURE_MESSAGE_BYTES or len(raw.encode("utf-8")) > MAX_FIXTURE_MESSAGE_BYTES:
+        raise WFDProtocolError("RTSP fixture exceeds the message limit")
     head, separator, body = raw.partition("\r\n\r\n")
     if not separator:
         head, separator, body = raw.partition("\n\n")
@@ -43,22 +52,31 @@ def parse_rtsp_fixture(raw: str) -> RTSPFixtureMessage:
     if not separator or not lines or not lines[0].strip():
         raise WFDProtocolError("RTSP fixture must contain a start line and header terminator")
     start = lines[0].strip()
-    if not (start.startswith("RTSP/1.0 ") or start.endswith(" RTSP/1.0")):
+    if len(start) > 512 or not (start.startswith("RTSP/1.0 ") or start.endswith(" RTSP/1.0")):
         raise WFDProtocolError("unsupported RTSP start line")
     headers: dict[str, str] = {}
     for line in lines[1:]:
+        if len(headers) >= MAX_FIXTURE_HEADERS or len(line) > 8_192:
+            raise WFDProtocolError("RTSP fixture contains excessive headers")
         key, separator, value = line.partition(":")
-        if not separator or not key.strip():
+        normalized_key = key.strip().lower()
+        normalized_value = value.strip()
+        if not separator or not _HEADER_NAME.fullmatch(key.strip()) or normalized_key in headers:
             raise WFDProtocolError("malformed RTSP header")
-        headers[key.strip().lower()] = value.strip()
+        if any((ord(character) < 32 and character != "\t") or ord(character) == 127 for character in normalized_value):
+            raise WFDProtocolError("malformed RTSP header")
+        headers[normalized_key] = normalized_value
     if "cseq" not in headers:
         raise WFDProtocolError("RTSP fixture is missing CSeq")
+    if not _DECIMAL.fullmatch(headers["cseq"]) or int(headers["cseq"]) > 2**31 - 1:
+        raise WFDProtocolError("RTSP fixture has an invalid CSeq")
     length = headers.get("content-length")
     if length is not None:
-        try:
-            expected = int(length)
-        except ValueError as exc:
-            raise WFDProtocolError("RTSP content length is invalid") from exc
+        if not _DECIMAL.fullmatch(length):
+            raise WFDProtocolError("RTSP content length is invalid")
+        expected = int(length)
+        if expected > MAX_FIXTURE_MESSAGE_BYTES:
+            raise WFDProtocolError("RTSP content length is invalid")
         if expected != len(body.encode("utf-8")):
             raise WFDProtocolError("RTSP content length does not match body")
     return RTSPFixtureMessage(start=start, headers=headers, body=body)

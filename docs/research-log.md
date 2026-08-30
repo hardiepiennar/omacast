@@ -2651,3 +2651,16 @@ launch. A separately named validator retains bounded symbolic fixtures only for
 non-executable injected transport tests. Regressions cover open fields,
 boolean numeric aliases, duplicate bitrate, alternate supplicant mode,
 arbitrary options, and selection/command divergence.
+
+### Bounded installed RTSP fixture parser (2026-08-31)
+
+The offline WFD protocol diagnostic is shipped in the companion controller
+package. Although its CLI currently supplies only built-in transcripts, its
+parser accepted unrestricted message/header sizes, duplicate headers, and
+arbitrarily wide `CSeq` and `Content-Length` values.
+
+Fixture messages now have a 64 KiB UTF-8 ceiling, at most 64 bounded headers,
+unique validated names, control-free values, and width/range-checked protocol
+numbers before integer conversion. Regressions cover oversized messages,
+10,000-digit fields, duplicates, and header floods. This changes neither the
+receiver-facing FluxCast parser nor the companion API.
