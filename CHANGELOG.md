@@ -18,6 +18,9 @@
   clients after fresh administrator approval; ordinary startup never deletes
   an unowned interface, and every candidate is revalidated immediately before
   removal. Require companion revision 66 / guard API 14.
+- Keep alternate NetworkManager group-owner support, persistent P2P pairing,
+  and privileged-process cgroup decoupling as separately tracked architecture
+  work instead of adding unvalidated fallbacks to this release.
 
 ## 0.1.3 — 2026-08-27
 

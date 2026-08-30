@@ -1,12 +1,12 @@
 # Marketplace update handoff
 
 Omacast is already published. Its current verified marketplace snapshot is
-commit `27a3e3c4d541765b47797092b014b004f238fa77`, plugin version 0.1.2.
+commit `ca5646f8d36ea7111c788b8408bf99aaa8e694d7`, plugin version 0.1.3.
 
 Do not edit or reopen the closed initial submission to publish a newer commit.
-After version 0.1.3 and companion revision 61 pass the scoped exact-candidate
-breaking-defect gates recorded in the canonical roadmap, push that tested
-commit and use the marketplace
+After version 0.1.4 and companion revision 66 pass the scoped exact-candidate
+compatibility gates recorded in the canonical roadmap, push that tested commit
+and use the marketplace
 [Plugin verification form](https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/new?template=verify-plugin.yml).
 
 Select **Verify and publish a newer upstream commit** and provide:

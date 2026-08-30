@@ -977,6 +977,19 @@ and live forced-recovery exercise are deferred to a future reliability release;
 they are not claimed as passed by 0.1.3. Existing Fire TV-only and hardware-
 specific support qualifications remain unchanged.
 
+Version 0.1.4 is a compatibility and correctness release for the public
+reports in issues 2 and 3. Its scope is the companion diagnostic import fix,
+honest GPU Screen Recorder naming, backend-specific dnsmasq readiness, legal
+automatic P2P channel selection outside 2.4 GHz, specification-valid WFD source
+advertisement, and explicit fail-closed recovery of inactive orphaned P2P
+clients. Because the release changes the advertised WFD bytes and privileged
+recovery boundary, its exact installed candidate requires a normal Fire TV
+connect/stream/Stop cleanup run in addition to the offline release gates.
+NetworkManager group-owner support for adapters that reject direct supplicant
+(issue 8), privileged-process cgroup decoupling (issue 9), and persistent-group
+reinvocation (issue 5) remain separately tracked architecture work and are not
+claimed by 0.1.4.
+
 The first supported release is complete only when all are true:
 
 - install, validation, enable, update, disable, and removal work through
@@ -1017,7 +1030,7 @@ independent acceptance remain required:
    and one forced-failure cleanup matrix on the supported topology before
    making broader long-duration or recovery claims. These gates were explicitly
    deferred from the narrowly scoped 0.1.3 breaking-defect release on
-   2026-08-27.
+   2026-08-27 and are not absorbed into the compatibility-focused 0.1.4 scope.
 5. Validate real browser live/replay playback before claiming protected or
    online video compatibility. Portal source selection remains gated until its
    own tests pass.
