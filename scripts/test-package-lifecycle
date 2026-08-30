@@ -13,7 +13,7 @@ die() {
 shift
 [[ $# -eq 1 || $# -eq 2 ]] \
   || die "usage: $0 --trusted-local-artifact [BASELINE.pkg.tar.zst] CANDIDATE.pkg.tar.zst"
-for command in bsdtar fakeroot find pacman realpath stat vercmp; do
+for command in bsdtar fakeroot find pacman python3 realpath stat vercmp; do
   command -v "$command" >/dev/null || die "$command is required"
 done
 
@@ -86,6 +86,26 @@ broker="$lifecycle_root/usr/lib/omarchy-cast/omarchy-cast-supplicant-broker"
 [[ -f "$broker" && ! -L "$broker" && -x "$broker" ]] || die "installed supplicant broker is missing or unsafe"
 policy="$lifecycle_root/usr/share/polkit-1/actions/com.omacast.guard.policy"
 [[ -f "$policy" && ! -L "$policy" && "$(stat -c %a "$policy")" == 644 ]] || die "installed Polkit action is missing or unsafe"
+engine="$lifecycle_root/usr/bin/fluxcast"
+site_packages="$(find "$lifecycle_root/usr/lib" -type d -path '*/site-packages' -print -quit)"
+[[ -x "$engine" && -n "$site_packages" ]] || die "installed FluxCast runtime is incomplete"
+PYTHONPATH="$site_packages" "$engine" --doctor >/dev/null
+PYTHONPATH="$site_packages" "$engine" --doctor-json > "$lifecycle_root/fluxcast-doctor.json"
+python3 - "$lifecycle_root/fluxcast-doctor.json" <<'PY' \
+  || die "installed engine returned an invalid diagnostic report"
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as report_file:
+    report = json.load(report_file)
+if not (
+    isinstance(report, dict)
+    and isinstance(report.get("checks"), list)
+    and isinstance(report.get("wfd_candidate"), bool)
+    and isinstance(report.get("summary"), str)
+):
+    raise SystemExit("unexpected diagnostic report shape")
+PY
 
 fakeroot pacman "${pacman_args[@]}" -Rdd "$candidate_name"
 if find "$lifecycle_root/usr" \( -type f -o -type l \) -print -quit 2>/dev/null | grep -q .; then

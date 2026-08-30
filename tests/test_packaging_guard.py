@@ -700,11 +700,11 @@ if record_session_interfaces; then exit 3; fi
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(series), 35)
+        self.assertEqual(len(series), 36)
         expected_numbers = (
             [f"{number:04d}" for number in range(1, 7)]
             + [f"{number:04d}" for number in range(9, 23)]
-            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041"]
+            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041", "0042"]
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:
@@ -846,6 +846,9 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("_fluxcast_data", audit)
         self.assertNotIn("PYSTRAY_BACKEND", audit)
         self.assertIn("package retains an unused protocol dependency", audit)
+        self.assertIn('"$engine" --doctor', audit)
+        self.assertIn('"$engine" --doctor-json', audit)
+        self.assertIn('report.get("checks")', audit)
         self.assertNotIn("--wfd-portal-source", audit)
         self.assertIn('pacman -Qp "$package"', audit)
         self.assertNotIn("pacman -Qkp", audit)
@@ -883,6 +886,9 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("0 altered files", lifecycle)
         self.assertIn("com.omacast.guard.policy", lifecycle)
         self.assertIn("supplicant broker", lifecycle)
+        self.assertIn('"$engine" --doctor', lifecycle)
+        self.assertIn('"$engine" --doctor-json', lifecycle)
+        self.assertIn('report.get("checks")', lifecycle)
         self.assertNotIn("sudo", lifecycle)
         self.assertIn("--trusted-local-artifact", lifecycle)
         refused = subprocess.run(
@@ -918,6 +924,21 @@ if record_session_interfaces; then exit 3; fi
         self.assertIn("RELEASE-BUILDER.txt", workflow)
         for dependency in ("ffmpeg", "iproute2", "iw", "libpulse", "networkmanager", "polkit", "systemd", "wpa_supplicant"):
             self.assertIn(dependency, workflow)
+
+    def test_pull_request_workflow_reconstructs_and_tests_companion_patches(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "verify.yml").read_text(encoding="utf-8")
+        action_refs = re.findall(r"uses:\s+[^@\s]+@([^\s#]+)", workflow)
+        self.assertGreaterEqual(len(action_refs), 2)
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs))
+        self.assertIn("scripts/bootstrap-fluxcast", workflow)
+        self.assertIn("python -m unittest discover -s /build/fluxcast/tests", workflow)
+        self.assertIn("python -c \"import diagnostics\"", workflow)
+        self.assertIn("main.py --doctor", workflow)
+        self.assertIn("main.py --doctor-json", workflow)
+        self.assertIn("gpu-screen-recorder", workflow)
+        self.assertRegex(workflow, r"archlinux:base-devel@sha256:[0-9a-f]{64}")
+        self.assertIn("archive.archlinux.org/repos/2026/08/24", workflow)
+        self.assertIn('$GITHUB_WORKSPACE:/workspace:ro', workflow)
 
     def test_shell_lint_covers_production_surfaces_without_rewriting_lab_evidence(self) -> None:
         lint = (ROOT / "scripts" / "lint-shell").read_text(encoding="utf-8")

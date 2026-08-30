@@ -2245,3 +2245,42 @@ On 2026-08-27 the maintainer explicitly deferred both to a future reliability
 release. Version 0.1.3 is scoped to the confirmed broker-lifetime defect, API-11
 compatibility boundary, and bounded startup-discovery fix; it does not claim
 that the deferred soak or forced-recovery coverage passed.
+
+### Companion doctor import-order regression (2026-08-30)
+
+The installed revision-61 `fluxcast --doctor` entry point failed before
+diagnostics ran. `diagnostics` imported `wfd.proc`, which initialized the
+`wfd` package; that package imported the still-partial `diagnostics` module and
+raised a circular-import error. The ordinary controller path remained usable,
+so this was isolated to the companion CLI initialization order.
+
+Production patch 42 defers the `wfd.proc` import until a diagnostic command is
+actually executed. A new regression starts a fresh interpreter with
+`diagnostics` as its first import, avoiding the shared module state that let the
+existing suite hide the defect. The clean 36-patch reconstruction passes 149
+FluxCast tests, its source `--doctor-json` entry point completes, and all 185
+repository tests pass. Package revision 62 is prepared but must not be called
+installed or accepted until its exact artifact is built and exercised.
+
+The subsequent whole-tree audit found no sibling entry-point failure, but it
+did find that release artifact and disposable lifecycle checks executed only
+the packaged `--help` path. Both gates now execute `--doctor` and
+`--doctor-json`, then parse and validate the structured report. This makes the
+original installed-package failure part of the ordinary release boundary.
+
+The audit also found that pull-request CI covered the Omacast controller but
+left companion reconstruction until tagged release CI. The verification
+workflow now rebuilds the full production patch stack from the pinned upstream
+revision in the same pinned Arch snapshot family, runs the FluxCast suite, and
+executes both diagnostics entry points. Patch-stack breakage is therefore
+visible before merge rather than first appearing during release packaging.
+
+The exact revision-62 artifact built from `64dbc6e` has SHA-256
+`474c123a7a16fc5e086f6f5a0a69306277a51fe31cb28fd53cb20bbf9fd29ff5`.
+It passed the strengthened artifact audit and disposable revision-61 upgrade
+and removal gate, then installed with all 160 package files intact. Both
+system-installed doctor modes completed successfully. After the installed
+plugin fast-forwarded to the same commit and the Omarchy shell restarted, the
+installed controller reported `Casting support ready` with no readiness
+issues. No receiver or temporary network test was required for this
+diagnostic-only regression.

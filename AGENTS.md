@@ -83,6 +83,10 @@ Pre-production release gate:
   removal, installed readiness check, and required receiver acceptance against
   one exact commit. Any code or packaging change after that invalidates the
   candidate and requires the proportionate gates to be rerun.
+- Exercise every shipped CLI and diagnostic entry point in a fresh interpreter
+  from the exact reconstructed engine and built package. Do not rely only on an
+  in-process test suite whose module cache or discovery order can hide circular
+  imports and other initialization defects.
 
 Security review checklist:
 

@@ -542,6 +542,20 @@
       live past the former 480-second cutoff, recovered from a temporary cadence
       oscillation, passed user picture/motion/audio assessment, and completed
       cooperative owned-session cleanup.
+- [x] Production patch 42 defers the diagnostics dependency on the WFD package
+      and adds a fresh-interpreter import-order regression. The exact 36-patch
+      reconstruction passes 149 FluxCast tests, and all 185 repository tests
+      pass with companion package revision 62 prepared.
+- [x] Artifact and disposable install/upgrade lifecycle gates execute both
+      packaged doctor entry points and validate the structured report, so an
+      import-order regression cannot pass by exposing a working `--help` only.
+- [x] Pull-request CI reconstructs all production FluxCast patches from the
+      pinned upstream revision in a pinned Arch snapshot, runs the companion
+      suite, and exercises both doctor modes from fresh processes.
+- [x] Exact package revision 62 built from `64dbc6e`, passed artifact and
+      revision-61 upgrade/removal gates, installed with 160 unaltered files,
+      and completed both shipped doctor entry points. The matching installed
+      plugin reports `Casting support ready` with no readiness issues.
 - [ ] Exercise forced recovery and complete the canonical three consecutive
       30-minute acceptance sessions. Revision 60's short run and pre-broker
       20.5-minute soak do not satisfy these gates.
