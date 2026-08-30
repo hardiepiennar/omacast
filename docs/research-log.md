@@ -2695,3 +2695,23 @@ from `IlyaP358/fluxcast` as branch `refactor-src-layout` and tag `v0.2.2`, and
 the bootstrap and package recipe share that upstream. A regression prevents
 the package source from falling back to the project URL. Revision 72 remains
 the unpublished candidate; all exact gates restart from the corrective commit.
+
+### Post-audit boundary review (2026-08-31)
+
+A second pass over the audit changes found sibling gaps in bounded process
+completion, exact scalar validation, JSON projection, wireless and process
+inventory saturation, long-lived pipe draining, persistent history, runtime
+state phases, and telemetry shutdown. Each boundary now has a focused
+regression; incomplete capped observations remain unknown instead of being
+turned into absence or cleanup authority.
+
+Production patch 49 adds shared iterative JSON budgets to reconstructed-engine
+broker, monitor, and diagnostic inputs. Patch 50 starts bounded engine commands
+in isolated process groups and kills the group on deadline or output overflow,
+so descendants cannot retain the pipes and outlive command completion.
+Companion revisions 73 and 74 carry the privileged P2P inventory bounds and
+the reconstructed-engine process-group fix respectively. Guard API 14 and
+engine contract API 1 remain unchanged. All evidence recorded for revision 72
+predates this architecture and does not validate the revision-74 candidate;
+the exact build, artifact, lifecycle, installed-readiness, and receiver gates
+must be rerun.

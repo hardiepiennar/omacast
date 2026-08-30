@@ -26,6 +26,15 @@
 - Keep alternate NetworkManager group-owner support, persistent P2P pairing,
   and privileged-process cgroup decoupling as separately tracked architecture
   work instead of adding unvalidated fallbacks to this release.
+- Bound decoded JSON, command output, wireless inventories, telemetry scans,
+  session history, and privileged broker traffic at their production trust
+  boundaries; reject coerced scalar types and incomplete liveness observations.
+- Drain long-lived helper output throughout the session and terminate timed-out
+  engine command process groups, including descendants that retain output
+  pipes. Companion revision 74 carries production patches 49 and 50; guard API
+  14 and engine contract API 1 are unchanged.
+- Close the controller's phase-specific runtime-state protocol and apply a
+  shape budget before decoded controller data reaches QML.
 
 ## 0.1.3 — 2026-08-27
 
