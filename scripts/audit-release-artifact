@@ -239,6 +239,16 @@ done
   || die "packaged engine retains unbounded subprocess capture"
 grep -Fq 'MAX_COMMAND_OUTPUT_BYTES' "$site_packages/wfd/proc.py" \
   || die "packaged engine lacks bounded subprocess capture"
+grep -Fq 'start_new_session=True' "$site_packages/wfd/proc.py" \
+  || die "packaged engine commands do not own an isolated process group"
+grep -Fq 'os.killpg(process.pid, signal.SIGKILL)' "$site_packages/wfd/proc.py" \
+  || die "packaged engine does not terminate bounded command process groups"
+[[ -f "$site_packages/json_bounds.py" && ! -L "$site_packages/json_bounds.py" ]] \
+  || die "packaged engine lacks the shared JSON shape budget"
+grep -Fq 'def json_shape_is_bounded(' "$site_packages/json_bounds.py" \
+  || die "packaged engine lacks the shared JSON shape budget"
+grep -Fq 'json_shape_is_bounded(payload' "$site_packages/wfd/p2p/broker.py" \
+  || die "packaged engine broker client lacks a JSON shape budget"
 grep -Fq 'port > 65535' "$site_packages/wfd/rtsp/message.py" \
   || die "packaged engine lacks receiver port range validation"
 grep -Fq 'MAX_LATENCY_LOG_BYTES' "$site_packages/wfd/latency.py" \
