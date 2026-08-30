@@ -2388,3 +2388,19 @@ the production guard already generates a session-scoped unit from the
 discovered adapter. The artifact is now explicitly named as an example, uses a
 non-operative interface placeholder, and sits beside a short scope README so
 it cannot be mistaken for package input while its research value is preserved.
+
+### Single supported WFD capture selector (2026-08-30)
+
+The corrected artifact gate exposed that the companion help still advertised
+portal and X11 WFD capture choices even though Omacast removed those product
+modes and always selects GPU Screen Recorder. This was unreachable from the
+plugin, but it contradicted the single-path release contract and made the
+naming cleanup incomplete.
+
+Production patch 46 makes `gpu-screen-recorder` the default and only accepted
+WFD capture selector. Parser regressions reject the old name, automatic mode,
+portal, and both X11 choices. Controller readiness and both package gates reject
+an engine that still advertises any removed selector. Package revision 67
+carries the narrowed public contract while retaining guard API 14 because the
+privileged request and cleanup protocol are unchanged. The exact 40-patch
+reconstruction applies cleanly and passes all 154 FluxCast tests.

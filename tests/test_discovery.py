@@ -120,6 +120,30 @@ class DiscoveryTest(unittest.TestCase):
         self.assertIn("engine-incompatible", codes)
         self.assertIn("helper-incompatible", codes)
 
+    def test_readiness_rejects_old_alternate_capture_selectors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            helpers = root / "helpers"
+            helpers.mkdir()
+            self.install_fake_helpers(helpers)
+
+            def old_capture_runner(args, *, timeout=5.0):
+                if args[0] == "fluxcast":
+                    ready = self.ready_runner(args, timeout=timeout)
+                    return CommandResult(tuple(args), 0, ready.stdout + " portal x11grab gst-x11", "")
+                return self.ready_runner(args, timeout=timeout)
+
+            snapshot = discover_host(
+                runner=old_capture_runner,
+                render_root=root / "dri",
+                guard_root=helpers,
+                command_finder=lambda name: f"/usr/bin/{name}",
+            )
+
+        self.assertFalse(snapshot["readiness"]["ready"])
+        self.assertTrue(snapshot["readiness"]["setupRequired"])
+        self.assertIn("engine-incompatible", {issue["code"] for issue in snapshot["readiness"]["issues"]})
+
     def test_readiness_rejects_buggy_guard_api_ten(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -195,10 +195,12 @@ for flag in --wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-su
 done
 grep -Fq -- 'gpu-screen-recorder' "$audit_root/fluxcast-help.txt" \
   || die "packaged engine lacks the GPU Screen Recorder backend contract"
-for removed_backend in portal wf-recorder x11grab; do
+for removed_backend in portal wf-recorder x11grab gst-x11; do
   ! grep -Fq -- "$removed_backend" "$audit_root/fluxcast-help.txt" \
     || die "packaged engine retains removed WFD capture backend: $removed_backend"
 done
+grep -Fq -- '--wfd-capture-backend {gpu-screen-recorder}' "$audit_root/fluxcast-help.txt" \
+  || die "packaged engine does not expose the exact supported capture selector"
 grep -Fq -- '--protocol {wfd}' "$audit_root/fluxcast-help.txt" || die "packaged engine does not expose the WFD-only protocol contract"
 for surface in '--tray' '{dlna,cast,wfd}' 'DLNA / Cast Options' '--wfd-uibc'; do
   ! grep -Fq -- "$surface" "$audit_root/fluxcast-help.txt" || die "packaged engine exposes a non-WFD protocol: $surface"

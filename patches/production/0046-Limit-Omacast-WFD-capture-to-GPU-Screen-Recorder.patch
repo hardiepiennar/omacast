@@ -1,0 +1,75 @@
+From f18a651f2f64b8c6d2e0f2001ddedbfcd2a0cc88 Mon Sep 17 00:00:00 2001
+From: Omacast Maintainer <maintainer@localhost>
+Date: Sun, 30 Aug 2026 22:38:16 +1200
+Subject: [PATCH] Limit Omacast WFD capture to GPU Screen Recorder
+
+---
+ src/main.py                | 13 ++++++-------
+ tests/test_wfd_only_cli.py | 11 ++++++++---
+ 2 files changed, 14 insertions(+), 10 deletions(-)
+
+diff --git a/src/main.py b/src/main.py
+index a69b47c..e03336e 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -22,8 +22,8 @@ Wi-Fi Display (Miracast) Options:
+     --wfd-ffmpeg-stats       Show ffmpeg progress statistics for WFD streams
+     --wfd-media-pipeline auto|ffmpeg|gst
+                              RTP media sender (default: auto)
+-    --wfd-capture-backend auto|portal|gpu-screen-recorder|x11grab
+-                             Desktop capture backend for wfd (default: auto)
++    --wfd-capture-backend gpu-screen-recorder
++                             Omacast desktop capture backend
+     --wfd-latency-log PATH   Write latency/session events to JSONL log file
+     --wfd-no-audio           Stream video only
+     --wfd-aosp-pmt-pid       MPEG-TS tables as Android sinks expect them; for a sink
+@@ -93,11 +93,10 @@ def parse_args() -> argparse.Namespace:
+                      choices=["auto", "ffmpeg", "gst"],
+                      dest="wfd_media_pipeline",
+                      help="For --protocol wfd, RTP media sender: auto (gst for test-pattern, ffmpeg for desktop), ffmpeg, or gst")
+-    wfd.add_argument("--wfd-capture-backend", default="auto", dest="wfd_capture_backend",
+-                     choices=["auto", "portal", "gpu-screen-recorder", "x11grab", "gst-x11"],
+-                     help="Desktop capture backend for --protocol wfd: auto (default), portal, "
+-                          "gpu-screen-recorder, x11grab, or gst-x11 (X11 capture through the GStreamer "
+-                          "MPEG-TS pipeline, for sinks that black-screen on the ffmpeg path)")
++    wfd.add_argument("--wfd-capture-backend", default="gpu-screen-recorder",
++                     dest="wfd_capture_backend", choices=["gpu-screen-recorder"],
++                     help="Desktop capture backend for --protocol wfd: gpu-screen-recorder "
++                          "(the only Omacast-supported capture path)")
+     wfd.add_argument("--wfd-video-encoder", default="auto",
+                      choices=["auto", "software", "vaapi"],
+                      dest="wfd_video_encoder",
+diff --git a/tests/test_wfd_only_cli.py b/tests/test_wfd_only_cli.py
+index a0ced17..36dd4fd 100644
+--- a/tests/test_wfd_only_cli.py
++++ b/tests/test_wfd_only_cli.py
+@@ -20,11 +20,13 @@ class WFDOnlyCLITest(unittest.TestCase):
+         self.assertEqual(self.parse("--protocol", "wfd").protocol, "wfd")
+ 
+     def test_gpu_screen_recorder_has_an_honest_backend_name(self):
++        self.assertEqual(self.parse().wfd_capture_backend, "gpu-screen-recorder")
+         parsed = self.parse("--wfd-capture-backend", "gpu-screen-recorder")
+         self.assertEqual(parsed.wfd_capture_backend, "gpu-screen-recorder")
+-        with contextlib.redirect_stderr(io.StringIO()):
+-            with self.assertRaisesRegex(SystemExit, "2"):
+-                self.parse("--wfd-capture-backend", "wf-recorder")
++        for removed in ("auto", "portal", "wf-recorder", "x11grab", "gst-x11"):
++            with self.subTest(removed=removed), contextlib.redirect_stderr(io.StringIO()):
++                with self.assertRaisesRegex(SystemExit, "2"):
++                    self.parse("--wfd-capture-backend", removed)
+ 
+     def test_diagnostics_imports_first_in_a_fresh_interpreter(self):
+         source = pathlib.Path(__file__).resolve().parents[1] / "src"
+@@ -65,6 +67,9 @@ class WFDOnlyCLITest(unittest.TestCase):
+         self.assertNotIn("--tray", help_text)
+         self.assertNotIn("DLNA / Cast Options", help_text)
+         self.assertNotIn("--wfd-uibc", help_text)
++        self.assertIn("--wfd-capture-backend {gpu-screen-recorder}", help_text)
++        for removed in ("portal", "wf-recorder", "x11grab", "gst-x11"):
++            self.assertNotIn(removed, help_text)
+ 
+     def test_wheel_excludes_unused_protocol_and_tray_modules(self):
+         project = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+-- 
+2.55.0
+

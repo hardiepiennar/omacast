@@ -981,10 +981,11 @@ Version 0.1.4 is a compatibility and correctness release for the public
 reports in issues 2 and 3. Its scope is the companion diagnostic import fix,
 honest GPU Screen Recorder naming, backend-specific dnsmasq readiness, legal
 automatic P2P channel selection outside 2.4 GHz, specification-valid WFD source
-advertisement, and explicit fail-closed recovery of inactive orphaned P2P
-clients. Because the release changes the advertised WFD bytes and privileged
-recovery boundary, its exact installed candidate requires a normal Fire TV
-connect/stream/Stop cleanup run in addition to the offline release gates.
+advertisement, a GPU Screen Recorder-only public capture selector, and explicit
+fail-closed recovery of inactive orphaned P2P clients. Because the release
+changes the advertised WFD bytes and privileged recovery boundary, its exact
+installed candidate requires a normal Fire TV connect/stream/Stop cleanup run
+in addition to the offline release gates.
 NetworkManager group-owner support for adapters that reject direct supplicant
 (issue 8), privileged-process cgroup decoupling (issue 9), and persistent-group
 reinvocation (issue 5) remain separately tracked architecture work and are not

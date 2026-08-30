@@ -37,3 +37,4 @@
 0043-Name-the-GPU-Screen-Recorder-backend-honestly.patch
 0044-Gate-dnsmasq-only-for-NetworkManager-P2P.patch
 0045-Advertise-only-defined-WFD-source-subelements.patch
+0046-Limit-Omacast-WFD-capture-to-GPU-Screen-Recorder.patch

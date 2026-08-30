@@ -10,6 +10,9 @@
   `wf-recorder` value to `gpu-screen-recorder`, remove the obsolete optional
   dependency, enforce removal of every old selector in artifact and lifecycle
   gates, and require companion revision 63 / guard API 12.
+- Remove the remaining alternate public WFD capture choices from companion
+  revision 67; readiness now rejects an engine that still advertises those
+  unshipped paths.
 - Make FluxCast readiness respect the selected P2P backend, so the supported
   direct-supplicant client path no longer fails on an unused `dnsmasq` check.
 - Stop forcing 5/6 GHz station frequencies into P2P group formation; retain

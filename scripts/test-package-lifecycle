@@ -92,10 +92,12 @@ site_packages="$(find "$lifecycle_root/usr/lib" -type d -path '*/site-packages' 
 PYTHONPATH="$site_packages" "$engine" --doctor >/dev/null
 PYTHONPATH="$site_packages" "$engine" --help > "$lifecycle_root/fluxcast-help.txt"
 grep -Fq -- 'gpu-screen-recorder' "$lifecycle_root/fluxcast-help.txt" || die "installed engine lacks the GPU Screen Recorder backend contract"
-for removed_backend in portal wf-recorder x11grab; do
+for removed_backend in portal wf-recorder x11grab gst-x11; do
   ! grep -Fq -- "$removed_backend" "$lifecycle_root/fluxcast-help.txt" \
     || die "installed engine retains removed WFD capture backend: $removed_backend"
 done
+grep -Fq -- '--wfd-capture-backend {gpu-screen-recorder}' "$lifecycle_root/fluxcast-help.txt" \
+  || die "installed engine does not expose the exact supported capture selector"
 PYTHONPATH="$site_packages" "$engine" --doctor-json > "$lifecycle_root/fluxcast-doctor.json"
 python3 - "$lifecycle_root/fluxcast-doctor.json" <<'PY' \
   || die "installed engine returned an invalid diagnostic report"
