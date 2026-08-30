@@ -247,6 +247,10 @@ users remain denied, and lost renewal triggers bounded independent recovery.
 - Direct-supplicant readiness no longer depends on dnsmasq. The supported
   laptop-as-P2P-client topology receives DHCP from the receiver; dnsmasq stays
   a requirement only for FluxCast's separate NetworkManager group-owner path.
+- P2P frequency pinning is limited to a connected 2.4 GHz station. A 5 GHz,
+  DFS, or 6 GHz station now sends frequency `0`, leaving legal group-channel
+  selection to supplicant and the driver instead of forcing the station
+  channel into the receiver negotiation.
 
 ### Not yet proven
 

@@ -72,7 +72,8 @@ def build_launch_plan(
     warnings: list[str] = []
     frequency = wifi.get("frequency_mhz")
     if isinstance(frequency, int) and frequency >= 5000:
-        warnings.append("Current Wi-Fi is on 5 GHz; Fire TV P2P channel coexistence needs hardware validation.")
+        warnings.append("Current Wi-Fi is on 5/6 GHz; P2P channel selection will remain automatic.")
+    supplicant_frequency = frequency if isinstance(frequency, int) and 2400 <= frequency <= 2500 else 0
     if not vaapi:
         warnings.append("No render node detected; this session would use software H.264 encoding.")
 
@@ -82,7 +83,7 @@ def build_launch_plan(
         "--wfd-video-encoder", encoder, "--wfd-p2p-backend", "supplicant",
         "--wfd-supplicant-mode", "connect", "--wfd-peer", peer.strip(),
         "--wfd-interface", str(wifi["interface"]), "--wfd-timeout", "15",
-        "--wfd-supplicant-frequency", str(frequency) if isinstance(frequency, int) else "0",
+        "--wfd-supplicant-frequency", str(supplicant_frequency),
         "--wfd-no-firewall",
         "--monitor", str(output["name"]),
         "--wfd-capture-backend", "gpu-screen-recorder",

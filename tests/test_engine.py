@@ -27,12 +27,16 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(plan["command"][frequency_flag + 1], "2412")
         self.assertEqual(plan["warnings"], [])
 
-    def test_plan_warns_for_5ghz(self) -> None:
-        host = snapshot()
-        host["wifiLinks"] = [{"interface": "wlan42", "connected": True, "frequency_mhz": 5745}]
-        plan = build_launch_plan(host, peer="tv-01", mode="mirror", profile="safe")
-        self.assertEqual(plan["profile"]["fps"], 60)
-        self.assertEqual(len(plan["warnings"]), 1)
+    def test_plan_leaves_5ghz_and_dfs_p2p_channel_selection_automatic(self) -> None:
+        for station_frequency in (5180, 5500, 5745, 5955):
+            with self.subTest(station_frequency=station_frequency):
+                host = snapshot()
+                host["wifiLinks"] = [{"interface": "wlan42", "connected": True, "frequency_mhz": station_frequency}]
+                plan = build_launch_plan(host, peer="tv-01", mode="mirror", profile="safe")
+                frequency_flag = plan["command"].index("--wfd-supplicant-frequency")
+                self.assertEqual(plan["command"][frequency_flag + 1], "0")
+                self.assertEqual(plan["profile"]["fps"], 60)
+                self.assertEqual(len(plan["warnings"]), 1)
 
     def test_display_source_uses_only_the_proven_capture_backend(self) -> None:
         plan = build_launch_plan(snapshot(), peer="tv-01", mode="mirror", profile="safe")

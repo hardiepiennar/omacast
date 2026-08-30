@@ -9,6 +9,8 @@
   dependency, and require companion revision 63 / guard API 12.
 - Make FluxCast readiness respect the selected P2P backend, so the supported
   direct-supplicant client path no longer fails on an unused `dnsmasq` check.
+- Stop forcing 5/6 GHz station frequencies into P2P group formation; retain
+  the proven 2.4 GHz hint and let supplicant choose a legal channel otherwise.
 
 ## 0.1.3 — 2026-08-27
 

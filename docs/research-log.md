@@ -2324,3 +2324,17 @@ optional command but is no longer rejected by it. Focused tests prove that the
 same diagnostic rows pass for supplicant and fail for NetworkManager when
 dnsmasq is absent. Companion revision 64 carries the change without altering
 the API-12 privileged helper contract.
+
+### Automatic P2P selection from 5/6 GHz stations (2026-08-30)
+
+Issue 2 showed that the controller copied every connected station frequency
+into supplicant's forced P2P `frequency` field. That is safe only for the
+locally validated 2.4 GHz coexistence hint. On a 5500 MHz DFS station it made
+the group request require a channel that the receiver could not legally use,
+producing `ConnectChannelUnsupported` before media negotiation.
+
+The controller now forwards only a 2400–2500 MHz station frequency. It passes
+`0` for 5 GHz, DFS, 6 GHz, missing, or otherwise unrecognized values so
+supplicant and the driver choose an allowed channel. Regression cases cover
+2412, 5180, 5500, 5745, and 5955 MHz. The privileged frequency validation and
+all other session arguments remain unchanged.
