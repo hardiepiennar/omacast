@@ -2680,3 +2680,18 @@ startup is also explicitly limited to 60–600 seconds. Companion revision 72
 carries the helper hardening; guard API 14 and all valid requests are unchanged.
 Regressions source the real guard functions and reject 10,000-digit inputs
 under a two-second deadline while auditing both scripts' lexical contracts.
+
+### Reproducible upstream engine source URL (2026-08-31)
+
+The first exact clean-clone build of companion revision 72 failed before patch
+application. PKGBUILD used Omacast's project metadata `url` as the Git source
+for the pinned FluxCast base commit. A populated local makepkg cache contained
+the object and concealed the mistake, but a fresh clone of the public Omacast
+repository correctly could not resolve it.
+
+The recipe now keeps the Omacast metadata URL and the upstream FluxCast source
+URL as separate variables. The pinned `9d27c396` commit is publicly reachable
+from `IlyaP358/fluxcast` as branch `refactor-src-layout` and tag `v0.2.2`, and
+the bootstrap and package recipe share that upstream. A regression prevents
+the package source from falling back to the project URL. Revision 72 remains
+the unpublished candidate; all exact gates restart from the corrective commit.

@@ -890,6 +890,11 @@ reclaim_orphan_interfaces
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
         self.assertIn('series_file="$repo_root/patches/production/series"', bootstrap)
         self.assertIn('done < "$startdir/../../patches/production/series"', recipe)
+        self.assertIn("url='https://github.com/hardiepiennar/omacast'", recipe)
+        self.assertIn("_engine_url='https://github.com/IlyaP358/fluxcast'", recipe)
+        self.assertIn('fluxcast::git+${_engine_url}.git#commit=', recipe)
+        self.assertNotIn('fluxcast::git+${url}.git#commit=', recipe)
+        self.assertIn('source_url="https://github.com/IlyaP358/fluxcast.git"', bootstrap)
         commits = re.findall(r"#commit=([0-9a-f]+)", recipe)
         self.assertEqual(commits, ["9d27c39670940ada3a0e520a1d70574910646083"])
 

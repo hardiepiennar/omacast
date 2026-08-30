@@ -78,6 +78,9 @@ Pre-production release gate:
   marketplace target SHA. Confirm that every documented release URL and asset
   exists and installs the required API; passing source tests does not prove a
   usable distribution path.
+- Keep project metadata URLs distinct from vendored/upstream source URLs, and
+  prove every pinned source commit is fetchable in the clean-clone build. A
+  populated local makepkg cache can conceal a wrong or unpublished source pin.
 - Run the final timer search, clean-clone build, controller/plugin/engine tests,
   shell lint, plugin validation, artifact audit, disposable install/upgrade/
   removal, installed readiness check, and required receiver acceptance against

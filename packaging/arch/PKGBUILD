@@ -10,6 +10,7 @@ pkgrel=72
 pkgdesc='Pinned FluxCast WFD engine with Omacast compatibility patches'
 arch=('any')
 url='https://github.com/hardiepiennar/omacast'
+_engine_url='https://github.com/IlyaP358/fluxcast'
 license=('GPL-3.0-or-later')
 depends=(
   'python>=3.14'
@@ -30,7 +31,7 @@ makedepends=('git' 'python-build' 'python-installer' 'python-hatchling')
 provides=('fluxcast=0.1.5')
 conflicts=('fluxcast')
 source=(
-  "fluxcast::git+${url}.git#commit=9d27c39670940ada3a0e520a1d70574910646083"
+  "fluxcast::git+${_engine_url}.git#commit=9d27c39670940ada3a0e520a1d70574910646083"
 )
 b2sums=('SKIP')
 
