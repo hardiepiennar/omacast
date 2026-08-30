@@ -1206,7 +1206,10 @@ waiting in Display Mirroring and understands any temporary network change.
   recovery evidence whenever cleanup is incomplete, and never recursively
   remove an unexpected object from the user-writable marker directory. The
   independent owner must validate and acknowledge the protected session before
-  any temporary network or D-Bus mutation begins.
+  any temporary network or D-Bus mutation begins. Explicit orphan recovery
+  inspects one bounded `iw dev` snapshot for every discovered managed Wi-Fi
+  adapter, including disconnected parents, and authorizes reclaim only for
+  parents with matching P2P children.
 - **Dependency policy:** tracked upstream/fork/package; never an ignored local
   checkout or runtime patching.
 - **Engine packaging:** `packaging/arch/PKGBUILD` pins the researched FluxCast

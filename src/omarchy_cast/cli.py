@@ -11,7 +11,7 @@ from uuid import uuid4
 from .bounds import MAX_UI_RESPONSE_BYTES, bounded_text
 from .discovery import discover_host
 from .engine import LaunchPlanError, build_launch_plan
-from .guard import GuardError, GuardRequest, orphan_interfaces_present, reclaim_orphan_interfaces
+from .guard import GuardError, GuardRequest, orphan_parent_interfaces, reclaim_orphan_interfaces
 from .media_probe import MediaProbeError, probe_media
 from .receivers import DEMO_FIRE_TV, FixtureReceiverDiscovery, FluxCastReceiverDiscovery, ReceiverDiscoveryUnavailable, ReceiverError, discovery_payload
 from .service import ServiceError, start_session_service, stop_pending_session_service
@@ -217,10 +217,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             snapshot = discover_host()
             links = snapshot.get("wifiLinks", []) if isinstance(snapshot, dict) else []
-            interface = next((link.get("interface") for link in links if isinstance(link, dict) and link.get("connected") and isinstance(link.get("interface"), str)), None)
+            interfaces = [
+                link.get("interface") for link in links
+                if isinstance(link, dict) and isinstance(link.get("interface"), str)
+            ]
             reclaimed = 0
-            if isinstance(interface, str) and orphan_interfaces_present(interface):
-                reclaimed = int(reclaim_orphan_interfaces(interface)["reclaimed"])
+            for interface in orphan_parent_interfaces(interfaces):
+                reclaimed += int(reclaim_orphan_interfaces(interface)["reclaimed"])
             recovery = recover_stale_session()
             _emit({**recovery, "reclaimedP2pInterfaces": reclaimed})
         except (GuardError, SessionError, StateError) as exc:

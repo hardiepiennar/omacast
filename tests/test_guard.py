@@ -4,7 +4,7 @@ import json
 import unittest
 
 from omarchy_cast.command import CommandResult
-from omarchy_cast.guard import GuardError, GuardRequest, HELPER_PATH, orphan_interfaces_present, prepare_command, reclaim_command, reclaim_orphan_interfaces, validate_helper_result, validate_reclaim_result
+from omarchy_cast.guard import GuardError, GuardRequest, HELPER_PATH, orphan_parent_interfaces, prepare_command, reclaim_command, reclaim_orphan_interfaces, validate_helper_result, validate_reclaim_result
 
 
 class GuardContractTest(unittest.TestCase):
@@ -37,10 +37,27 @@ class GuardContractTest(unittest.TestCase):
                 reclaim_command(**values)  # type: ignore[arg-type]
 
     def test_orphan_probe_and_reclaim_status_are_bounded(self) -> None:
-        def iw_runner(args, *, timeout=5.0):
-            return CommandResult(tuple(args), 0, "phy#0\n  Interface p2p-wlan42-0\n", "")
+        calls: list[tuple[str, ...]] = []
 
-        self.assertTrue(orphan_interfaces_present("wlan42", runner=iw_runner))
+        def iw_runner(args, *, timeout=5.0):
+            calls.append(tuple(args))
+            return CommandResult(
+                tuple(args), 0,
+                "phy#0\n  Interface wlan42\n  Interface p2p-wlan43-0\n  Interface p2p-wlan42-0\n",
+                "",
+            )
+
+        self.assertEqual(
+            orphan_parent_interfaces(("wlan42", "wlan43", "wlan44", "wlan43"), runner=iw_runner),
+            ("wlan42", "wlan43"),
+        )
+        self.assertEqual(calls, [("iw", "dev")])
+        self.assertEqual(orphan_parent_interfaces((), runner=iw_runner), ())
+        self.assertEqual(calls, [("iw", "dev")])
+        for interfaces in (("wlan0;id",), tuple(f"wlan{index}" for index in range(33))):
+            with self.subTest(interfaces=interfaces):
+                with self.assertRaises(GuardError):
+                    orphan_parent_interfaces(interfaces, runner=iw_runner)
 
         def reclaim_runner(args, *, timeout=5.0):
             self.assertEqual(args[:3], ("pkexec", HELPER_PATH, "reclaim"))

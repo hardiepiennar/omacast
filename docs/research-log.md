@@ -2380,6 +2380,21 @@ deleted. Prepare and reclaim also hold the same validated root-owned runtime
 directory lock, closing the check/delete race with a newly starting cast.
 Companion revision 66 carries this new privileged contract.
 
+### Multi-adapter explicit recovery (2026-08-31)
+
+The explicit Restore controller originally selected only the first connected
+managed Wi-Fi link before probing for orphaned P2P children. A stale client on
+a second adapter—or on a parent that was no longer connected to an access
+point—was therefore invisible even though the privileged reclaim helper could
+safely validate it.
+
+Restore now validates a maximum of 32 discovered managed interfaces, takes one
+bounded `iw dev` snapshot, and identifies every parent with a matching P2P
+child. It invokes the unchanged fixed-purpose reclaim action only for those
+parents and totals their bounded results. Regressions cover multiple adapters,
+a disconnected parent, deduplication, invalid names, and an oversized parent
+list. Normal no-orphan recovery still causes no authorization prompt.
+
 ### Phase-1 network example scope (2026-08-30)
 
 Issue 2 correctly noted that the retained `meta` network file still named the

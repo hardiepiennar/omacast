@@ -20,6 +20,7 @@ HELPER_PATH = "/usr/lib/omarchy-cast/omarchy-cast-guard"
 _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 _PEER = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+MAX_RECOVERY_INTERFACES = 32
 
 
 class GuardError(ValueError):
@@ -87,16 +88,31 @@ def reclaim_command(*, uid: int, interface: str, helper_path: str = HELPER_PATH)
     )
 
 
-def orphan_interfaces_present(interface: str, *, runner: Runner = run_command) -> bool:
-    if not _INTERFACE.fullmatch(interface):
-        raise GuardError("guard interface name is invalid")
+def orphan_parent_interfaces(
+    interfaces: object, *, runner: Runner = run_command,
+) -> tuple[str, ...]:
+    """Return managed adapters with P2P children from one bounded iw snapshot."""
+    if not isinstance(interfaces, (list, tuple)) or len(interfaces) > MAX_RECOVERY_INTERFACES:
+        raise GuardError("Wi-Fi recovery interface list is invalid")
+    candidates: list[str] = []
+    for interface in interfaces:
+        if not isinstance(interface, str) or not _INTERFACE.fullmatch(interface):
+            raise GuardError("guard interface name is invalid")
+        if interface not in candidates:
+            candidates.append(interface)
+    if not candidates:
+        return ()
     result = runner(("iw", "dev"), timeout=5)
     if result.returncode != 0:
         raise GuardError("could not inspect Wi-Fi Direct interfaces")
-    prefix = f"p2p-{interface}-"
-    return any(
-        len(fields) == 2 and fields[0] == "Interface" and fields[1].startswith(prefix)
+    child_names = {
+        fields[1]
         for fields in (line.strip().split() for line in result.stdout.splitlines())
+        if len(fields) == 2 and fields[0] == "Interface"
+    }
+    return tuple(
+        interface for interface in candidates
+        if any(name.startswith(f"p2p-{interface}-") for name in child_names)
     )
 
 

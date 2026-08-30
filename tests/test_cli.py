@@ -187,24 +187,29 @@ class CliTest(unittest.TestCase):
 
     def test_recover_reclaims_detected_p2p_orphans_through_the_fixed_helper(self) -> None:
         local = {"schemaVersion": 1, "ok": True, "recovered": True}
-        host = {"wifiLinks": [{"interface": "wlan42", "connected": True}]}
+        host = {"wifiLinks": [
+            {"interface": "wlan42", "connected": True},
+            {"interface": "wlan43", "connected": False},
+            {"interface": "wlan44", "connected": True},
+        ]}
         with patch("omarchy_cast.cli.recover_stale_session", return_value=local), patch(
             "omarchy_cast.cli.discover_host", return_value=host
-        ), patch("omarchy_cast.cli.orphan_interfaces_present", return_value=True), patch(
+        ), patch("omarchy_cast.cli.orphan_parent_interfaces", return_value=("wlan43", "wlan44")) as probe, patch(
             "omarchy_cast.cli.reclaim_orphan_interfaces",
             return_value={"schemaVersion": 1, "kind": "omarchy-cast-guard-reclaim-status", "ok": True, "reclaimed": 2},
         ) as reclaim:
             code, payload = self.invoke(["recover"])
         self.assertEqual(code, 0)
-        self.assertEqual(payload["reclaimedP2pInterfaces"], 2)
-        reclaim.assert_called_once_with("wlan42")
+        self.assertEqual(payload["reclaimedP2pInterfaces"], 4)
+        probe.assert_called_once_with(["wlan42", "wlan43", "wlan44"])
+        self.assertEqual([call.args for call in reclaim.call_args_list], [("wlan43",), ("wlan44",)])
 
     def test_recover_does_not_prompt_when_no_orphan_is_present(self) -> None:
         local = {"schemaVersion": 1, "ok": True, "recovered": False}
         host = {"wifiLinks": [{"interface": "wlan42", "connected": True}]}
         with patch("omarchy_cast.cli.recover_stale_session", return_value=local), patch(
             "omarchy_cast.cli.discover_host", return_value=host
-        ), patch("omarchy_cast.cli.orphan_interfaces_present", return_value=False), patch(
+        ), patch("omarchy_cast.cli.orphan_parent_interfaces", return_value=()), patch(
             "omarchy_cast.cli.reclaim_orphan_interfaces"
         ) as reclaim:
             code, payload = self.invoke(["recover"])
@@ -215,7 +220,7 @@ class CliTest(unittest.TestCase):
     def test_failed_orphan_reclaim_preserves_recoverable_user_state(self) -> None:
         host = {"wifiLinks": [{"interface": "wlan42", "connected": True}]}
         with patch("omarchy_cast.cli.discover_host", return_value=host), patch(
-            "omarchy_cast.cli.orphan_interfaces_present", return_value=True
+            "omarchy_cast.cli.orphan_parent_interfaces", return_value=("wlan42",)
         ), patch(
             "omarchy_cast.cli.reclaim_orphan_interfaces", side_effect=GuardError("client is still connected")
         ), patch("omarchy_cast.cli.recover_stale_session") as local_recover:

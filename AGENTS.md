@@ -113,6 +113,9 @@ Security review checklist:
 - When one boundary bug is found, audit its sibling read, write, status,
   cleanup, and recovery paths plus every parent component before declaring the
   fix complete.
+- Recovery and cleanup must enumerate every bounded eligible parent object.
+  Never silently act on only the first adapter, interface, session, or record
+  unless the contract explicitly proves it is the sole owner.
 - Validate protocol numbers by lexical width and numeric range before calling
   `int`; message-size limits alone do not make numeric conversion safe.
 - Bound periodic and persistent state as well as request input: journals,
