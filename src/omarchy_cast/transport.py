@@ -30,6 +30,7 @@ MAX_GUARD_DIAGNOSTIC_BYTES = 65_536
 _INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 _DISPLAY_NAME = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
 _AUDIO_SOURCE = re.compile(r"^[^\x00-\x1f\x7f]{1,240}$")
+_FRAME_COUNT = re.compile(r"^[0-9]{1,20}$")
 
 
 class TransportError(RuntimeError):
@@ -447,20 +448,21 @@ class GuardedTransportAdapter:
 
     @staticmethod
     def _media_started_text(progress: str) -> bool:
-        try:
-            record: dict[str, str] = {}
-            completed: dict[str, str] = {}
-            for line in progress.splitlines():
-                key, separator, value = line.partition("=")
-                if not separator:
-                    continue
-                record[key.strip()] = value.strip()
-                if key.strip() == "progress":
-                    completed = record
-                    record = {}
-            return int(completed.get("frame", "0")) > 0
-        except (OSError, ValueError):
+        record: dict[str, str] = {}
+        completed: dict[str, str] = {}
+        for line in progress.splitlines():
+            key, separator, value = line.partition("=")
+            if not separator:
+                continue
+            record[key.strip()] = value.strip()
+            if key.strip() == "progress":
+                completed = record
+                record = {}
+        frame = completed.get("frame", "")
+        if not _FRAME_COUNT.fullmatch(frame):
             return False
+        parsed = int(frame)
+        return 0 < parsed <= 2**63 - 1
 
     @staticmethod
     def _p2p_group_present(interface: str, network_root: Path = Path("/sys/class/net")) -> bool | None:
@@ -485,14 +487,14 @@ class GuardedTransportAdapter:
         return command
 
     @staticmethod
-    def _socket_inodes(pid: int) -> set[str]:
+    def _socket_inodes(pid: int) -> set[str] | None:
         """Return only sockets owned by the supervised engine process."""
         inodes: set[str] = set()
         try:
             descriptors = Path(f"/proc/{pid}/fd").iterdir()
             for descriptor_index, descriptor in enumerate(descriptors):
                 if descriptor_index >= MAX_PROCESS_DESCRIPTORS:
-                    break
+                    return None
                 try:
                     target = str(descriptor.readlink())
                 except OSError:
@@ -504,9 +506,11 @@ class GuardedTransportAdapter:
         return inodes
 
     @classmethod
-    def _rtsp_established(cls, engine_pid: int) -> bool:
+    def _rtsp_established(cls, engine_pid: int) -> bool | None:
         """Require an established RTSP socket owned by this session's engine."""
         owned = cls._socket_inodes(engine_pid)
+        if owned is None:
+            return None
         if not owned:
             return False
         try:
@@ -576,7 +580,7 @@ class GuardedTransportAdapter:
                 if cancelled():
                     return TransportResult("cancelled", "stop requested", True)
                 now = time.monotonic()
-                if rtsp_ready_at is None and self._rtsp_established(engine.pid):
+                if rtsp_ready_at is None and self._rtsp_established(engine.pid) is True:
                     rtsp_ready_at = now
                     engine_output_collector.note_startup("rtsp-established", now - startup_started_at)
                 if not streaming and rtsp_ready_at is not None and self._media_started_text(telemetry.read_text("progress")):
@@ -631,6 +635,10 @@ class GuardedTransportAdapter:
                     engine.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     engine.kill()
+                    try:
+                        engine.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
             if lease is not None:
                 lease.stop()
             if guard_ready:

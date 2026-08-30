@@ -12,7 +12,7 @@ import tempfile
 
 from unittest.mock import Mock, patch
 
-from omarchy_cast.telemetry import MAX_SYSFS_INTERFACE_ENTRIES
+from omarchy_cast.telemetry import MAX_PROCESS_DESCRIPTORS, MAX_SYSFS_INTERFACE_ENTRIES
 from omarchy_cast.transport import CAPTURE_START_TIMEOUT_SECONDS, CONNECT_TIMEOUT_SECONDS, GUARD_LEASE_SECONDS, MAX_GUARD_DIAGNOSTIC_BYTES, RECEIVER_DISCONNECT_GRACE_SECONDS, SUPPLICANT_GROUP_TIMEOUT_SECONDS, DisabledTransportAdapter, FakeTransportAdapter, GuardedTransportAdapter, SessionLease, TransportDisabled, TransportError, _BoundedPipeDrain, validate_transport_plan
 
 
@@ -192,6 +192,14 @@ class TransportTest(unittest.TestCase):
             self.assertFalse(GuardedTransportAdapter._media_started(progress))
             progress.write_text("frame=0\nprogress=continue\nframe=1\nout_time_ms=33333\nprogress=continue\n", encoding="utf-8")
             self.assertTrue(GuardedTransportAdapter._media_started(progress))
+            self.assertFalse(GuardedTransportAdapter._media_started_text("frame=" + "9" * 100_000 + "\nprogress=continue\n"))
+            self.assertFalse(GuardedTransportAdapter._media_started_text("frame=9223372036854775808\nprogress=continue\n"))
+
+    def test_rtsp_liveness_is_unknown_after_descriptor_observation_cap(self) -> None:
+        entries = [Mock(readlink=Mock(return_value="socket:[1]")) for _ in range(MAX_PROCESS_DESCRIPTORS + 1)]
+        with patch("omarchy_cast.transport.Path.iterdir", side_effect=lambda: iter(entries)):
+            self.assertIsNone(GuardedTransportAdapter._socket_inodes(1234))
+            self.assertIsNone(GuardedTransportAdapter._rtsp_established(1234))
 
     def test_group_timeout_is_not_coupled_to_session_duration(self) -> None:
         from omarchy_cast.guard import GuardRequest
