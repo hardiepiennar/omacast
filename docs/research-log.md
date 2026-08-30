@@ -2664,3 +2664,19 @@ unique validated names, control-free values, and width/range-checked protocol
 numbers before integer conversion. Regressions cover oversized messages,
 10,000-digit fields, duplicates, and header floods. This changes neither the
 receiver-facing FluxCast parser nor the companion API.
+
+### Width-bounded privileged shell arithmetic (2026-08-31)
+
+The root guard and independent recovery helper range-checked their frequency,
+lease, startup, PID, heartbeat timestamp, and file-size numbers, but several
+checks first accepted an unbounded decimal string. Bash arithmetic can overflow
+or spend disproportionate work on such input before the range comparison.
+
+Every privileged shell number now has a field-specific lexical width before
+arithmetic: frequencies and leases fit their documented ranges, PIDs fit the
+kernel limit, heartbeat epochs fit a bounded future-proof width, and heartbeat
+files accept only the two digits needed before the 32-byte ceiling. Recovery
+startup is also explicitly limited to 60–600 seconds. Companion revision 72
+carries the helper hardening; guard API 14 and all valid requests are unchanged.
+Regressions source the real guard functions and reject 10,000-digit inputs
+under a two-second deadline while auditing both scripts' lexical contracts.

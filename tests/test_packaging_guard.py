@@ -594,6 +594,33 @@ lease_fresh
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_privileged_shell_numbers_have_lexical_width_limits(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        recovery = ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover"
+        guard_source = guard.read_text(encoding="utf-8")
+        recovery_source = recovery.read_text(encoding="utf-8")
+        for source in (guard_source, recovery_source):
+            self.assertNotIn('"$renewed" =~ ^[0-9]+$', source)
+            self.assertIn('"$renewed" =~ ^[0-9]{1,12}$', source)
+            self.assertIn('"$size" =~ ^[0-9]{1,2}$', source)
+        self.assertIn('"$1" =~ ^[0-9]{1,4}$', guard_source)
+        self.assertIn('"$1" =~ ^[0-9]{2,4}$', guard_source)
+        self.assertIn('"$startup_seconds" =~ ^[0-9]{2,4}$', recovery_source)
+        self.assertIn('"$lease_seconds" =~ ^[0-9]{2,4}$', recovery_source)
+
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+valid_frequency 2412
+valid_duration 60
+! valid_frequency "$(printf '9%.0s' {1..10000})"
+! valid_duration "$(printf '9%.0s' {1..10000})"
+'''
+        result = subprocess.run(
+            ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard)),
+            check=False, capture_output=True, text=True, timeout=2,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_guard_rejects_a_fifo_heartbeat_without_blocking(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
         harness = r'''

@@ -18,8 +18,8 @@ valid_session() { [[ "$1" =~ ^[a-f0-9]{32}$ ]]; }
 valid_uid() { [[ "$1" =~ ^[1-9][0-9]{3,9}$ ]] && (( $1 <= 2147483647 )); }
 valid_interface() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; }
 valid_peer() { [[ "$1" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; }
-valid_frequency() { [[ "$1" =~ ^[0-9]+$ ]] && { (( $1 == 0 )) || (( $1 >= 2300 && $1 <= 7125 )); }; }
-valid_duration() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 60 && $1 <= 1800 )); }
+valid_frequency() { [[ "$1" =~ ^[0-9]{1,4}$ ]] && { (( $1 == 0 )) || (( $1 >= 2300 && $1 <= 7125 )); }; }
+valid_duration() { [[ "$1" =~ ^[0-9]{2,4}$ ]] && (( $1 >= 60 && $1 <= 1800 )); }
 usage() { die 'Usage: omarchy-cast-guard prepare --schema-version 1 --session <32-hex> --uid <uid> --interface <ifname> --peer <MAC> --frequency <MHz-or-0> --duration <60-1800> | reclaim --schema-version 1 --uid <uid> --interface <ifname>'; }
 
 parse_request() {
@@ -58,7 +58,7 @@ acquire_guard_lock() {
 verify_network_manager() {
   local current_pid
   current_pid="$(systemctl show --property MainPID --value NetworkManager.service)"
-  if [[ ! "$current_pid" =~ ^[0-9]+$ ]] || (( current_pid <= 1 )); then die 'NetworkManager is not running'; fi
+  if [[ ! "$current_pid" =~ ^[0-9]{1,10}$ ]] || (( current_pid <= 1 || current_pid > 2147483647 )); then die 'NetworkManager is not running'; fi
   [[ -r "/proc/$current_pid/comm" && "$(<"/proc/$current_pid/comm")" == NetworkManager ]] || die 'NetworkManager service identity is unexpected'
 }
 network_manager_marker_valid() { [[ -f "$network_manager_resume_file" && ! -L "$network_manager_resume_file" && "$(stat -c '%u:%a' "$network_manager_resume_file" 2>/dev/null)" == "$EUID:600" ]]; }
@@ -230,7 +230,7 @@ open_heartbeat() {
   exec {heartbeat_fd}<>"$heartbeat_file" 2>/dev/null || return 1
   metadata="$(stat -Lc '%F:%u:%a:%s' "/proc/self/fd/$heartbeat_fd" 2>/dev/null)" || { exec {heartbeat_fd}>&-; heartbeat_fd=''; return 1; }
   IFS=: read -r kind owner mode size <<< "$metadata"
-  if [[ "$kind" != 'regular file' || "$owner" != "$uid" || "$mode" != 600 || ! "$size" =~ ^[0-9]+$ ]] || (( size > 32 )); then
+  if [[ "$kind" != 'regular file' || "$owner" != "$uid" || "$mode" != 600 || ! "$size" =~ ^[0-9]{1,2}$ ]] || (( size > 32 )); then
     exec {heartbeat_fd}>&-
     heartbeat_fd=''
     return 1
@@ -240,7 +240,7 @@ lease_fresh() {
   local renewed
   [[ -n "$heartbeat_fd" ]] || open_heartbeat || return 1
   IFS= read -r -n 32 -t 0.1 renewed < "/proc/self/fd/$heartbeat_fd" || return 1
-  [[ "$renewed" =~ ^[0-9]+$ ]] && (( EPOCHSECONDS >= renewed && EPOCHSECONDS - renewed <= duration ))
+  [[ "$renewed" =~ ^[0-9]{1,12}$ ]] && (( EPOCHSECONDS >= renewed && EPOCHSECONDS - renewed <= duration ))
 }
 recovery_ready_marker_valid() { [[ -f "$recovery_ready_file" && ! -L "$recovery_ready_file" && "$(stat -c '%u:%a' "$recovery_ready_file" 2>/dev/null)" == "$EUID:600" ]]; }
 arm_recovery() {

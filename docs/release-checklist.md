@@ -561,7 +561,7 @@
       revision-61 upgrade/removal gates, installed with 160 unaltered files,
       and completed both shipped doctor entry points. The matching installed
       plugin reports `Casting support ready` with no readiness issues.
-- [ ] Version 0.1.4 / companion revision 71 / guard API 14 is the scoped
+- [ ] Version 0.1.4 / companion revision 72 / guard API 14 is the scoped
       compatibility candidate. Complete the exact clean build, artifact audit,
       revision-61 upgrade/removal, installed readiness, and one normal Fire TV
       connect/stream/Stop cleanup run before tagging it.

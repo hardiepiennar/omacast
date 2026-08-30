@@ -133,6 +133,9 @@ Security review checklist:
   unless the contract explicitly proves it is the sole owner.
 - Validate protocol numbers by lexical width and numeric range before calling
   `int`; message-size limits alone do not make numeric conversion safe.
+- In privileged Bash, apply the lexical width check before every `(( ... ))` or
+  `-ge`/`-le` comparison too; Bash overflow can wrap an oversized decimal into
+  an apparently acceptable value.
 - Apply the same rule to diagnostic and telemetry numbers: reject partial
   matches, exponent/non-finite forms, booleans, and values outside a documented
   finite range before projecting them into status or QML.
