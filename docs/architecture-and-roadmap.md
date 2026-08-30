@@ -1173,6 +1173,9 @@ waiting in Display Mirroring and understands any temporary network change.
 - **Companion scope:** ship only the WFD engine and its owned networking
   boundary; exclude legacy installer, tray, desktop, Chromecast, DLNA, and LAN
   server payloads from both the wheel and release artifact.
+- **Companion diagnostics:** test shipped CLI import order in a fresh
+  interpreter and from the installed package; shared test-process module state
+  is not acceptance evidence for an entry point.
 - **Release profile:** 1280x720p60 at 7 Mbps with the Fire-TV-proven wire pacer,
   zero mux delay, user-service CPU weighting, and measured 64 ms audio timestamp
   correction. There are no alternate production profiles.

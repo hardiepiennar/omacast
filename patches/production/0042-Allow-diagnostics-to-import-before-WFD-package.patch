@@ -1,0 +1,76 @@
+From 9e92b300d8fa970b227063dadbf74bfdb93093e4 Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Sun, 30 Aug 2026 21:06:18 +1200
+Subject: [PATCH] Allow diagnostics to import before WFD package
+
+---
+ src/diagnostics.py         | 10 +++++++---
+ tests/test_wfd_only_cli.py | 17 +++++++++++++++++
+ 2 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/src/diagnostics.py b/src/diagnostics.py
+index 0b14f55..7adce5c 100644
+--- a/src/diagnostics.py
++++ b/src/diagnostics.py
+@@ -9,9 +9,6 @@ import subprocess
+ from dataclasses import asdict, dataclass
+ from typing import Optional
+ 
+-from wfd.proc import _run
+-
+-
+ STATUS_OK = "ok"
+ STATUS_WARN = "warn"
+ STATUS_FAIL = "fail"
+@@ -26,6 +23,13 @@ WFD_RTSP_PORT = 7236
+ WFD_P2P_SUBNET = "192.168.49.0/24"
+ 
+ 
++def _run(*args, **kwargs):
++    """Defer package initialization so diagnostics can be imported first."""
++    from wfd.proc import _run as run
++
++    return run(*args, **kwargs)
++
++
+ @dataclass
+ class Check:
+     name: str
+diff --git a/tests/test_wfd_only_cli.py b/tests/test_wfd_only_cli.py
+index 522bbff..f1e63db 100644
+--- a/tests/test_wfd_only_cli.py
++++ b/tests/test_wfd_only_cli.py
+@@ -1,6 +1,8 @@
+ import contextlib
+ import io
++import os
+ import pathlib
++import subprocess
+ import sys
+ import unittest
+ from unittest import mock
+@@ -17,6 +19,21 @@ class WFDOnlyCLITest(unittest.TestCase):
+         self.assertEqual(self.parse().protocol, "wfd")
+         self.assertEqual(self.parse("--protocol", "wfd").protocol, "wfd")
+ 
++    def test_diagnostics_imports_first_in_a_fresh_interpreter(self):
++        source = pathlib.Path(__file__).resolve().parents[1] / "src"
++        environment = os.environ.copy()
++        environment["PYTHONPATH"] = str(source)
++        result = subprocess.run(
++            [sys.executable, "-c", "import diagnostics"],
++            check=False,
++            capture_output=True,
++            text=True,
++            env=environment,
++            timeout=10,
++        )
++
++        self.assertEqual(result.returncode, 0, result.stderr)
++
+     def test_unused_protocols_are_rejected_by_the_parser(self):
+         for protocol in ("dlna", "cast"):
+             with self.subTest(protocol=protocol), contextlib.redirect_stderr(io.StringIO()):
+-- 
+2.55.0
+

@@ -33,3 +33,4 @@
 0039-Bound-internal-command-output.patch
 0040-Validate-receiver-media-ports.patch
 0041-Bound-long-session-WFD-state.patch
+0042-Allow-diagnostics-to-import-before-WFD-package.patch

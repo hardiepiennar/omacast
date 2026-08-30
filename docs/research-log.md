@@ -2245,3 +2245,19 @@ On 2026-08-27 the maintainer explicitly deferred both to a future reliability
 release. Version 0.1.3 is scoped to the confirmed broker-lifetime defect, API-11
 compatibility boundary, and bounded startup-discovery fix; it does not claim
 that the deferred soak or forced-recovery coverage passed.
+
+### Companion doctor import-order regression (2026-08-30)
+
+The installed revision-61 `fluxcast --doctor` entry point failed before
+diagnostics ran. `diagnostics` imported `wfd.proc`, which initialized the
+`wfd` package; that package imported the still-partial `diagnostics` module and
+raised a circular-import error. The ordinary controller path remained usable,
+so this was isolated to the companion CLI initialization order.
+
+Production patch 42 defers the `wfd.proc` import until a diagnostic command is
+actually executed. A new regression starts a fresh interpreter with
+`diagnostics` as its first import, avoiding the shared module state that let the
+existing suite hide the defect. The clean 36-patch reconstruction passes 149
+FluxCast tests, its source `--doctor-json` entry point completes, and all 185
+repository tests pass. Package revision 62 is prepared but must not be called
+installed or accepted until its exact artifact is built and exercised.

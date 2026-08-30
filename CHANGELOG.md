@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fix the companion `fluxcast --doctor` import cycle and cover the shipped
+  diagnostic import order in a fresh Python interpreter.
+
 ## 0.1.3 — 2026-08-27
 
 - Remove the supplicant broker's fixed eight-minute lifetime. Healthy casts

@@ -542,6 +542,12 @@
       live past the former 480-second cutoff, recovered from a temporary cadence
       oscillation, passed user picture/motion/audio assessment, and completed
       cooperative owned-session cleanup.
+- [x] Production patch 42 defers the diagnostics dependency on the WFD package
+      and adds a fresh-interpreter import-order regression. The exact 36-patch
+      reconstruction passes 149 FluxCast tests, and all 185 repository tests
+      pass with companion package revision 62 prepared.
+- [ ] Build and install exact package revision 62, then run both shipped doctor
+      entry points before closing the circular-import report.
 - [ ] Exercise forced recovery and complete the canonical three consecutive
       30-minute acceptance sessions. Revision 60's short run and pre-broker
       20.5-minute soak do not satisfy these gates.
