@@ -14,7 +14,7 @@ Super+Alt+C  →  choose a TV  →  Enter
 
 - Direct Wi-Fi Display casting with no cloud service or receiver app.
 - A receiver-tested 1280×720 at 60 fps profile with audio.
-- Nearby receiver discovery by name.
+- Nearby receiver discovery using the advertised Wi-Fi Display sink role.
 - Clear idle, connecting, streaming, and recovery states in the bar.
 - Optional Nerd Mode with frame rate, load, RTP, queue, radio, and timing data.
 - Supervised sessions that restore temporary networking changes after Stop or
@@ -28,7 +28,9 @@ Super+Alt+C  →  choose a TV  →  Enter
 - Omarchy 4 with Hyprland.
 - A VAAPI-capable H.264 encoder.
 - A Wi-Fi adapter with Wi-Fi Direct/P2P support.
-- A Miracast receiver. Fire TV Stick is the currently validated target.
+- A Miracast receiver. Fire TV Stick is the currently validated target; other
+  correctly advertising WFD sinks are discoverable but not yet broadly
+  hardware-validated.
 
 Broad receiver and hardware support is not claimed yet. Omacast currently
 ships desktop mirroring only; window casting and alternate quality modes are

@@ -15,9 +15,13 @@ _RECEIVER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _ALLOWED_CAPABILITIES = frozenset({"miracast", "audio", "video"})
 MAX_RECEIVERS = 64
 MAX_DISCOVERY_PEERS = 256
-# Evidence that a peer advertises Wi-Fi Display, across the NetworkManager and
-# wpa_cli peer-detail formats FluxCast can return.
-_WFD_MARKERS = ("wfd_ies=", "wfd_dev_info=", "sink_rtsp_port=")
+MAX_PEER_DETAILS_CHARS = 4_096
+_WFD_DEVICE_INFO = re.compile(
+    r"(?:^|[;\s])wfd_dev_info=0x([0-9a-f]{4})[0-9a-f]{8}(?![0-9a-z])",
+    re.IGNORECASE,
+)
+_WFD_IES = re.compile(r"(?:^|[;\s])wfd_ies=([^;\n]*)", re.IGNORECASE)
+_WFD_BYTE = re.compile(r"\b0x([0-9a-f]{1,2})\b", re.IGNORECASE)
 
 
 class ReceiverError(ValueError):
@@ -40,6 +44,32 @@ class Receiver:
 
 class ReceiverDiscovery(Protocol):
     def list_receivers(self, *, timeout_seconds: float) -> list[Receiver]: ...
+
+
+def _wfd_device_type(details: str) -> int | None:
+    """Return the advertised WFD device type, or ``None`` if it is invalid."""
+    parsed = _WFD_DEVICE_INFO.search(details)
+    if parsed:
+        return int(parsed.group(1), 16) & 0x03
+
+    raw_ies = _WFD_IES.search(details)
+    if not raw_ies:
+        return None
+    values = [int(value, 16) for value in _WFD_BYTE.findall(raw_ies.group(1))]
+    offset = 0
+    while offset + 3 <= len(values):
+        subelement_id = values[offset]
+        subelement_length = (values[offset + 1] << 8) | values[offset + 2]
+        end = offset + 3 + subelement_length
+        if end > len(values):
+            return None
+        if subelement_id == 0:
+            if subelement_length != 6:
+                return None
+            device_info = (values[offset + 3] << 8) | values[offset + 4]
+            return device_info & 0x03
+        offset = end
+    return None
 
 
 def _receiver_from_record(record: Mapping[str, object]) -> Receiver:
@@ -119,26 +149,21 @@ class FluxCastReceiverDiscovery:
                 raise ReceiverDiscoveryUnavailable("receiver discovery returned too many peer records")
             if len(records) >= MAX_RECEIVERS:
                 raise ReceiverDiscoveryUnavailable("receiver discovery returned too many records")
-            details = str(getattr(peer, "details", ""))
+            details = bounded_text(getattr(peer, "details", ""), limit=MAX_PEER_DETAILS_CHARS)
             # NetworkManager exposes every nearby Wi-Fi Direct peer, including
-            # printers. An explicitly empty WFD IE array proves that the peer
-            # is not a Miracast sink and must never appear as a cast target.
-            lowered_details = details.casefold()
-            if "wfd_ies=" in lowered_details and "@ay []" in lowered_details:
-                continue
-            # A Miracast sink always advertises a Wi-Fi Display IE. Peers with
-            # no WFD advertisement at all are plain Wi-Fi Direct devices and
-            # stay filtered out.
-            if not any(marker in lowered_details for marker in _WFD_MARKERS):
+            # printers and source-only phones. Only peers whose WFD Device
+            # Information identifies a sink are valid cast targets.
+            if _wfd_device_type(details) not in {1, 2, 3}:
                 continue
             address = str(getattr(peer, "address", "")).upper()
             advertised_name = str(getattr(peer, "name", "")).strip()
             name = advertised_name or f"Miracast display · {address[-5:]}"
+            is_fire_tv = "fire tv" in advertised_name.casefold()
             records.append({
                 "id": address,
                 "name": name,
-                "kind": "fire-tv" if "fire tv" in advertised_name.casefold() else "wfd-display",
-                "capabilities": ["miracast", "audio", "video"],
+                "kind": "fire-tv" if is_fire_tv else "wfd-display",
+                "capabilities": ["miracast", "audio", "video"] if is_fire_tv else ["miracast"],
             })
         return normalize_receivers(records)
 

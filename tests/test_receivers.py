@@ -62,10 +62,10 @@ class ReceiverDiscoveryTest(unittest.TestCase):
         def scanner(*, interface: str | None, timeout: int) -> list[SimpleNamespace]:
             calls.append((interface, timeout))
             return [
-                SimpleNamespace(address="02:00:00:00:00:01", name="Living Room Fire TV", details="manufacturer=Amazon; wfd_ies=(<[byte 0x00, 0x11]>,)"),
+                SimpleNamespace(address="02:00:00:00:00:01", name="Living Room Fire TV", details="manufacturer=Amazon; wfd_dev_info=0x00111c4400c8"),
                 SimpleNamespace(address="02:00:00:00:00:02", name="Nearby printer", details="manufacturer=Printer; wfd_ies=(<@ay []>,)"),
                 SimpleNamespace(address="02:00:00:00:00:03", name="Someone's phone", details="manufacturer=Phone"),
-                SimpleNamespace(address="00:11:22:33:44:55", name="[TV] Generic display", details="wfd_ies=(<[byte 0x00, 0x11]>,); sink_rtsp_port=7236"),
+                SimpleNamespace(address="00:11:22:33:44:55", name="[TV] Generic display", details="wfd_dev_info=0x00111c4400c8; sink_rtsp_port=7236"),
             ]
 
         payload = discovery_payload(FluxCastReceiverDiscovery(interface="wlan42", scanner=scanner), timeout_seconds=6)
@@ -76,9 +76,32 @@ class ReceiverDiscoveryTest(unittest.TestCase):
         # A non-Amazon sink is a real cast target and keeps the generic kind.
         self.assertEqual(payload["receivers"][1]["id"], "00:11:22:33:44:55")
         self.assertEqual(payload["receivers"][1]["kind"], "wfd-display")
+        self.assertEqual(payload["receivers"][1]["capabilities"], ("miracast",))
         # An empty WFD IE and a peer with no WFD advertisement stay excluded.
         self.assertNotIn("02:00:00:00:00:02", [receiver["id"] for receiver in payload["receivers"]])
         self.assertNotIn("02:00:00:00:00:03", [receiver["id"] for receiver in payload["receivers"]])
+
+    def test_fluxcast_adapter_rejects_peers_without_a_valid_sink_role(self) -> None:
+        def scanner(*, interface: str | None, timeout: int) -> list[SimpleNamespace]:
+            del interface, timeout
+            return [
+                SimpleNamespace(address="02:00:00:00:00:10", name="Source-only phone", details="wfd_dev_info=0x00101c4400c8"),
+                SimpleNamespace(address="02:00:00:00:00:11", name="RTSP-only peer", details="sink_rtsp_port=7236"),
+                SimpleNamespace(address="02:00:00:00:00:12", name="Malformed display", details="wfd_dev_info=not-hex"),
+                SimpleNamespace(address="02:00:00:00:00:17", name="Truncated display", details="wfd_dev_info=0x00111c44"),
+                SimpleNamespace(address="02:00:00:00:00:18", name="Contaminated display", details="wfd_dev_info=0x00111c4400c8wrong"),
+                SimpleNamespace(address="02:00:00:00:00:13", name="Secondary sink", details="wfd_dev_info=0x00121c4400c8"),
+                SimpleNamespace(address="02:00:00:00:00:14", name="Dual-role display", details="wfd_dev_info=0x00131c4400c8"),
+                SimpleNamespace(address="02:00:00:00:00:15", name="Raw source", details="wfd_ies=<@ay [byte 0x00, 0x00, 0x06, 0x00, 0x10, 0x1c, 0x44, 0x00, 0xc8]>"),
+                SimpleNamespace(address="02:00:00:00:00:16", name="Raw primary sink", details="wfd_ies=<@ay [byte 0x00, 0x00, 0x06, 0x00, 0x11, 0x1c, 0x44, 0x00, 0xc8]>"),
+            ]
+
+        payload = discovery_payload(FluxCastReceiverDiscovery(scanner=scanner))
+
+        self.assertEqual(
+            [receiver["id"] for receiver in payload["receivers"]],
+            ["02:00:00:00:00:14", "02:00:00:00:00:16", "02:00:00:00:00:13"],
+        )
 
     def test_fluxcast_diagnostics_are_discarded_instead_of_collected(self) -> None:
         def scanner(*, interface: str | None, timeout: int):
