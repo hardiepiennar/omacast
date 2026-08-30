@@ -260,8 +260,8 @@ def session_history(*, limit: int = 10, environ: Mapping[str, str] | None = None
                 "startedAt": started.get("timestamp") if isinstance(started, dict) else None,
                 "finishedAt": finished.get("timestamp") if isinstance(finished, dict) else None,
                 "reason": finished.get("reason") if isinstance(finished, dict) else None,
-                "dryRun": bool(started.get("dryRun")) if isinstance(started, dict) else False,
-                "simulated": bool(started.get("simulated")) if isinstance(started, dict) else False,
+                "dryRun": started.get("dryRun") is True if isinstance(started, dict) else False,
+                "simulated": started.get("simulated") is True if isinstance(started, dict) else False,
                 "eventCount": len(events),
             })
     finally:

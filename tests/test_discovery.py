@@ -67,6 +67,8 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(monitors[0].name, "DP-2")
         self.assertEqual(monitors[0].width, 1920)
         self.assertTrue(monitors[0].focused)
+        coerced = parse_hyprland_monitors('[{"name":"DP-3","width":1920,"height":1080,"focused":1}]')
+        self.assertFalse(coerced[0].focused)
 
     def test_monitor_numbers_require_exact_bounded_finite_types(self) -> None:
         monitors = parse_hyprland_monitors(json.dumps([

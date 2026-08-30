@@ -113,6 +113,15 @@ class SessionTest(unittest.TestCase):
             with self.assertRaisesRegex(SessionError, "controller-issued"):
                 read_session_events("not-a-session", environ=environment)
 
+    def test_history_does_not_coerce_event_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = self.environment(temp)
+            session_id = "7" * 32
+            append_event(session_id, "session-started", environment, dryRun=1, simulated="yes")
+            summary = session_history(environ=environment)["sessions"][0]
+            self.assertIs(summary["dryRun"], False)
+            self.assertIs(summary["simulated"], False)
+
     def test_event_append_rejects_links_and_fifo_without_changing_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             environment = self.environment(temp)

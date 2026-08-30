@@ -110,7 +110,7 @@ def parse_hyprland_monitors(text: str) -> list[Monitor]:
                 width=width,
                 height=height,
                 refresh_rate=refresh_rate,
-                focused=bool(entry.get("focused")),
+                focused=entry.get("focused") is True,
             )
         )
     return monitors
