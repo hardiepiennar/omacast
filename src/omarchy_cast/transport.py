@@ -7,6 +7,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import re
 import select
 import stat
 import subprocess
@@ -26,6 +27,9 @@ GUARD_LEASE_SECONDS = 60
 LEASE_RENEW_SECONDS = 5
 RECEIVER_DISCONNECT_GRACE_SECONDS = 3
 MAX_GUARD_DIAGNOSTIC_BYTES = 65_536
+_INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+_DISPLAY_NAME = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
+_AUDIO_SOURCE = re.compile(r"^[^\x00-\x1f\x7f]{1,240}$")
 
 
 class TransportError(RuntimeError):
@@ -235,42 +239,78 @@ class SessionLease:
 
 
 def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False) -> None:
-    """Reject anything except our own non-executable FluxCast preview shape."""
+    """Require the exact independently reconstructed supported FluxCast plan."""
     command = plan.get("command")
     execution = plan.get("execution")
+    if set(plan) != {"schemaVersion", "readOnly", "kind", "execution", "profile", "selection", "command", "warnings"}:
+        raise TransportError("transport plan has unexpected fields")
     if type(plan.get("schemaVersion")) is not int or plan.get("schemaVersion") != 1 or plan.get("kind") != "launch-plan" or plan.get("readOnly") is not True:
         raise TransportError("transport requires a versioned read-only launch plan")
-    expected_execution = True if executable else False
-    if not isinstance(execution, Mapping) or execution.get("allowed") is not expected_execution:
+    expected_execution = {"allowed": True, "reason": "guarded-session-supervisor"} if executable else {"allowed": False, "reason": "read-only launch preview"}
+    if execution != expected_execution:
         raise TransportError("transport plan has an unexpected execution permission")
-    if not isinstance(command, list) or not command or command[0] != "fluxcast" or any(not isinstance(item, str) for item in command):
-        raise TransportError("transport requires a valid FluxCast argument vector")
-    if any(any(character in item for character in ";|&`$\n\r") for item in command):
-        raise TransportError("transport refuses shell-like command arguments")
-    required_flags = {"--protocol", "--output-res", "--fps", "--bitrate", "--wfd-p2p-backend", "--wfd-interface", "--wfd-peer", "--wfd-capture-backend", "--monitor", "--wfd-audio-device", "--wfd-video-encoder", "--wfd-no-firewall"}
-    if not required_flags <= set(command):
-        raise TransportError("transport plan is missing required guarded FluxCast arguments")
-    if command.count("--wfd-capture-backend") != 1:
-        raise TransportError("transport plan has an ambiguous capture source")
-    backend_index = command.index("--wfd-capture-backend")
-    if backend_index + 1 >= len(command):
-        raise TransportError("transport plan capture backend has no value")
-    backend_value = command[backend_index + 1]
+    profile = plan.get("profile")
     selection = plan.get("selection")
-    requested_source = selection.get("source") if isinstance(selection, Mapping) else None
-    if requested_source != "display" or backend_value != "gpu-screen-recorder":
-        raise TransportError("transport plan capture source does not match its selection")
-    if executable:
-        if command.count("--wfd-peer") != 1:
-            raise TransportError("transport plan has an ambiguous receiver address")
-        peer_index = command.index("--wfd-peer")
-        try:
-            command_peer = receiver_address(command[peer_index + 1])
-            selection_peer = receiver_address(selection.get("peer") if isinstance(selection, Mapping) else None)
-        except (IndexError, ValueError) as exc:
-            raise TransportError("transport plan receiver address is invalid") from exc
-        if command_peer != selection_peer:
-            raise TransportError("transport plan receiver does not match its selection")
+    expected_profile = {"label": "Safe", "width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7}
+    if not isinstance(profile, Mapping) or set(profile) != set(expected_profile) or any(
+        type(profile.get(key)) is not type(value) or profile.get(key) != value
+        for key, value in expected_profile.items()
+    ):
+        raise TransportError("transport plan has an unsupported profile")
+    expected_selection = {"peer", "mode", "source", "wifiInterface", "wifiFrequencyMhz", "monitor", "audioSource", "videoEncoder"}
+    if not isinstance(selection, Mapping) or set(selection) != expected_selection:
+        raise TransportError("transport plan has an unexpected selection")
+    try:
+        peer = receiver_address(selection.get("peer"))
+    except ValueError as exc:
+        raise TransportError("transport plan receiver address is invalid") from exc
+    interface = selection.get("wifiInterface")
+    monitor = selection.get("monitor")
+    audio_source = selection.get("audioSource")
+    encoder = selection.get("videoEncoder")
+    frequency = selection.get("wifiFrequencyMhz")
+    if selection.get("mode") != "mirror" or selection.get("source") != "display":
+        raise TransportError("transport plan has an unsupported source selection")
+    if not isinstance(interface, str) or not _INTERFACE.fullmatch(interface):
+        raise TransportError("transport plan Wi-Fi interface is invalid")
+    if not isinstance(monitor, str) or not _DISPLAY_NAME.fullmatch(monitor):
+        raise TransportError("transport plan monitor is invalid")
+    if not isinstance(audio_source, str) or not _AUDIO_SOURCE.fullmatch(audio_source):
+        raise TransportError("transport plan audio source is invalid")
+    if encoder not in {"vaapi", "libx264"}:
+        raise TransportError("transport plan encoder is invalid")
+    if frequency is not None and (type(frequency) is not int or not 2300 <= frequency <= 7125):
+        raise TransportError("transport plan Wi-Fi frequency is invalid")
+    supplicant_frequency = frequency if isinstance(frequency, int) and 2400 <= frequency <= 2500 else 0
+    expected_command = [
+        "fluxcast", "--protocol", "wfd", "--output-res", "1280x720",
+        "--fps", "60", "--bitrate", "7M", "--wfd-video-encoder", encoder,
+        "--wfd-p2p-backend", "supplicant", "--wfd-supplicant-mode", "connect",
+        "--wfd-peer", peer, "--wfd-interface", interface, "--wfd-timeout", "15",
+        "--wfd-supplicant-frequency", str(supplicant_frequency), "--wfd-no-firewall",
+        "--monitor", monitor, "--wfd-capture-backend", "gpu-screen-recorder",
+        "--wfd-audio-device", audio_source,
+    ]
+    if command != expected_command:
+        raise TransportError("transport plan command does not exactly match its reviewed selection")
+    warnings = plan.get("warnings")
+    if not isinstance(warnings, list) or len(warnings) > 8 or any(not isinstance(item, str) or len(item) > 240 for item in warnings):
+        raise TransportError("transport plan warnings are invalid")
+
+
+def validate_test_transport_plan(plan: Mapping[str, Any]) -> None:
+    """Validate only the deliberately non-executable injected-adapter fixture."""
+    command = plan.get("command")
+    selection = plan.get("selection")
+    execution = plan.get("execution")
+    if type(plan.get("schemaVersion")) is not int or plan.get("schemaVersion") != 1 or plan.get("kind") != "launch-plan" or plan.get("readOnly") is not True:
+        raise TransportError("test transport requires a versioned read-only plan")
+    if not isinstance(execution, Mapping) or execution.get("allowed") is not False:
+        raise TransportError("test transport plan must remain non-executable")
+    if not isinstance(selection, Mapping) or selection.get("source") != "display":
+        raise TransportError("test transport plan has an invalid source")
+    if not isinstance(command, list) or not command or command[0] != "fluxcast" or len(command) > 64 or any(not isinstance(item, str) or len(item) > 240 for item in command):
+        raise TransportError("test transport plan has an invalid argument fixture")
 
 
 def executable_plan(plan: Mapping[str, Any]) -> dict[str, object]:
@@ -648,7 +688,7 @@ class FakeTransportAdapter:
         self.calls: list[str] = []
 
     def run(self, plan: Mapping[str, Any], *, timeout_seconds: float | None, cancelled: CancelCheck, stage: StageCallback) -> TransportResult:
-        validate_transport_plan(plan)
+        validate_test_transport_plan(plan)
         if timeout_seconds is None or not 1 <= timeout_seconds <= 300:
             raise TransportError("transport timeout must be between 1 and 300 seconds")
         self.calls.append("start")

@@ -16,7 +16,7 @@ from uuid import uuid4
 from .bounds import BoundError, read_bounded_regular_file, validate_json_budget
 from .state import SessionLock, StateError, _open_session_runtime_descriptor, idle_state, read_state, transition, write_state
 from .telemetry import cleanup_live_telemetry, remove_archived_telemetry
-from .transport import TransportAdapter, TransportError, TransportResult, result_payload, validate_transport_plan
+from .transport import TransportAdapter, TransportError, TransportResult, result_payload, validate_test_transport_plan, validate_transport_plan
 
 
 PROFILES = frozenset({"safe"})
@@ -514,7 +514,10 @@ class TransportTestSupervisor:
         selection = plan.get("selection")
         if not isinstance(selection, Mapping) or selection.get("peer") != request["peer"] or selection.get("mode") != request["mode"] or selection.get("source") != request["source"]:
             raise SessionError("launch plan does not match the requested session")
-        validate_transport_plan(plan, executable=executable)
+        if production:
+            validate_transport_plan(plan, executable=executable)
+        else:
+            validate_test_transport_plan(plan)
         if production and not executable:
             raise SessionError("production sessions require an executable guarded plan")
         with SessionLock(self.environ):

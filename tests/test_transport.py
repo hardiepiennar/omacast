@@ -17,7 +17,20 @@ from omarchy_cast.transport import CAPTURE_START_TIMEOUT_SECONDS, CONNECT_TIMEOU
 
 
 def plan() -> dict[str, object]:
-    return {"schemaVersion": 1, "kind": "launch-plan", "readOnly": True, "execution": {"allowed": False}, "selection": {"source": "display", "peer": "00:11:22:33:44:55"}, "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "4M", "--wfd-p2p-backend", "supplicant", "--wfd-interface", "wlan42", "--wfd-peer", "00:11:22:33:44:55", "--wfd-capture-backend", "gpu-screen-recorder", "--monitor", "eDP-1", "--wfd-audio-device", "sink.monitor", "--wfd-video-encoder", "vaapi", "--wfd-no-firewall"]}
+    return {
+        "schemaVersion": 1, "kind": "launch-plan", "readOnly": True,
+        "execution": {"allowed": False, "reason": "read-only launch preview"},
+        "profile": {"label": "Safe", "width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
+        "selection": {"peer": "00:11:22:33:44:55", "mode": "mirror", "source": "display", "wifiInterface": "wlan42", "wifiFrequencyMhz": 2412, "monitor": "eDP-1", "audioSource": "sink.monitor", "videoEncoder": "vaapi"},
+        "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "7M", "--wfd-video-encoder", "vaapi", "--wfd-p2p-backend", "supplicant", "--wfd-supplicant-mode", "connect", "--wfd-peer", "00:11:22:33:44:55", "--wfd-interface", "wlan42", "--wfd-timeout", "15", "--wfd-supplicant-frequency", "2412", "--wfd-no-firewall", "--monitor", "eDP-1", "--wfd-capture-backend", "gpu-screen-recorder", "--wfd-audio-device", "sink.monitor"],
+        "warnings": [],
+    }
+
+
+def executable_plan_fixture() -> dict[str, object]:
+    result = plan()
+    result["execution"] = {"allowed": True, "reason": "guarded-session-supervisor"}
+    return result
 
 
 class TransportTest(unittest.TestCase):
@@ -60,7 +73,7 @@ class TransportTest(unittest.TestCase):
             DisabledTransportAdapter().run(plan(), timeout_seconds=30, cancelled=lambda: False, stage=lambda _: None)
         unsafe = plan()
         unsafe["command"] = list(unsafe["command"]) + ["; touch nope"]
-        with self.assertRaisesRegex(TransportError, "shell-like"):
+        with self.assertRaisesRegex(TransportError, "exactly match"):
             validate_transport_plan(unsafe)
         boolean_schema = plan()
         boolean_schema["schemaVersion"] = True
@@ -69,20 +82,50 @@ class TransportTest(unittest.TestCase):
 
     def test_capture_backend_must_match_the_display_selection(self) -> None:
         mismatched_source = plan()
-        mismatched_source["selection"] = {"source": "window"}
-        with self.assertRaisesRegex(TransportError, "does not match"):
+        mismatched_source["selection"] = {**mismatched_source["selection"], "source": "window"}
+        with self.assertRaisesRegex(TransportError, "unsupported source"):
             validate_transport_plan(mismatched_source)
 
         mismatched_backend = plan()
         command = list(mismatched_backend["command"])
         command[command.index("--wfd-capture-backend") + 1] = "other"
         mismatched_backend["command"] = command
-        with self.assertRaisesRegex(TransportError, "does not match"):
+        with self.assertRaisesRegex(TransportError, "exactly match"):
             validate_transport_plan(mismatched_backend)
 
+    def test_production_plan_rejects_every_override_and_open_field(self) -> None:
+        mutations = []
+        extra_field = plan()
+        extra_field["legacy"] = True
+        mutations.append(extra_field)
+        boolean_profile = plan()
+        boolean_profile["profile"] = {**boolean_profile["profile"], "fps": True}
+        mutations.append(boolean_profile)
+        open_execution = plan()
+        open_execution["execution"] = {**open_execution["execution"], "debug": True}
+        mutations.append(open_execution)
+        mismatched_interface = plan()
+        mismatched_interface["selection"] = {**mismatched_interface["selection"], "wifiInterface": "wlan99"}
+        mutations.append(mismatched_interface)
+        for flag, value in (("--bitrate", "99M"), ("--wfd-supplicant-mode", "manage")):
+            changed = plan()
+            command = list(changed["command"])
+            command[command.index(flag) + 1] = value
+            changed["command"] = command
+            mutations.append(changed)
+        duplicate = plan()
+        duplicate["command"] = list(duplicate["command"]) + ["--bitrate", "7M"]
+        mutations.append(duplicate)
+        arbitrary = plan()
+        arbitrary["command"] = list(arbitrary["command"]) + ["--verbose"]
+        mutations.append(arbitrary)
+        for candidate in mutations:
+            with self.subTest(candidate=candidate):
+                with self.assertRaises(TransportError):
+                    validate_transport_plan(candidate)
+
     def test_executable_plan_rechecks_receiver_address_and_selection(self) -> None:
-        executable = plan()
-        executable["execution"] = {"allowed": True}
+        executable = executable_plan_fixture()
         validate_transport_plan(executable, executable=True)
 
         for command_peer, selection_peer in (
@@ -90,13 +133,12 @@ class TransportTest(unittest.TestCase):
             ("00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"),
         ):
             with self.subTest(command_peer=command_peer, selection_peer=selection_peer):
-                invalid = plan()
-                invalid["execution"] = {"allowed": True}
+                invalid = executable_plan_fixture()
                 command = list(invalid["command"])
                 command[command.index("--wfd-peer") + 1] = command_peer
                 invalid["command"] = command
-                invalid["selection"] = {"source": "display", "peer": selection_peer}
-                with self.assertRaisesRegex(TransportError, "receiver"):
+                invalid["selection"] = {**invalid["selection"], "peer": selection_peer}
+                with self.assertRaises(TransportError):
                     validate_transport_plan(invalid, executable=True)
 
     def test_rtsp_state_requires_an_established_7236_socket(self) -> None:
@@ -145,8 +187,7 @@ class TransportTest(unittest.TestCase):
 
     def test_group_timeout_is_not_coupled_to_session_duration(self) -> None:
         from omarchy_cast.guard import GuardRequest
-        executable = plan()
-        executable["execution"] = {"allowed": True}
+        executable = executable_plan_fixture()
         paths = {name: Path("/run/user/1000/omarchy-cast") / name for name in ("progress", "latency", "packets")}
         adapter = GuardedTransportAdapter(GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60), env={})
         command = adapter._engine_command(executable, paths, "/run/omarchy-cast/" + "a" * 32 + "/user/trigger", "/run/omarchy-cast/" + "a" * 32 + "/supplicant.sock")
@@ -403,8 +444,7 @@ class TransportTest(unittest.TestCase):
         helper.poll.return_value = None
         helper.terminate.side_effect = PermissionError(1, "Operation not permitted")
         helper.wait.return_value = 2
-        executable = plan()
-        executable["execution"] = {"allowed": True}
+        executable = executable_plan_fixture()
         adapter = GuardedTransportAdapter(request, env={})
         with (
             patch("omarchy_cast.transport.subprocess.Popen", return_value=helper),

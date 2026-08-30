@@ -121,6 +121,10 @@ Security review checklist:
 - Never let a privileged helper act on a user-owned PID or path, or trust
   process names and command lines as authorization. Root actions must use a
   fixed-purpose API and identity/ownership established by the privileged side.
+- A shell-free argument vector is not automatically closed: reject duplicate,
+  extra, reordered, or selection-inconsistent engine options by independently
+  reconstructing the one supported production command. Keep permissive fixture
+  validation explicitly named and confined to non-executable injected adapters.
 - When one boundary bug is found, audit its sibling read, write, status,
   cleanup, and recovery paths plus every parent component before declaring the
   fix complete.

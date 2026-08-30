@@ -2634,3 +2634,20 @@ overflow, and continues discarding excess bytes so diagnostics cannot impose a
 memory or pipe-capacity wall clock on the cast. Regressions push four times the
 retention limit through a real pipe and a real readiness subprocess under
 two-second deadlines. The status protocol and helper API are unchanged.
+
+### Exact production engine argument contract (2026-08-31)
+
+Production transport required a set of FluxCast flags but did not reject most
+duplicates, extra options, alternate supplicant values, or mismatches between
+the reviewed selection and the executed interface, monitor, audio source, and
+encoder. Shell metacharacter rejection did not address ordinary option
+override semantics.
+
+The production boundary now independently reconstructs the sole Safe 720p60
+argument vector from an exact, typed, closed launch plan and requires complete
+list equality. Any extra, missing, reordered, duplicated, overridden, or
+selection-inconsistent option is refused before either authorization or engine
+launch. A separately named validator retains bounded symbolic fixtures only for
+non-executable injected transport tests. Regressions cover open fields,
+boolean numeric aliases, duplicate bitrate, alternate supplicant mode,
+arbitrary options, and selection/command divergence.
