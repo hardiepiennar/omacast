@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 
@@ -279,6 +280,22 @@ class TelemetryTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "milestone is invalid"):
                     collector.note_startup("peer=00:11:22:33:44:55", 1)
             finally:
+                workspace.close()
+
+    def test_engine_output_collector_stops_while_writer_remains_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            workspace = TelemetryWorkspace("a" * 32, environment)
+            workspace.prepare_engine_outputs()
+            read_descriptor, write_descriptor = os.pipe()
+            collector = BoundedOutputCollector(os.fdopen(read_descriptor, "rb", buffering=0), workspace)
+            try:
+                collector.start()
+                started = time.monotonic()
+                collector.stop()
+                self.assertLess(time.monotonic() - started, 1)
+            finally:
+                os.close(write_descriptor)
                 workspace.close()
 
     def test_engine_output_collector_keeps_its_preopened_output_after_path_replacement(self) -> None:

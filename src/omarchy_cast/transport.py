@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import select
+import selectors
 import stat
 import subprocess
 import threading
@@ -52,6 +53,7 @@ class _BoundedPipeDrain:
         self._buffer = bytearray()
         self._lock = threading.Lock()
         self._overflow = threading.Event()
+        self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="omarchy-cast-guard-stderr", daemon=True)
 
     @property
@@ -62,19 +64,37 @@ class _BoundedPipeDrain:
         self._thread.start()
 
     def _run(self) -> None:
+        selector = selectors.DefaultSelector()
         try:
+            descriptor = self._stream.fileno()
+            os.set_blocking(descriptor, False)
+            selector.register(descriptor, selectors.EVENT_READ)
             while True:
-                chunk = self._stream.read(8_192)
-                if not chunk:
-                    return
-                encoded = chunk.encode("utf-8", errors="replace") if isinstance(chunk, str) else bytes(chunk)
-                with self._lock:
-                    self._buffer.extend(encoded)
-                    if len(self._buffer) > self._limit:
-                        self._overflow.set()
-                        del self._buffer[:len(self._buffer) - self._limit]
+                events = selector.select(0.1)
+                if not events:
+                    if self._stop.is_set():
+                        break
+                    continue
+                for _key, _mask in events:
+                    try:
+                        encoded = os.read(descriptor, 8_192)
+                    except BlockingIOError:
+                        continue
+                    if not encoded:
+                        return
+                    with self._lock:
+                        self._buffer.extend(encoded)
+                        if len(self._buffer) > self._limit:
+                            self._overflow.set()
+                            del self._buffer[:len(self._buffer) - self._limit]
         except (OSError, ValueError):
             return
+        finally:
+            selector.close()
+            try:
+                self._stream.close()
+            except (OSError, ValueError):
+                pass
 
     def text(self) -> str:
         with self._lock:
@@ -82,18 +102,10 @@ class _BoundedPipeDrain:
         return encoded.decode("utf-8", errors="replace")
 
     def stop(self) -> None:
-        self._thread.join(timeout=2)
+        self._stop.set()
+        self._thread.join(timeout=1)
         if self._thread.is_alive():
-            try:
-                self._stream.close()
-            except (OSError, ValueError):
-                pass
-            self._thread.join(timeout=2)
-        else:
-            try:
-                self._stream.close()
-            except (OSError, ValueError):
-                pass
+            raise TransportError("The networking helper diagnostic drain did not stop.", code="guard-cleanup-incomplete")
 
 
 StageCallback = Callable[[str], None]

@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import selectors
 import stat
 import threading
 import time
@@ -262,6 +263,7 @@ class BoundedOutputCollector:
         self.limit = limit
         self._tail = bytearray()
         self._lock = threading.Lock()
+        self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="omarchy-cast-engine-log", daemon=True)
         self._started = False
 
@@ -274,7 +276,10 @@ class BoundedOutputCollector:
     def stop(self) -> None:
         if not self._started:
             return
-        self._thread.join(timeout=2)
+        self._stop.set()
+        self._thread.join(timeout=1)
+        if self._thread.is_alive():
+            raise RuntimeError("engine output collector did not stop")
         self._snapshot()
 
     def _snapshot(self) -> None:
@@ -304,19 +309,30 @@ class BoundedOutputCollector:
                     del self._tail[:excess]
 
     def _run(self) -> None:
+        selector = selectors.DefaultSelector()
         try:
-            read_chunk = getattr(self.stream, "read1", self.stream.read)
+            descriptor = self.stream.fileno()
+            os.set_blocking(descriptor, False)
+            selector.register(descriptor, selectors.EVENT_READ)
             while True:
-                chunk = read_chunk(8192)
-                if not chunk:
-                    break
-                if isinstance(chunk, str):
-                    chunk = chunk.encode("utf-8", errors="replace")
-                self._append(chunk)
-                self._snapshot()
+                events = selector.select(0.1)
+                if not events:
+                    if self._stop.is_set():
+                        break
+                    continue
+                for _key, _mask in events:
+                    try:
+                        chunk = os.read(descriptor, 8192)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        return
+                    self._append(chunk)
+                    self._snapshot()
         except (OSError, ValueError):
             pass
         finally:
+            selector.close()
             try:
                 self.stream.close()
             except OSError:

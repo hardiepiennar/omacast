@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 import tempfile
@@ -53,6 +54,15 @@ class TransportTest(unittest.TestCase):
         drain.stop()
         self.assertTrue(drain.overflowed)
         self.assertLessEqual(len(drain.text().encode("utf-8")), MAX_GUARD_DIAGNOSTIC_BYTES)
+
+    def test_guard_drain_stops_while_a_writer_keeps_the_pipe_open(self) -> None:
+        read_descriptor, write_descriptor = os.pipe()
+        drain = _BoundedPipeDrain(os.fdopen(read_descriptor, "rb", buffering=0))
+        drain.start()
+        started = time.monotonic()
+        drain.stop()
+        os.close(write_descriptor)
+        self.assertLess(time.monotonic() - started, 1)
 
     def test_fake_transport_never_spawns_and_runs_ordered_stages(self) -> None:
         stages: list[str] = []
