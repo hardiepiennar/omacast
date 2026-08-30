@@ -18,6 +18,8 @@ from .command import CommandResult, Runner, run_command
 MAX_WIFI_DEVICES = 32
 MAX_MONITORS = 16
 MAX_DIAGNOSTICS = 16
+MAX_RENDER_NODE_ENTRIES = 256
+MAX_RENDER_NODES = 64
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,16 @@ def parse_iw_link(interface: str, text: str) -> WifiLink:
             except (ValueError, OverflowError):
                 pass
     return WifiLink(interface=interface, connected=True, ssid=ssid, frequency_mhz=frequency_mhz)
+
+
+def _bounded_render_nodes(render_root: Path) -> list[str]:
+    nodes: list[str] = []
+    for entry_index, path in enumerate(render_root.glob("renderD*")):
+        if entry_index >= MAX_RENDER_NODE_ENTRIES or len(nodes) >= MAX_RENDER_NODES:
+            break
+        if path.is_char_device():
+            nodes.append(str(path))
+    return sorted(nodes)
 
 
 REQUIRED_COMMANDS = (
@@ -334,7 +346,7 @@ def discover_host(
     sink_result = runner(("pactl", "get-default-sink"))
     default_sink = bounded_text(sink_result.stdout.strip(), limit=240) if sink_result.returncode == 0 else ""
 
-    render_nodes = sorted(str(path) for path in render_root.glob("renderD*") if path.is_char_device())
+    render_nodes = _bounded_render_nodes(render_root)
     diagnostics: list[dict[str, str]] = list(link_diagnostics)
     for source, result in (("NetworkManager", nm_result), ("Hyprland", monitor_result), ("PipeWire", sink_result)):
         if result.returncode != 0:

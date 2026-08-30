@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from omarchy_cast.command import CommandResult
-from omarchy_cast.discovery import ENGINE_CONTRACT, discover_host, parse_hyprland_monitors, parse_iw_link, parse_nmcli_devices
+from omarchy_cast.discovery import ENGINE_CONTRACT, MAX_RENDER_NODES, _bounded_render_nodes, discover_host, parse_hyprland_monitors, parse_iw_link, parse_nmcli_devices
 
 
 class DiscoveryTest(unittest.TestCase):
@@ -73,6 +73,14 @@ class DiscoveryTest(unittest.TestCase):
             with self.subTest(candidate=candidate[:20]):
                 link = parse_iw_link("wlan42", f"Connected\n\tSSID: Example\n\tfreq: {candidate}\n")
                 self.assertIsNone(link.frequency_mhz)
+
+    def test_render_node_discovery_has_a_hard_result_ceiling(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for index in range(100):
+                (root / f"renderD{index}").symlink_to("/dev/null")
+            nodes = _bounded_render_nodes(root)
+        self.assertEqual(len(nodes), MAX_RENDER_NODES)
 
     def test_reports_failed_probes_as_diagnostics(self) -> None:
         def runner(args, *, timeout=5.0):

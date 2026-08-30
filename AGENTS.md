@@ -131,6 +131,8 @@ Security review checklist:
 - Treat periodic `/proc` and `/sys` telemetry as a denial-of-service boundary:
   cap bytes, directory entries, process descendants, tasks, descriptors, and
   retained per-PID baselines, and fail telemetry closed without ending media.
+  A liveness probe that reaches its observation cap is unknown, not proof of
+  absence, and must not manufacture a receiver disconnect.
 - Bound directory enumeration and the number of decoded records independently
   of per-file byte limits. A private same-UID directory and a small file do not
   make entry floods or many tiny records safe.

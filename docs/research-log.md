@@ -2574,3 +2574,19 @@ closed lexical forms, finite bounds, and exact type checks before conversion.
 Invalid telemetry is omitted or falls back to zero without affecting media.
 Regressions cover 10,000-digit fields, partial decimals and exponents,
 non-finite values, booleans, and out-of-range dimensions and frequencies.
+
+### Bounded kernel-status discovery (2026-08-31)
+
+The periodic sampler capped `/proc` process traversal but still materialized
+every matching P2P interface and directly read sysfs counters. Receiver
+liveness and host render-node discovery also lacked entry ceilings. On a
+normal kernel these sets are small, but the release contract treats every
+periodic or externally supplied filesystem view as bounded input.
+
+P2P and render-node enumeration now stop at explicit entry and result limits;
+sysfs counters use bounded nonblocking reads and unsigned-width validation;
+and process/kernel numeric records reject oversized values. If the receiver
+liveness enumeration reaches its cap, it reports an unknown observation rather
+than falsely treating the group as absent and ending a healthy stream.
+Regressions exercise ordered entry floods, oversized counters and process
+fields, and render-node result saturation.

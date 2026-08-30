@@ -15,6 +15,7 @@ from omarchy_cast.telemetry import (
     MAX_DESCENDANT_PROCESSES,
     MAX_ARCHIVED_TELEMETRY_BYTES,
     MAX_ENGINE_LOG_BYTES,
+    MAX_SYSFS_INTERFACE_ENTRIES,
     TelemetrySampler,
     TelemetryWorkspace,
     _bounded_read,
@@ -326,6 +327,48 @@ class TelemetryTest(unittest.TestCase):
             ):
                 sampler._processes(1.0)
             self.assertEqual(set(sampler._previous_process), {100})
+            sampler.stop()
+
+    def test_periodic_sysfs_enumeration_and_counters_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "net"
+            root.mkdir()
+            for index in range(MAX_SYSFS_INTERFACE_ENTRIES):
+                (root / f"p2p-wlan42-flood-{index}").write_text("not an interface", encoding="utf-8")
+            actual = root / "p2p-wlan42-z-real"
+            (actual / "statistics").mkdir(parents=True)
+            (actual / "operstate").write_text("up\n", encoding="ascii")
+            (actual / "statistics" / "tx_bytes").write_text("123\n", encoding="ascii")
+            sampler = TelemetrySampler(
+                session_id="a" * 32, engine_pid=999999, wifi_interface="wlan42",
+                environ={"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")},
+            )
+            ordered_root = unittest.mock.Mock()
+            ordered_root.glob.return_value = [
+                *(root / f"p2p-wlan42-flood-{index}" for index in range(MAX_SYSFS_INTERFACE_ENTRIES)),
+                actual,
+            ]
+            self.assertIsNone(sampler._p2p_interface(ordered_root))
+            self.assertEqual(sampler._counter(actual.name, "tx_bytes", root), 123)
+            (actual / "statistics" / "tx_bytes").write_text("9" * 10_000, encoding="ascii")
+            self.assertEqual(sampler._counter(actual.name, "tx_bytes", root), 0)
+            sampler.stop()
+
+    def test_process_numeric_records_reject_oversized_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            proc_root = Path(temp) / "proc"
+            proc = proc_root / "100"
+            proc.mkdir(parents=True)
+            fields = ["S", *("0" for _ in range(21))]
+            fields[11] = "9" * 10_000
+            (proc / "stat").write_text(f"100 (engine) {' '.join(fields)}\n", encoding="ascii")
+            (proc / "schedstat").write_text("0 0 0\n", encoding="ascii")
+            sampler = TelemetrySampler(
+                session_id="a" * 32, engine_pid=100, wifi_interface="wlan42",
+                environ={"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")},
+            )
+            with unittest.mock.patch("omarchy_cast.telemetry.Path", side_effect=lambda value: proc_root if value == "/proc" else Path(value)):
+                self.assertIsNone(sampler._process(100, 1.0))
             sampler.stop()
 
     def test_packet_timing_reports_audio_video_gaps_and_skew(self) -> None:

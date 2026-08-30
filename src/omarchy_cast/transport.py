@@ -16,7 +16,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .guard import GuardRequest, prepare_command, validate_helper_result
 from .identity import receiver_address
-from .telemetry import MAX_PROCESS_DESCRIPTORS, MAX_PROC_NETWORK_BYTES, BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, cleanup_live_telemetry
+from .telemetry import MAX_PROCESS_DESCRIPTORS, MAX_PROC_NETWORK_BYTES, MAX_SYSFS_INTERFACE_ENTRIES, BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, cleanup_live_telemetry
 
 
 CONNECT_TIMEOUT_SECONDS = 75
@@ -366,9 +366,14 @@ class GuardedTransportAdapter:
             return False
 
     @staticmethod
-    def _p2p_group_present(interface: str, network_root: Path = Path("/sys/class/net")) -> bool:
+    def _p2p_group_present(interface: str, network_root: Path = Path("/sys/class/net")) -> bool | None:
         """Prove that this session's interface still has a P2P group device."""
-        return any(path.is_dir() for path in network_root.glob(f"p2p-{interface}-*"))
+        for entry_index, path in enumerate(network_root.glob(f"p2p-{interface}-*")):
+            if entry_index >= MAX_SYSFS_INTERFACE_ENTRIES:
+                return None
+            if path.is_dir():
+                return True
+        return False
 
     def _engine_command(self, plan: Mapping[str, Any], paths: Mapping[str, Path], trigger: str, broker: str) -> list[str]:
         """Attach session-owned instrumentation without coupling it to cast lifetime."""
@@ -477,11 +482,12 @@ class GuardedTransportAdapter:
                     stage("streaming")
                     streaming = True
                 if streaming:
-                    if self._p2p_group_present(self.request.interface):
+                    group_present = self._p2p_group_present(self.request.interface)
+                    if group_present is True:
                         p2p_missing_at = None
-                    elif p2p_missing_at is None:
+                    elif group_present is False and p2p_missing_at is None:
                         p2p_missing_at = now
-                    elif now - p2p_missing_at >= RECEIVER_DISCONNECT_GRACE_SECONDS:
+                    elif group_present is False and now - p2p_missing_at >= RECEIVER_DISCONNECT_GRACE_SECONDS:
                         return TransportResult("completed", "receiver disconnected", True)
                 if rtsp_ready_at is None and now >= connect_deadline:
                     return TransportResult(

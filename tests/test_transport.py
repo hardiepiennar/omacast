@@ -11,6 +11,7 @@ import tempfile
 
 from unittest.mock import Mock, patch
 
+from omarchy_cast.telemetry import MAX_SYSFS_INTERFACE_ENTRIES
 from omarchy_cast.transport import CAPTURE_START_TIMEOUT_SECONDS, CONNECT_TIMEOUT_SECONDS, GUARD_LEASE_SECONDS, RECEIVER_DISCONNECT_GRACE_SECONDS, SUPPLICANT_GROUP_TIMEOUT_SECONDS, DisabledTransportAdapter, FakeTransportAdapter, GuardedTransportAdapter, SessionLease, TransportDisabled, TransportError, validate_transport_plan
 
 
@@ -97,6 +98,20 @@ class TransportTest(unittest.TestCase):
             (network_root / "p2p-wlan42-7").mkdir()
             self.assertTrue(GuardedTransportAdapter._p2p_group_present("wlan42", network_root))
             self.assertFalse(GuardedTransportAdapter._p2p_group_present("wlan43", network_root))
+
+    def test_receiver_liveness_is_unknown_after_bounded_sysfs_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            network_root = Path(directory)
+            for index in range(MAX_SYSFS_INTERFACE_ENTRIES):
+                (network_root / f"p2p-wlan42-flood-{index}").write_text("not a directory", encoding="utf-8")
+            actual = network_root / "p2p-wlan42-z-real"
+            actual.mkdir()
+            ordered_root = Mock()
+            ordered_root.glob.return_value = [
+                *(network_root / f"p2p-wlan42-flood-{index}" for index in range(MAX_SYSFS_INTERFACE_ENTRIES)),
+                actual,
+            ]
+            self.assertIsNone(GuardedTransportAdapter._p2p_group_present("wlan42", ordered_root))
 
     def test_streaming_requires_a_completed_video_progress_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

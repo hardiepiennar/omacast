@@ -32,6 +32,7 @@ MAX_CHILD_IDS_PER_PROCESS = 256
 MAX_PROCESS_DESCRIPTORS = 1_024
 MAX_PROC_NETWORK_BYTES = 1_048_576
 MAX_PROC_RECORD_BYTES = 65_536
+MAX_SYSFS_INTERFACE_ENTRIES = 256
 _LIVE_FILENAMES = frozenset({"current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log"})
 _PATH_KEYS = {
     "current": "current.json",
@@ -609,7 +610,10 @@ class TelemetrySampler:
             except OSError:
                 pass
             remaining = max(0, MAX_DESCENDANT_PROCESSES - len(found) - len(pending))
-            pending.extend(int(child) for child in children[:remaining])
+            for child in children[:remaining]:
+                child_pid = _bounded_integer(child, minimum=1, maximum=2**31 - 1)
+                if child_pid is not None:
+                    pending.append(child_pid)
         return found
 
     def _process(self, pid: int, now: float) -> dict[str, int | float | str] | None:
@@ -619,16 +623,23 @@ class TelemetrySampler:
             closing = stat.rfind(")")
             name = stat[stat.find("(") + 1:closing]
             fields = stat[closing + 2:].split()
-            ticks = float(fields[11]) + float(fields[12])
-            rss_kib = int(fields[21]) * os.sysconf("SC_PAGE_SIZE") // 1024
+            user_ticks = _bounded_integer(fields[11], minimum=0, maximum=2**64 - 1)
+            system_ticks = _bounded_integer(fields[12], minimum=0, maximum=2**64 - 1)
+            resident_pages = _bounded_integer(fields[21], minimum=0, maximum=2**63 - 1)
             sched = _bounded_read(proc / "schedstat", MAX_PROC_RECORD_BYTES).split()
-            delay_ns = float(sched[1]) if len(sched) >= 2 else 0.0
+            delay_ns = _bounded_integer(sched[1], minimum=0, maximum=2**64 - 1) if len(sched) >= 2 else 0
+            if user_ticks is None or system_ticks is None or resident_pages is None or delay_ns is None:
+                return None
+            ticks = user_ticks + system_ticks
+            rss_kib = resident_pages * os.sysconf("SC_PAGE_SIZE") // 1024
             command = _bounded_read(proc / "cmdline", MAX_PROC_RECORD_BYTES).split("\0", 1)[0]
-            io_fields = {}
+            io_fields: dict[str, int] = {}
             for line in _bounded_read(proc / "io", MAX_PROC_RECORD_BYTES).splitlines():
                 key, separator, value = line.partition(":")
                 if separator:
-                    io_fields[key] = int(value.strip())
+                    parsed = _bounded_integer(value, minimum=0, maximum=2**64 - 1)
+                    if parsed is not None:
+                        io_fields[key] = parsed
             rchar, wchar = io_fields.get("rchar", 0), io_fields.get("wchar", 0)
             syscr, syscw = io_fields.get("syscr", 0), io_fields.get("syscw", 0)
         except (OSError, ValueError, IndexError):
@@ -667,18 +678,23 @@ class TelemetrySampler:
             result[role] = sample
         return result
 
-    def _p2p_interface(self) -> str | None:
-        candidates = sorted(Path("/sys/class/net").glob(f"p2p-{self.wifi_interface}-*"))
+    def _p2p_interface(self, network_root: Path = Path("/sys/class/net")) -> str | None:
+        candidates: list[Path] = []
+        for entry_index, path in enumerate(network_root.glob(f"p2p-{self.wifi_interface}-*")):
+            if entry_index >= MAX_SYSFS_INTERFACE_ENTRIES:
+                break
+            if path.is_dir():
+                candidates.append(path)
+        candidates.sort()
         active = [path for path in candidates if _bounded_read(path / "operstate", 32).strip() == "up"]
         selected = (active or candidates)
         return selected[-1].name if selected else None
 
     @staticmethod
-    def _counter(interface: str, name: str) -> int:
-        try:
-            return int(Path(f"/sys/class/net/{interface}/statistics/{name}").read_text())
-        except (OSError, ValueError):
-            return 0
+    def _counter(interface: str, name: str, network_root: Path = Path("/sys/class/net")) -> int:
+        value = _bounded_read(network_root / interface / "statistics" / name, 32)
+        parsed = _bounded_integer(value, minimum=0, maximum=2**64 - 1)
+        return parsed if parsed is not None else 0
 
     def _send_queue(self) -> int:
         suffix = f":{self.source_port:04X}"
@@ -689,10 +705,8 @@ class TelemetrySampler:
         for line in lines:
             fields = line.split()
             if len(fields) >= 5 and fields[1].upper().endswith(suffix):
-                try:
-                    return int(fields[4].split(":", 1)[0], 16)
-                except ValueError:
-                    return 0
+                queue = fields[4].split(":", 1)[0]
+                return int(queue, 16) if re.fullmatch(r"[0-9A-Fa-f]{1,16}", queue) else 0
         return 0
 
     def _sample_radio(self, interface: str, now: float) -> dict[str, int | float]:
