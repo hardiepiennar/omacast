@@ -25,6 +25,7 @@ SUPPLICANT_GROUP_TIMEOUT_SECONDS = 45
 GUARD_LEASE_SECONDS = 60
 LEASE_RENEW_SECONDS = 5
 RECEIVER_DISCONNECT_GRACE_SECONDS = 3
+MAX_GUARD_DIAGNOSTIC_BYTES = 65_536
 
 
 class TransportError(RuntimeError):
@@ -35,6 +36,59 @@ class TransportError(RuntimeError):
 
 class TransportDisabled(TransportError):
     pass
+
+
+class _BoundedPipeDrain:
+    """Continuously drain one long-lived helper pipe with fixed retention."""
+
+    def __init__(self, stream: Any, *, limit: int = MAX_GUARD_DIAGNOSTIC_BYTES) -> None:
+        self._stream = stream
+        self._limit = limit
+        self._buffer = bytearray()
+        self._lock = threading.Lock()
+        self._overflow = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="omarchy-cast-guard-stderr", daemon=True)
+
+    @property
+    def overflowed(self) -> bool:
+        return self._overflow.is_set()
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            while True:
+                chunk = self._stream.read(8_192)
+                if not chunk:
+                    return
+                encoded = chunk.encode("utf-8", errors="replace") if isinstance(chunk, str) else bytes(chunk)
+                with self._lock:
+                    self._buffer.extend(encoded)
+                    if len(self._buffer) > self._limit:
+                        self._overflow.set()
+                        del self._buffer[:len(self._buffer) - self._limit]
+        except (OSError, ValueError):
+            return
+
+    def text(self) -> str:
+        with self._lock:
+            encoded = bytes(self._buffer)
+        return encoded.decode("utf-8", errors="replace")
+
+    def stop(self) -> None:
+        self._thread.join(timeout=2)
+        if self._thread.is_alive():
+            try:
+                self._stream.close()
+            except (OSError, ValueError):
+                pass
+            self._thread.join(timeout=2)
+        else:
+            try:
+                self._stream.close()
+            except (OSError, ValueError):
+                pass
 
 
 StageCallback = Callable[[str], None]
@@ -236,7 +290,7 @@ class GuardedTransportAdapter:
         self.env = dict(os.environ if env is None else env)
 
     @staticmethod
-    def _read_ready(process: subprocess.Popen[str], request: GuardRequest, cancelled: CancelCheck, timeout: float = 90) -> tuple[str, str] | None:
+    def _read_ready(process: subprocess.Popen[str], request: GuardRequest, cancelled: CancelCheck, timeout: float = 90, stderr_drain: _BoundedPipeDrain | None = None) -> tuple[str, str] | None:
         if process.stdout is None:
             raise TransportError("The networking helper did not provide a status stream.", code="guard-setup-failed")
         deadline = time.monotonic() + timeout
@@ -249,7 +303,7 @@ class GuardedTransportAdapter:
                 if len(line) > 65_536:
                     raise TransportError("The networking helper returned an oversized readiness status.", code="guard-setup-failed")
                 if not line:
-                    error = process.stderr.read(65_537).strip()[:65_536] if process.stderr is not None else ""
+                    error = stderr_drain.text().strip() if stderr_drain is not None else process.stderr.read(65_537).strip()[:65_536] if process.stderr is not None else ""
                     returncode = process.poll()
                     if returncode in {126, 127}:
                         raise TransportError("Administrator approval was cancelled. Nothing was changed.", code="authorization-cancelled")
@@ -270,7 +324,7 @@ class GuardedTransportAdapter:
                     return expected, expected_broker
                 raise TransportError(str(payload.get("error") or "The networking helper refused session preparation."), code="guard-setup-failed")
             if process.poll() is not None:
-                error = process.stderr.read(65_537).strip()[:65_536] if process.stderr is not None else ""
+                error = stderr_drain.text().strip() if stderr_drain is not None else process.stderr.read(65_537).strip()[:65_536] if process.stderr is not None else ""
                 if process.returncode in {126, 127}:
                     raise TransportError("Administrator approval was cancelled. Nothing was changed.", code="authorization-cancelled")
                 raise TransportError(error or "The networking helper exited before it was ready.", code="guard-setup-failed")
@@ -432,12 +486,17 @@ class GuardedTransportAdapter:
         telemetry: TelemetryWorkspace | None = None
         lease: SessionLease | None = None
         engine_output_collector: BoundedOutputCollector | None = None
+        helper_stderr_drain: _BoundedPipeDrain | None = None
         guard_ready = False
         guard_cleanup_confirmed = False
         startup_started_at = time.monotonic()
         try:
             helper = subprocess.Popen((*self.authorization_command, *prepare_command(self.request)), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
-            ready = self._read_ready(helper, self.request, cancelled)
+            if helper.stderr is None:
+                raise TransportError("The networking helper did not expose its diagnostic stream.", code="guard-setup-failed")
+            helper_stderr_drain = _BoundedPipeDrain(helper.stderr)
+            helper_stderr_drain.start()
+            ready = self._read_ready(helper, self.request, cancelled, stderr_drain=helper_stderr_drain)
             if ready is None:
                 return TransportResult("cancelled", "stop requested during authorization", True)
             trigger, broker = ready
@@ -557,6 +616,8 @@ class GuardedTransportAdapter:
                         pass
                 if guard_ready:
                     guard_cleanup_confirmed = self._cleanup_confirmed(helper, self.request)
+            if helper_stderr_drain is not None:
+                helper_stderr_drain.stop()
             if engine_output_collector is not None:
                 engine_output_collector.stop()
             if telemetry is not None:

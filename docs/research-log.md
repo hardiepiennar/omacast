@@ -2619,3 +2619,18 @@ and `error` reject those fields; every phase has an exact field set, a required
 session ID, and consistent `ok`/`error` values. The existing helper already
 emits these shapes, so guard API 14 and companion revision 71 do not change.
 Regressions cover missing, extra, misplaced, and phase-inconsistent fields.
+
+### Continuous privileged-helper diagnostics drain (2026-08-31)
+
+The controller read the long-lived guard's status stream but deferred reading
+its stderr until stdout closed. The guard and its root-owned child commands can
+write diagnostics before readiness or during cleanup; enough output could fill
+the pipe, block the helper, and prevent the very status or exit the controller
+was waiting for.
+
+The guard stderr pipe is now drained from process creation through final wait
+by a dedicated bounded collector. It retains only the latest 64 KiB, records
+overflow, and continues discarding excess bytes so diagnostics cannot impose a
+memory or pipe-capacity wall clock on the cast. Regressions push four times the
+retention limit through a real pipe and a real readiness subprocess under
+two-second deadlines. The status protocol and helper API are unchanged.

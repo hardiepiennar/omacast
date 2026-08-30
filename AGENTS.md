@@ -96,10 +96,14 @@ Security review checklist:
   service launch, execution-plan validation, privileged requests, and engine
   arguments. A display label or generic stable ID must never substitute for a
   validated receiver MAC on a real cast path.
-- Privileged subprocesses must drain stdout and stderr concurrently, retain a
-  fixed maximum per stream, and kill on overflow or deadline. Never use
-  unbounded `capture_output`/`communicate` at a privileged boundary; test both
-  simultaneous-stream pressure and a child that never exits.
+- Short-lived privileged subprocesses must drain stdout and stderr
+  concurrently, retain a fixed maximum per stream, and kill on overflow or
+  deadline. Never use unbounded `capture_output`/`communicate` at a privileged
+  boundary; test both simultaneous-stream pressure and a child that never exits.
+- Long-lived privileged helpers need the same treatment after startup: start
+  every pipe drain immediately, keep it active for the whole session, discard
+  beyond fixed retention, and join it during cleanup. Reading stderr only after
+  stdout closes can deadlock before either readiness or recovery status is emitted.
 - Bound bytes before parsing or retaining them. Also cap JSON depth, nodes,
   collection counts, and strings; project only allowlisted fields into QML and
   render non-constant text with `Text.PlainText`.

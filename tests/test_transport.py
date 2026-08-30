@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import unittest
 from pathlib import Path
 import tempfile
@@ -12,7 +13,7 @@ import tempfile
 from unittest.mock import Mock, patch
 
 from omarchy_cast.telemetry import MAX_SYSFS_INTERFACE_ENTRIES
-from omarchy_cast.transport import CAPTURE_START_TIMEOUT_SECONDS, CONNECT_TIMEOUT_SECONDS, GUARD_LEASE_SECONDS, RECEIVER_DISCONNECT_GRACE_SECONDS, SUPPLICANT_GROUP_TIMEOUT_SECONDS, DisabledTransportAdapter, FakeTransportAdapter, GuardedTransportAdapter, SessionLease, TransportDisabled, TransportError, validate_transport_plan
+from omarchy_cast.transport import CAPTURE_START_TIMEOUT_SECONDS, CONNECT_TIMEOUT_SECONDS, GUARD_LEASE_SECONDS, MAX_GUARD_DIAGNOSTIC_BYTES, RECEIVER_DISCONNECT_GRACE_SECONDS, SUPPLICANT_GROUP_TIMEOUT_SECONDS, DisabledTransportAdapter, FakeTransportAdapter, GuardedTransportAdapter, SessionLease, TransportDisabled, TransportError, _BoundedPipeDrain, validate_transport_plan
 
 
 def plan() -> dict[str, object]:
@@ -20,6 +21,26 @@ def plan() -> dict[str, object]:
 
 
 class TransportTest(unittest.TestCase):
+    def test_guard_stderr_is_continuously_drained_with_fixed_retention(self) -> None:
+        read_descriptor, write_descriptor = os.pipe()
+        drain = _BoundedPipeDrain(os.fdopen(read_descriptor, "rb", buffering=0))
+        drain.start()
+
+        def write_pressure() -> None:
+            with os.fdopen(write_descriptor, "wb", buffering=0) as stream:
+                remaining = memoryview(b"x" * (MAX_GUARD_DIAGNOSTIC_BYTES * 4))
+                while remaining:
+                    written = stream.write(remaining)
+                    remaining = remaining[written:]
+
+        writer = threading.Thread(target=write_pressure)
+        writer.start()
+        writer.join(timeout=2)
+        self.assertFalse(writer.is_alive(), "guard diagnostics blocked on an undrained pipe")
+        drain.stop()
+        self.assertTrue(drain.overflowed)
+        self.assertLessEqual(len(drain.text().encode("utf-8")), MAX_GUARD_DIAGNOSTIC_BYTES)
+
     def test_fake_transport_never_spawns_and_runs_ordered_stages(self) -> None:
         stages: list[str] = []
         adapter = FakeTransportAdapter()
@@ -299,6 +320,44 @@ class TransportTest(unittest.TestCase):
             with self.assertRaisesRegex(TransportError, "invalid readiness"):
                 GuardedTransportAdapter._read_ready(process, request, lambda: False)
 
+    def test_authorization_ready_cannot_deadlock_on_stderr_pressure(self) -> None:
+        from omarchy_cast.guard import GuardRequest
+        session = "a" * 32
+        request = GuardRequest(1, session, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
+        payload = json.dumps({
+            "schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True,
+            "phase": "ready", "sessionId": session, "error": None,
+            "triggerPath": f"/run/omarchy-cast/{session}/user/trigger",
+            "brokerPath": f"/run/omarchy-cast/{session}/supplicant.sock",
+        })
+        script = (
+            "import sys\n"
+            f"sys.stderr.write('x' * {MAX_GUARD_DIAGNOSTIC_BYTES * 4})\n"
+            "sys.stderr.flush()\n"
+            f"print({payload!r}, flush=True)\n"
+        )
+        process = subprocess.Popen(
+            (sys.executable, "-c", script), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        assert process.stderr is not None
+        drain = _BoundedPipeDrain(process.stderr)
+        drain.start()
+        try:
+            self.assertEqual(
+                GuardedTransportAdapter._read_ready(process, request, lambda: False, timeout=2, stderr_drain=drain),
+                (f"/run/omarchy-cast/{session}/user/trigger", f"/run/omarchy-cast/{session}/supplicant.sock"),
+            )
+            process.wait(timeout=2)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
+            drain.stop()
+            if process.stdout is not None:
+                process.stdout.close()
+        self.assertTrue(drain.overflowed)
+
     def test_dismissed_authorization_is_an_actionable_no_change_failure(self) -> None:
         from omarchy_cast.guard import GuardRequest
         request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
@@ -340,7 +399,7 @@ class TransportTest(unittest.TestCase):
     def test_root_owned_helper_cleanup_does_not_mask_setup_failure(self) -> None:
         from omarchy_cast.guard import GuardRequest
         request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
-        helper = Mock()
+        helper = Mock(stderr=io.StringIO(""))
         helper.poll.return_value = None
         helper.terminate.side_effect = PermissionError(1, "Operation not permitted")
         helper.wait.return_value = 2
