@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from omarchy_cast.session import MAX_SESSION_LOGS, DryRunSupervisor, SessionError, SimulatedSupervisor, TransportTestSupervisor, _stop_requested, append_event, event_log_path, read_session_events, recover_stale_session, request_stop, session_history, validate_request
+from omarchy_cast.session import MAX_EVENT_DIRECTORY_ENTRIES, MAX_EVENTS_PER_SESSION, MAX_SESSION_LOGS, DryRunSupervisor, SessionError, SimulatedSupervisor, TransportTestSupervisor, _stop_requested, append_event, event_log_path, read_session_events, recover_stale_session, request_stop, session_history, validate_request
 from omarchy_cast.state import idle_state, read_state, transition, write_state
 from omarchy_cast.transport import FakeTransportAdapter, TransportError, TransportResult
 
@@ -187,6 +187,31 @@ class SessionTest(unittest.TestCase):
 
             history = session_history(limit=10, environ=environment)
             self.assertEqual([item["sessionId"] for item in history["sessions"]], [accepted])
+
+    def test_history_enumeration_and_event_count_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = self.environment(temp)
+            session_id = "a" * 32
+            path = event_log_path(session_id, environment)
+            path.parent.mkdir(mode=0o700, parents=True)
+            event = '{"schemaVersion":1,"event":"sample"}\n'
+            path.write_text(event * (MAX_EVENTS_PER_SESSION + 1), encoding="utf-8")
+            path.chmod(0o600)
+            with self.assertRaisesRegex(SessionError, "too many events"):
+                read_session_events(session_id, environ=environment)
+
+            path.unlink()
+            for index in range(MAX_EVENT_DIRECTORY_ENTRIES + 1):
+                (path.parent / f"untrusted-{index}").touch(mode=0o600)
+            started = time.monotonic()
+            with self.assertRaisesRegex(SessionError, "too many entries"):
+                session_history(environ=environment)
+            self.assertLess(time.monotonic() - started, 1.0)
+
+            # Retention housekeeping remains best-effort and must not prevent
+            # a new session from recording its first event under a same-UID flood.
+            append_event(session_id, "session-started", environment)
+            self.assertTrue(path.is_file())
 
     def test_stop_request_replaces_links_without_touching_their_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

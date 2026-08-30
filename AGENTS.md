@@ -125,6 +125,9 @@ Security review checklist:
 - Bound periodic and persistent state as well as request input: journals,
   pending-request maps, retries, queues, and caches must remain bounded for an
   indefinitely long cast.
+- Bound directory enumeration and the number of decoded records independently
+  of per-file byte limits. A private same-UID directory and a small file do not
+  make entry floods or many tiny records safe.
 - Audit the built artifact for dormant entry points, package data, service
   policies, and assets—not only reachable CLI options and imported modules.
 - Prove companion compatibility with a side-effect-free, versioned, closed

@@ -2492,3 +2492,17 @@ Explicit simulations retain symbolic IDs because those paths cannot create a
 network, service-backed real cast, privileged request, or media process.
 Regressions cover malformed discovery metadata, generic UI/controller input,
 case canonicalization, pre-service refusal, and command/selection mismatch.
+
+### Bounded session-history enumeration (2026-08-31)
+
+Session event files were descriptor-anchored, private, size-bounded, and
+individually shape-bounded, but history still enumerated every directory entry
+and retained every decoded line. A same-UID process could therefore create
+many irrelevant names or many tiny valid events and amplify work beyond the
+per-file byte ceiling.
+
+History now stops after 256 directory entries and rejects a log after 512
+events, before retaining or parsing the next record. The ordinary 50-session
+retention policy is unchanged. Adversarial regressions cover both floods and
+prove that best-effort pruning failure does not prevent the active session from
+recording its first event.

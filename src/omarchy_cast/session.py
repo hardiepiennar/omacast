@@ -29,6 +29,8 @@ _EVENT_LOG_BYTES = 1_048_576
 _STOP_REQUEST_BYTES = 4_096
 _STOP_REQUEST_NAME = "stop-request.json"
 MAX_SESSION_LOGS = 50
+MAX_EVENT_DIRECTORY_ENTRIES = 256
+MAX_EVENTS_PER_SESSION = 512
 
 
 class SessionError(RuntimeError):
@@ -94,8 +96,12 @@ def _open_event_directory(environ: Mapping[str, str] | None, *, create: bool) ->
 
 def _event_candidates(directory_descriptor: int, *, exclude: str | None = None) -> list[tuple[int, str]]:
     candidates: list[tuple[int, str]] = []
+    entries_seen = 0
     with os.scandir(directory_descriptor) as entries:
         for entry in entries:
+            entries_seen += 1
+            if entries_seen > MAX_EVENT_DIRECTORY_ENTRIES:
+                raise SessionError("session history directory contains too many entries")
             if entry.name == exclude or not _EVENT_LOG_NAME.fullmatch(entry.name):
                 continue
             try:
@@ -196,6 +202,8 @@ def _read_events(path: Path, *, directory_fd: int | None = None) -> list[dict[st
         raise SessionError("session event log is unavailable or exceeds the safe boundary") from exc
     events: list[dict[str, object]] = []
     for line in text.splitlines():
+        if len(events) >= MAX_EVENTS_PER_SESSION:
+            raise SessionError("session event log contains too many events")
         try:
             event = json.loads(line)
             validate_json_budget(event)
