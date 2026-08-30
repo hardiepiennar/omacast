@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 from pathlib import Path
 import tempfile
@@ -211,10 +212,39 @@ class SessionTest(unittest.TestCase):
                 session_history(environ=environment)
             self.assertLess(time.monotonic() - started, 1.0)
 
-            # Retention housekeeping remains best-effort and must not prevent
-            # a new session from recording its first event under a same-UID flood.
-            append_event(session_id, "session-started", environment)
-            self.assertTrue(path.is_file())
+            # A same-UID entry flood must not make persistent history grow
+            # beyond its directory budget.
+            with self.assertRaisesRegex(SessionError, "too many entries"):
+                append_event(session_id, "session-started", environment)
+            self.assertFalse(path.exists())
+
+    def test_event_append_rejects_public_mode_without_repairing_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = self.environment(temp)
+            session_id = "9" * 32
+            path = event_log_path(session_id, environment)
+            path.parent.mkdir(mode=0o700, parents=True)
+            path.write_text("preserve\n", encoding="utf-8")
+            path.chmod(0o644)
+            with self.assertRaisesRegex(SessionError, "permissions"):
+                append_event(session_id, "test", environment)
+            self.assertEqual(path.read_text(encoding="utf-8"), "preserve\n")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+
+    def test_event_append_has_a_bounded_lock_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = self.environment(temp)
+            session_id = "8" * 32
+            path = event_log_path(session_id, environment)
+            path.parent.mkdir(mode=0o700, parents=True)
+            path.write_text("", encoding="utf-8")
+            path.chmod(0o600)
+            with path.open("rb") as locked:
+                fcntl.flock(locked.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                started = time.monotonic()
+                with self.assertRaisesRegex(SessionError, "history is busy"):
+                    append_event(session_id, "test", environment)
+                self.assertLess(time.monotonic() - started, 0.75)
 
     def test_stop_request_replaces_links_without_touching_their_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

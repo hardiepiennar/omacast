@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import errno
+import fcntl
 import heapq
 import json
 import os
@@ -94,13 +96,17 @@ def _open_event_directory(environ: Mapping[str, str] | None, *, create: bool) ->
         raise
 
 
-def _event_candidates(directory_descriptor: int, *, exclude: str | None = None) -> list[tuple[int, str]]:
+def _event_candidates(
+    directory_descriptor: int, *, exclude: str | None = None,
+    reserve_entry: bool = False,
+) -> list[tuple[int, str]]:
     candidates: list[tuple[int, str]] = []
     entries_seen = 0
     with os.scandir(directory_descriptor) as entries:
         for entry in entries:
             entries_seen += 1
-            if entries_seen > MAX_EVENT_DIRECTORY_ENTRIES:
+            limit = MAX_EVENT_DIRECTORY_ENTRIES - (1 if reserve_entry else 0)
+            if entries_seen > limit:
                 raise SessionError("session history directory contains too many entries")
             if entry.name == exclude or not _EVENT_LOG_NAME.fullmatch(entry.name):
                 continue
@@ -119,29 +125,37 @@ def _event_candidates(directory_descriptor: int, *, exclude: str | None = None) 
     return candidates
 
 
-def _prune_session_logs(current_session_id: str, environ: Mapping[str, str] | None) -> None:
-    """Keep bounded private history without ever following links."""
-    try:
-        directory_descriptor = _open_event_directory(environ, create=False)
+def _lock_descriptor(descriptor: int) -> None:
+    deadline = time.monotonic() + 0.25
+    while True:
         try:
-            candidates = sorted(
-                _event_candidates(directory_descriptor, exclude=f"{current_session_id}.jsonl"),
-                reverse=True,
-            )
-            removed: list[str] = []
-            for _, name in candidates[MAX_SESSION_LOGS - 1:]:
-                try:
-                    os.unlink(name, dir_fd=directory_descriptor)
-                except FileNotFoundError:
-                    continue
-                removed.append(name)
-        finally:
-            os.close(directory_descriptor)
-        for name in removed:
-            remove_archived_telemetry(name.removesuffix(".jsonl"), environ)
-    except (OSError, ValueError, SessionError):
-        # Retention housekeeping must never interrupt a cast lifecycle.
-        return
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                raise
+            if time.monotonic() >= deadline:
+                raise SessionError("session history is busy") from exc
+            time.sleep(0.01)
+
+
+def _prune_session_logs(directory_descriptor: int, current_session_id: str) -> list[str]:
+    """Reserve one bounded private history entry without following links."""
+    candidates = sorted(
+        _event_candidates(
+            directory_descriptor, exclude=f"{current_session_id}.jsonl",
+            reserve_entry=True,
+        ),
+        reverse=True,
+    )
+    removed: list[str] = []
+    for _, name in candidates[MAX_SESSION_LOGS - 1:]:
+        try:
+            os.unlink(name, dir_fd=directory_descriptor)
+        except FileNotFoundError:
+            continue
+        removed.append(name)
+    return removed
 
 
 def append_event(session_id: str, event: str, environ: Mapping[str, str] | None = None, **fields: object) -> Path:
@@ -154,21 +168,27 @@ def append_event(session_id: str, event: str, environ: Mapping[str, str] | None 
         raise SessionError("session event exceeds the safe data boundary") from exc
     directory_descriptor = _open_event_directory(environ, create=True)
     descriptor = -1
+    removed: list[str] = []
     try:
+        if event == "session-started":
+            _lock_descriptor(directory_descriptor)
+            removed = _prune_session_logs(directory_descriptor, session_id)
         flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         try:
             descriptor = os.open(path.name, flags, 0o600, dir_fd=directory_descriptor)
         except OSError as exc:
             raise SessionError("session event log is unavailable or unsafe") from exc
+        _lock_descriptor(descriptor)
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise SessionError("session event log is not a regular file")
         if metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
             raise SessionError("session event log ownership or link count is unsafe")
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise SessionError("session event log permissions are unsafe")
         if metadata.st_size + len(encoded) > _EVENT_LOG_BYTES:
             raise SessionError("session event log exceeds the safe size limit")
-        os.fchmod(descriptor, 0o600)
         view = memoryview(encoded)
         while view:
             written = os.write(descriptor, view)
@@ -180,8 +200,8 @@ def append_event(session_id: str, event: str, environ: Mapping[str, str] | None 
         if descriptor >= 0:
             os.close(descriptor)
         os.close(directory_descriptor)
-    if event == "session-started":
-        _prune_session_logs(session_id, environ)
+    for name in removed:
+        remove_archived_telemetry(name.removesuffix(".jsonl"), environ)
     return path
 
 
