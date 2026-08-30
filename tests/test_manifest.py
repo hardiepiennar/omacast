@@ -95,6 +95,8 @@ class ManifestTest(unittest.TestCase):
         self.assertNotIn("omacast-preview", panel)
         self.assertIn("systemReady() && receiverId && !planProc.running", panel)
         self.assertIn("function normalizeSession(value)", panel)
+        self.assertIn('typeof value === "number" && isFinite(value) ? value : 0', panel)
+        self.assertNotIn("var number = Number(value)", panel)
         self.assertIn("component ReceiverButton: Button", panel)
         self.assertIn("textFormat: Text.PlainText", panel)
         self.assertIn("result.length < maxReceivers", panel)

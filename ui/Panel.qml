@@ -145,8 +145,7 @@ Panel {
   }
 
   function finiteNumber(value) {
-    var number = Number(value)
-    return isFinite(number) ? number : 0
+    return typeof value === "number" && isFinite(value) ? value : 0
   }
 
   function normalizeProcess(value) {
