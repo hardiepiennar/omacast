@@ -548,6 +548,9 @@ network_manager_marker_valid
         self.assertIn("PYTHONPATH=src python -m unittest discover -s tests", recipe)
         self.assertNotIn("PYSTRAY_BACKEND", recipe)
         depends = recipe.split("depends=(", 1)[1].split(")", 1)[0]
+        self.assertIn("'python>=3.14'", depends)
+        self.assertIn("'python<3.15'", depends)
+        self.assertNotIn("'python'", depends)
         for dependency in ("ffmpeg", "networkmanager", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2", "util-linux", "glib2"):
             self.assertIn(f"'{dependency}'", depends)
         for removed in (
@@ -989,7 +992,7 @@ reclaim_orphan_interfaces
         self.assertIn("packaged engine retains excluded module", audit)
         self.assertIn("packaged engine retains UIBC input surface", audit)
         self.assertIn("package retains legacy integration payload", audit)
-        self.assertIn("for dependency in python gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw libpulse", audit)
+        self.assertIn("for dependency in 'python>=3.14' 'python<3.15' gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw libpulse", audit)
         self.assertIn("packaged engine retains unbounded subprocess capture", audit)
         self.assertIn("packaged engine lacks bounded subprocess capture", audit)
         self.assertIn("--omacast-contract-json", audit)

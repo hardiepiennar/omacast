@@ -253,7 +253,9 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   dump modules. Companion revision 68 carries this unprivileged engine
   contract; guard API 14 is unchanged. Patch 48 adds a closed JSON engine
   contract so readiness proves this behavior structurally instead of inferring
-  it from help text. Companion revision 69 requires engine contract API 1.
+  it from help text. Companion revision 70 requires engine contract API 1 and
+  pins the downloadable package to Python 3.14's minor-versioned installation
+  path; guard API 14 is unchanged.
 - Direct-supplicant readiness no longer depends on dnsmasq. The supported
   laptop-as-P2P-client topology receives DHCP from the receiver; dnsmasq stays
   a requirement only for FluxCast's separate NetworkManager group-owner path.

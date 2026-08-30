@@ -2473,7 +2473,7 @@ profile, guarded supplicant mode, and controller-owned telemetry. The
 controller bounds JSON depth, nodes, collections, and strings, then requires
 exact structural equality; extra fields, wrong values, deeply nested input,
 old help text, and malformed JSON are incompatible. The built-package audit
-executes and compares the same contract. Companion revision 69 requires engine
+executes and compares the same contract. Companion revision 70 requires engine
 contract API 1 while retaining guard API 14.
 
 ### Canonical receiver identity through launch (2026-08-31)
@@ -2515,3 +2515,18 @@ allowlist did not verify it. The release audit now requires that dependency
 alongside every other shipped command provider. A candidate whose recipe looks
 correct but whose `.PKGINFO` omits desktop-audio support therefore fails before
 installation. Runtime behavior and package revision are unchanged.
+
+### Explicit companion Python ABI range (2026-08-31)
+
+The companion wheel is pure Python, but Arch installs it below a minor-
+versioned path such as `/usr/lib/python3.14/site-packages`. An unconstrained
+`python` dependency could therefore remain satisfied after a Python 3.15
+upgrade while neither the `fluxcast` entry point nor the controller's scanner
+could import the installed 3.14 modules.
+
+Companion revision 70 declares `python>=3.14` and `python<3.15`, and the built-
+artifact audit requires both constraints. A future Python-minor transition now
+fails package resolution visibly until the companion is rebuilt and its
+revision and range are updated; it cannot silently pass readiness with modules
+installed for a different interpreter path. Guard API 14 and engine contract
+API 1 are unchanged.

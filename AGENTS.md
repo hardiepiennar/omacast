@@ -130,6 +130,10 @@ Security review checklist:
   make entry floods or many tiny records safe.
 - Audit the built artifact for dormant entry points, package data, service
   policies, and assets—not only reachable CLI options and imported modules.
+- For Python artifacts installed into a minor-versioned `site-packages` path,
+  encode and audit the compatible interpreter-minor range. On a Python-minor
+  transition, rebuild and bump the package instead of allowing a silently
+  unimportable old path.
 - Prove companion compatibility with a side-effect-free, versioned, closed
   machine-readable contract and exact value comparison. Help-text substring
   searches are presentation checks only and must never authorize execution.
