@@ -11,6 +11,7 @@ import unittest
 from omarchy_cast.bounds import MAX_TELEMETRY_BYTES
 from omarchy_cast.telemetry import (
     BoundedOutputCollector,
+    MAX_DESCENDANT_PROCESSES,
     MAX_ARCHIVED_TELEMETRY_BYTES,
     MAX_ENGINE_LOG_BYTES,
     TelemetrySampler,
@@ -292,6 +293,30 @@ class TelemetryTest(unittest.TestCase):
             os.link(target, linked)
             self.assertEqual(_bounded_read(linked, require_single_link=True), "")
             self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+
+    def test_periodic_process_tree_and_baseline_cache_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            proc_root = Path(temp)
+            task = proc_root / "100" / "task" / "100"
+            task.mkdir(parents=True)
+            task.joinpath("children").write_text(
+                " ".join(str(pid) for pid in range(101, 1_000)), encoding="ascii",
+            )
+            sampler = TelemetrySampler(
+                session_id="a" * 32, engine_pid=100, wifi_interface="wlan42",
+                environ={"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")},
+            )
+            descendants = sampler._descendants(proc_root)
+            self.assertEqual(descendants[0], 100)
+            self.assertEqual(len(descendants), MAX_DESCENDANT_PROCESSES)
+
+            sampler._previous_process = {100: (0, 0, 0, 0, 0, 0, 0), 999: (0, 0, 0, 0, 0, 0, 0)}
+            with unittest.mock.patch.object(sampler, "_descendants", return_value=[100]), unittest.mock.patch.object(
+                sampler, "_process", return_value=None,
+            ):
+                sampler._processes(1.0)
+            self.assertEqual(set(sampler._previous_process), {100})
+            sampler.stop()
 
     def test_packet_timing_reports_audio_video_gaps_and_skew(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

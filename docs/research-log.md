@@ -2544,3 +2544,18 @@ typed version document rather than accepting extra fields. Regressions inject
 boolean revisions at each affected layer. Companion revision 71 carries the
 broker change; valid schema-1 clients, guard API 14, and engine contract API 1
 are unchanged.
+
+### Bounded periodic process telemetry (2026-08-31)
+
+Nerd Mode bounded its output files but still traversed every engine descendant,
+task, and file descriptor on each sample, read `/proc/net` without a byte
+ceiling, and retained exited-PID baselines for the life of the cast. Child
+churn or a misbehaving engine could therefore make an otherwise indefinite
+session consume increasing memory or sampling time.
+
+Telemetry now caps a sample at 64 descendants, 256 tasks and child IDs per
+process, 1,024 descriptors, 64 KiB per process record, and 1 MiB per kernel
+socket table. Its PID baseline cache is pruned to the current bounded process
+set on every sample. The telemetry path remains observational and fail-closed;
+reaching a cap can hide Nerd Mode detail but cannot stop or mutate the stream.
+Regressions exercise oversized child sets and stale-cache pruning.

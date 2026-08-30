@@ -16,7 +16,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .guard import GuardRequest, prepare_command, validate_helper_result
 from .identity import receiver_address
-from .telemetry import BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, cleanup_live_telemetry
+from .telemetry import MAX_PROCESS_DESCRIPTORS, MAX_PROC_NETWORK_BYTES, BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, cleanup_live_telemetry
 
 
 CONNECT_TIMEOUT_SECONDS = 75
@@ -388,7 +388,9 @@ class GuardedTransportAdapter:
         inodes: set[str] = set()
         try:
             descriptors = Path(f"/proc/{pid}/fd").iterdir()
-            for descriptor in descriptors:
+            for descriptor_index, descriptor in enumerate(descriptors):
+                if descriptor_index >= MAX_PROCESS_DESCRIPTORS:
+                    break
                 try:
                     target = str(descriptor.readlink())
                 except OSError:
@@ -406,8 +408,8 @@ class GuardedTransportAdapter:
         if not owned:
             return False
         try:
-            lines = Path("/proc/net/tcp").read_text(encoding="ascii").splitlines()[1:]
-        except OSError:
+            lines = _bounded_read(Path("/proc/net/tcp"), MAX_PROC_NETWORK_BYTES).splitlines()[1:]
+        except (OSError, ValueError):
             return False
         for line in lines:
             fields = line.split()

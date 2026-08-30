@@ -23,6 +23,12 @@ _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _NUMBER = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
 MAX_ARCHIVED_TELEMETRY_BYTES = 8 * 1024 * 1024
 MAX_ENGINE_LOG_BYTES = 256 * 1024
+MAX_DESCENDANT_PROCESSES = 64
+MAX_TASKS_PER_PROCESS = 256
+MAX_CHILD_IDS_PER_PROCESS = 256
+MAX_PROCESS_DESCRIPTORS = 1_024
+MAX_PROC_NETWORK_BYTES = 1_048_576
+MAX_PROC_RECORD_BYTES = 65_536
 _LIVE_FILENAMES = frozenset({"current.json", "ffmpeg.progress", "mux-packets.csv", "engine.jsonl", "engine.log"})
 _PATH_KEYS = {
     "current": "current.json",
@@ -565,40 +571,46 @@ class TelemetrySampler:
         if self._owns_workspace:
             self._workspace.close()
 
-    def _descendants(self) -> list[int]:
+    def _descendants(self, proc_root: Path = Path("/proc")) -> list[int]:
         found: list[int] = []
+        seen: set[int] = set()
         pending = [self.engine_pid]
-        while pending:
+        while pending and len(found) < MAX_DESCENDANT_PROCESSES:
             pid = pending.pop()
-            if pid in found:
+            if pid in seen:
                 continue
+            seen.add(pid)
             found.append(pid)
             children: list[str] = []
             try:
-                tasks = Path(f"/proc/{pid}/task").iterdir()
-                for task in tasks:
-                    try:
-                        children.extend((task / "children").read_text().split())
-                    except OSError:
-                        pass
+                for task_index, task in enumerate((proc_root / str(pid) / "task").iterdir()):
+                    if task_index >= MAX_TASKS_PER_PROCESS or len(children) >= MAX_CHILD_IDS_PER_PROCESS:
+                        break
+                    for child in _bounded_read(task / "children", 4_096).split():
+                        if len(children) >= MAX_CHILD_IDS_PER_PROCESS:
+                            break
+                        if child.isascii() and child.isdigit() and len(child) <= 10:
+                            children.append(child)
             except OSError:
                 pass
-            pending.extend(int(child) for child in children if child.isdigit())
+            remaining = max(0, MAX_DESCENDANT_PROCESSES - len(found) - len(pending))
+            pending.extend(int(child) for child in children[:remaining])
         return found
 
     def _process(self, pid: int, now: float) -> dict[str, int | float | str] | None:
         try:
-            stat = Path(f"/proc/{pid}/stat").read_text()
+            proc = Path("/proc") / str(pid)
+            stat = _bounded_read(proc / "stat", MAX_PROC_RECORD_BYTES)
             closing = stat.rfind(")")
             name = stat[stat.find("(") + 1:closing]
             fields = stat[closing + 2:].split()
             ticks = float(fields[11]) + float(fields[12])
             rss_kib = int(fields[21]) * os.sysconf("SC_PAGE_SIZE") // 1024
-            sched = Path(f"/proc/{pid}/schedstat").read_text().split()
+            sched = _bounded_read(proc / "schedstat", MAX_PROC_RECORD_BYTES).split()
             delay_ns = float(sched[1]) if len(sched) >= 2 else 0.0
-            command = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0", 1)[0].decode(errors="replace")
+            command = _bounded_read(proc / "cmdline", MAX_PROC_RECORD_BYTES).split("\0", 1)[0]
             io_fields = {}
-            for line in Path(f"/proc/{pid}/io").read_text().splitlines():
+            for line in _bounded_read(proc / "io", MAX_PROC_RECORD_BYTES).splitlines():
                 key, separator, value = line.partition(":")
                 if separator:
                     io_fields[key] = int(value.strip())
@@ -627,7 +639,11 @@ class TelemetrySampler:
 
     def _processes(self, now: float) -> dict[str, object]:
         result: dict[str, object] = {}
-        for pid in self._descendants():
+        descendants = self._descendants()
+        for pid in tuple(self._previous_process):
+            if pid not in descendants:
+                self._previous_process.pop(pid, None)
+        for pid in descendants:
             sample = self._process(pid, now)
             if not sample:
                 continue
@@ -652,8 +668,8 @@ class TelemetrySampler:
     def _send_queue(self) -> int:
         suffix = f":{self.source_port:04X}"
         try:
-            lines = Path("/proc/net/udp").read_text().splitlines()[1:]
-        except OSError:
+            lines = _bounded_read(Path("/proc/net/udp"), MAX_PROC_NETWORK_BYTES).splitlines()[1:]
+        except (OSError, ValueError):
             return 0
         for line in lines:
             fields = line.split()
