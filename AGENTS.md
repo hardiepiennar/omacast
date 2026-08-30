@@ -103,6 +103,9 @@ Security review checklist:
 - Bound bytes before parsing or retaining them. Also cap JSON depth, nodes,
   collection counts, and strings; project only allowlisted fields into QML and
   render non-constant text with `Text.PlainText`.
+- Treat JSON decoding and shape validation as one failure boundary: catch
+  decoder recursion failures and apply the shape budget immediately after
+  decoding, before traversing or projecting any field.
 - For predictable runtime files, open with `O_NOFOLLOW`, `O_NONBLOCK`, and
   `O_CLOEXEC`; anchor child opens to validated parent directory descriptors.
   Use `fstat` on the opened descriptor to check type, owner, mode, size, and

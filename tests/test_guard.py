@@ -67,6 +67,11 @@ class GuardContractTest(unittest.TestCase):
             }), "")
 
         self.assertEqual(reclaim_orphan_interfaces("wlan42", uid=1000, runner=reclaim_runner)["reclaimed"], 1)
+        with self.assertRaises(GuardError):
+            reclaim_orphan_interfaces(
+                "wlan42", uid=1000,
+                runner=lambda args, timeout=5.0: CommandResult(tuple(args), 0, "[" * 2_000 + "0" + "]" * 2_000, ""),
+            )
         for payload in ({}, {"schemaVersion": True, "kind": "omarchy-cast-guard-reclaim-status", "ok": True, "reclaimed": 1}, {"schemaVersion": 1, "kind": "omarchy-cast-guard-reclaim-status", "ok": True, "reclaimed": 33}):
             with self.assertRaises(GuardError):
                 validate_reclaim_result(payload)

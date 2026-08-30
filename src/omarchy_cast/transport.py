@@ -256,7 +256,7 @@ class GuardedTransportAdapter:
                     raise TransportError(error or "The networking helper exited before it was ready.", code="guard-setup-failed")
                 try:
                     payload = validate_helper_result(json.loads(line))
-                except (json.JSONDecodeError, ValueError) as exc:
+                except (json.JSONDecodeError, ValueError, RecursionError) as exc:
                     raise TransportError("The networking helper returned an invalid readiness status.", code="guard-setup-failed") from exc
                 if payload.get("sessionId") != request.session_id:
                     raise TransportError("The networking helper status belongs to another session.", code="guard-setup-failed")
@@ -292,7 +292,7 @@ class GuardedTransportAdapter:
             return False
         try:
             payload = validate_helper_result(json.loads(lines[-1]))
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             return False
         return payload.get("sessionId") == request.session_id and payload.get("ok") is True and payload.get("phase") == "cleaned"
 

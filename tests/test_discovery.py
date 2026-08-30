@@ -57,10 +57,14 @@ class DiscoveryTest(unittest.TestCase):
         monitors = parse_hyprland_monitors(json.dumps([
             {"name": "bool", "width": True, "height": 1080, "refreshRate": 60},
             {"name": "huge", "width": 16_385, "height": 1080, "refreshRate": 60},
-            {"name": "refresh", "width": 1920, "height": 1080, "refreshRate": float("inf")},
+            {"name": "refresh", "width": 1920, "height": 1080, "refreshRate": "invalid"},
         ]))
         self.assertEqual([monitor.name for monitor in monitors], ["refresh"])
         self.assertEqual(monitors[0].refresh_rate, 0.0)
+        self.assertEqual(parse_hyprland_monitors(json.dumps([
+            {"name": "nonfinite", "width": 1920, "height": 1080, "refreshRate": float("inf")},
+        ])), [])
+        self.assertEqual(parse_hyprland_monitors("[" * 2_000 + "0" + "]" * 2_000), [])
 
     def test_parses_connected_and_disconnected_wifi_link(self) -> None:
         connected = parse_iw_link("wlan42", "Connected to aa:bb:cc:dd:ee:ff (on wlan42)\n\tSSID: Example Network\n\tfreq: 2412.0\n")
@@ -185,6 +189,7 @@ class DiscoveryTest(unittest.TestCase):
                     "profile": {**ENGINE_CONTRACT["profile"], "fps": 60.0},
                 }),
                 json.dumps({"nested": [[[[["too deep"]]]]]}),
+                "[" * 2_000 + "0" + "]" * 2_000,
             ):
                 with self.subTest(payload=payload[:40]):
                     def incompatible_runner(args, *, timeout=5.0):
@@ -203,6 +208,27 @@ class DiscoveryTest(unittest.TestCase):
                         "engine-incompatible",
                         {issue["code"] for issue in snapshot["readiness"]["issues"]},
                     )
+
+    def test_readiness_rejects_recursively_deep_guard_version_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            helpers = root / "helpers"
+            helpers.mkdir()
+            self.install_fake_helpers(helpers)
+
+            def deep_guard_runner(args, *, timeout=5.0):
+                if Path(args[0]).name == "omarchy-cast-guard":
+                    return CommandResult(tuple(args), 0, "[" * 2_000 + "0" + "]" * 2_000, "")
+                return self.ready_runner(args, timeout=timeout)
+
+            snapshot = discover_host(
+                runner=deep_guard_runner,
+                render_root=root / "dri",
+                guard_root=helpers,
+                command_finder=lambda name: f"/usr/bin/{name}",
+            )
+        guard = next(item for item in snapshot["helpers"] if item["name"] == "omarchy-cast-guard")
+        self.assertEqual(guard["status"], "incompatible")
 
     def test_readiness_rejects_buggy_guard_api_ten(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

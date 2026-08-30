@@ -292,6 +292,12 @@ class TransportTest(unittest.TestCase):
                 GuardedTransportAdapter._read_ready(process, request, lambda: False),
                 (f"/run/omarchy-cast/{session}/user/trigger", f"/run/omarchy-cast/{session}/supplicant.sock"),
             )
+        deep = io.StringIO("[" * 2_000 + "0" + "]" * 2_000 + "\n")
+        process = Mock(stdout=deep, stderr=io.StringIO(""))
+        process.poll.return_value = None
+        with patch("omarchy_cast.transport.select.select", return_value=((deep,), (), ())):
+            with self.assertRaisesRegex(TransportError, "invalid readiness"):
+                GuardedTransportAdapter._read_ready(process, request, lambda: False)
 
     def test_dismissed_authorization_is_an_actionable_no_change_failure(self) -> None:
         from omarchy_cast.guard import GuardRequest
@@ -326,6 +332,7 @@ class TransportTest(unittest.TestCase):
         self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(wrong), request))
         self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(cleaned, exited=False), request))
         self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process("x" * 65_537), request))
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process("[" * 2_000 + "0" + "]" * 2_000), request))
         closed = process(cleaned)
         closed.stdout.close()
         self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(closed, request))

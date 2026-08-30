@@ -2590,3 +2590,18 @@ liveness enumeration reaches its cap, it reports an unknown observation rather
 than falsely treating the group as absent and ending a healthy stream.
 Regressions exercise ordered entry floods, oversized counters and process
 fields, and render-node result saturation.
+
+### Total deep-JSON rejection (2026-08-31)
+
+Runtime JSON inputs were byte-bounded, and most were shape-validated after
+decoding, but several decoders did not handle recursive-depth failure. Monitor
+discovery also traversed decoded JSON without first applying the shared shape
+budget. A deeply nested helper, engine, state, telemetry, or Hyprland response
+could therefore escape the intended ordinary validation path.
+
+Every production JSON decoder now treats syntax, recursion, and shape-budget
+failures as the same controlled invalid-input outcome. Host monitor data and
+latency events receive a budget immediately after decoding; state, live
+telemetry, engine/guard compatibility, recovery, readiness, and cleanup paths
+all handle recursive input without leaking an exception. Regressions inject
+deep JSON independently at each of those layers.

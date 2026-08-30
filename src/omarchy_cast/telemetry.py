@@ -384,7 +384,7 @@ def read_telemetry(session_id: str, environ: Mapping[str, str] | None = None) ->
         )
         payload = json.loads(encoded.decode("utf-8"))
         validate_json_budget(payload, max_nodes=4_096)
-    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, BoundError):
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, BoundError, RecursionError):
         return None
     finally:
         if directory_descriptor >= 0:
@@ -797,7 +797,8 @@ class TelemetrySampler:
         for line in self._workspace.read_text("latency").splitlines():
             try:
                 event = json.loads(line)
-            except json.JSONDecodeError:
+                validate_json_budget(event, max_depth=6, max_nodes=64, max_collection_items=32, max_string_chars=512)
+            except (json.JSONDecodeError, BoundError, RecursionError):
                 continue
             if isinstance(event, dict) and event.get("event") == "media_starting":
                 mode = str(event.get("mode", ""))

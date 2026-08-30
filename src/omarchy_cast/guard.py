@@ -12,7 +12,7 @@ import json
 import os
 import re
 
-from .bounds import bounded_text
+from .bounds import BoundError, bounded_text, validate_json_budget
 from .command import Runner, run_command
 from .identity import receiver_address
 
@@ -128,12 +128,16 @@ def reclaim_orphan_interfaces(
         raise GuardError(bounded_text(detail.splitlines()[0], limit=240))
     try:
         payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise GuardError("guard returned invalid P2P recovery status") from exc
     return validate_reclaim_result(payload)
 
 
 def validate_reclaim_result(payload: object) -> dict[str, object]:
+    try:
+        validate_json_budget(payload, max_depth=2, max_nodes=8, max_collection_items=8, max_string_chars=64)
+    except BoundError as exc:
+        raise GuardError("guard returned an oversized P2P recovery status") from exc
     if not isinstance(payload, dict) or set(payload) != {"schemaVersion", "kind", "ok", "reclaimed"}:
         raise GuardError("guard returned an unexpected P2P recovery status")
     if type(payload.get("schemaVersion")) is not int or payload.get("schemaVersion") != 1 or payload.get("kind") != "omarchy-cast-guard-reclaim-status" or payload.get("ok") is not True:
@@ -146,6 +150,10 @@ def validate_reclaim_result(payload: object) -> dict[str, object]:
 
 def validate_helper_result(payload: object) -> dict[str, object]:
     """Accept only the narrow status document returned by the helper."""
+    try:
+        validate_json_budget(payload, max_depth=2, max_nodes=16, max_collection_items=12, max_string_chars=256)
+    except BoundError as exc:
+        raise GuardError("guard returned an oversized status document") from exc
     if not isinstance(payload, dict) or type(payload.get("schemaVersion")) is not int or payload.get("schemaVersion") != 1:
         raise GuardError("guard returned an unsupported status document")
     if payload.get("kind") != "omarchy-cast-guard-status":

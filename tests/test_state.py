@@ -194,6 +194,16 @@ class StateTest(unittest.TestCase):
         with self.assertRaisesRegex(StateError, "nested too deeply"):
             transition(idle_state(), "checking", sessionId=SESSION_ID, request=nested)
 
+    def test_runtime_state_rejects_recursively_deep_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            path = state_path(environment)
+            path.parent.mkdir(mode=0o700)
+            path.write_text("[" * 2_000 + "0" + "]" * 2_000, encoding="ascii")
+            path.chmod(0o600)
+            with self.assertRaises(StateError):
+                read_state(environment)
+
     def test_session_lock_allows_exactly_one_owner(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             environment = {"XDG_RUNTIME_DIR": temp}

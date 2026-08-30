@@ -68,6 +68,8 @@ class TelemetryTest(unittest.TestCase):
             self.assertEqual(read_telemetry(session_id, environment), payload)
             paths["current"].write_text(json.dumps({**payload, "schemaVersion": True}))
             self.assertIsNone(read_telemetry(session_id, environment))
+            paths["current"].write_text("[" * 2_000 + "0" + "]" * 2_000, encoding="ascii")
+            self.assertIsNone(read_telemetry(session_id, environment))
             with self.assertRaisesRegex(ValueError, "controller-issued"):
                 telemetry_paths("unsafe", environment)
 
@@ -410,7 +412,8 @@ class TelemetryTest(unittest.TestCase):
             environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
             sampler = TelemetrySampler(session_id="a" * 32, engine_pid=999999, wifi_interface="wlan42", environ=environment)
             sampler.paths["latency"].write_text(
-                json.dumps({"event": "media_starting", "mode": "99999x1080p60", "tv_ip": "192.0.2.1"}) + "\n",
+                "[" * 2_000 + "0" + "]" * 2_000 + "\n"
+                + json.dumps({"event": "media_starting", "mode": "99999x1080p60", "tv_ip": "192.0.2.1"}) + "\n",
                 encoding="utf-8",
             )
             sampler.paths["latency"].chmod(0o600)

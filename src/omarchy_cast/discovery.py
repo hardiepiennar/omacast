@@ -68,7 +68,8 @@ def parse_hyprland_monitors(text: str) -> list[Monitor]:
     """Read Hyprland's documented JSON surface; malformed rows are ignored."""
     try:
         entries = json.loads(text)
-    except json.JSONDecodeError:
+        validate_json_budget(entries, max_nodes=512, max_collection_items=128, max_string_chars=512)
+    except (json.JSONDecodeError, BoundError, RecursionError):
         return []
     if not isinstance(entries, list):
         return []
@@ -196,7 +197,8 @@ def _check_helpers(guard_root: Path, runner: Runner) -> list[dict[str, object]]:
             result = runner((str(path), "--version"))
             try:
                 payload = json.loads(result.stdout) if result.returncode == 0 else None
-            except json.JSONDecodeError:
+                validate_json_budget(payload, max_depth=2, max_nodes=8, max_collection_items=8, max_string_chars=64)
+            except (json.JSONDecodeError, BoundError, RecursionError):
                 payload = None
             if not _exact_json_value(payload, GUARD_VERSION_CONTRACT):
                 status = "incompatible"
@@ -221,7 +223,7 @@ def _engine_capabilities(runner: Runner) -> dict[str, object]:
                 payload, max_depth=4, max_nodes=24,
                 max_collection_items=8, max_string_chars=64,
             )
-        except (json.JSONDecodeError, BoundError):
+        except (json.JSONDecodeError, BoundError, RecursionError):
             payload = None
     compatible = _exact_json_value(payload, ENGINE_CONTRACT)
     return {

@@ -262,7 +262,8 @@ def read_state(environ: Mapping[str, str] | None = None) -> dict[str, object]:
         raise StateError("cannot read runtime state: " + bounded_text(str(exc), limit=240)) from exc
     try:
         loaded = json.loads(encoded.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        validate_json_budget(loaded)
+    except (UnicodeDecodeError, json.JSONDecodeError, BoundError, RecursionError) as exc:
         raise StateError("cannot read runtime state: invalid JSON") from exc
     if not isinstance(loaded, dict):
         raise StateError("runtime state must be an object")
