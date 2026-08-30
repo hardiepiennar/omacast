@@ -231,7 +231,7 @@ grep -Fq -- '--protocol {wfd}' "$audit_root/fluxcast-help.txt" || die "packaged 
 for surface in '--tray' '{dlna,cast,wfd}' 'DLNA / Cast Options' '--wfd-uibc'; do
   ! grep -Fq -- "$surface" "$audit_root/fluxcast-help.txt" || die "packaged engine exposes a non-WFD protocol: $surface"
 done
-for module in cast dlna ui server.py drivers/uibc.py; do
+for module in cast dlna ui server.py drivers/uibc.py wfd/ts_probe.py; do
   [[ ! -e "$site_packages/$module" ]] || die "packaged engine retains excluded module: $module"
 done
 ! grep -R -Fq -- 'wfd_uibc' "$site_packages" || die "packaged engine retains UIBC input surface"

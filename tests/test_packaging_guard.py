@@ -541,7 +541,7 @@ network_manager_marker_valid
 
     def test_recipe_installs_the_immutable_privilege_boundary(self) -> None:
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
-        self.assertIn("pkgrel=74", recipe)
+        self.assertIn("pkgrel=75", recipe)
         self.assertIn('omarchy-cast-guard"', recipe)
         self.assertIn('omarchy-cast-guard-recover"', recipe)
         self.assertIn('omarchy-cast-supplicant-broker"', recipe)
@@ -917,11 +917,11 @@ reclaim_orphan_interfaces
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(series), 44)
+        self.assertEqual(len(series), 45)
         expected_numbers = (
             [f"{number:04d}" for number in range(1, 7)]
             + [f"{number:04d}" for number in range(9, 23)]
-            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041", "0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050"]
+            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041", "0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051"]
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:
@@ -1067,6 +1067,7 @@ reclaim_orphan_interfaces
         self.assertIn("--wfd-supplicant-broker", audit)
         self.assertIn("packaged engine exposes a non-WFD protocol", audit)
         self.assertIn("packaged engine retains excluded module", audit)
+        self.assertIn("wfd/ts_probe.py", audit)
         self.assertIn("packaged engine retains UIBC input surface", audit)
         self.assertIn("package retains legacy integration payload", audit)
         self.assertIn("for dependency in 'python>=3.14' 'python<3.15' gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw libpulse", audit)

@@ -31,8 +31,9 @@
   boundaries; reject coerced scalar types and incomplete liveness observations.
 - Drain long-lived helper output throughout the session and terminate timed-out
   engine command process groups, including descendants that retain output
-  pipes. Companion revision 74 carries production patches 49 and 50; guard API
-  14 and engine contract API 1 are unchanged.
+  pipes. Production patch 51 also removes the unused transport-dump analyzer
+  from the installed engine. Companion revision 75 carries patches 49–51;
+  guard API 14 and engine contract API 1 are unchanged.
 - Close the controller's phase-specific runtime-state protocol and apply a
   shape budget before decoded controller data reaches QML.
 

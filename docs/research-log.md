@@ -2715,3 +2715,10 @@ engine contract API 1 remain unchanged. All evidence recorded for revision 72
 predates this architecture and does not validate the revision-74 candidate;
 the exact build, artifact, lifecycle, installed-readiness, and receiver gates
 must be rerun.
+
+The built-payload review then found the unreferenced `wfd/ts_probe.py` transport
+dump analyzer still installed even though patch 47 had removed its tests and
+the production contract forbids transport dumps. Patch 51 deletes that dormant
+module and the artifact audit now rejects it. Companion revision 75 supersedes
+revision 74 as the candidate, so revision-74 build and lifecycle results do not
+validate the final payload.
