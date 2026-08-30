@@ -1,0 +1,80 @@
+From d3a7dcbd4e11cdec10f97d9bc6cd48cc662fc1db Mon Sep 17 00:00:00 2001
+From: Omacast Maintainers <4540086+hardiepienaar@users.noreply.github.com>
+Date: Mon, 31 Aug 2026 08:08:30 +1200
+Subject: [PATCH] Kill bounded command process groups
+
+---
+ src/wfd/proc.py        |  8 ++++++--
+ tests/test_wfd_proc.py | 17 +++++++++++++++++
+ 2 files changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/src/wfd/proc.py b/src/wfd/proc.py
+index d1d181a..72f6ac9 100644
+--- a/src/wfd/proc.py
++++ b/src/wfd/proc.py
+@@ -1,6 +1,7 @@
+ import locale
+ import os
+ import selectors
++import signal
+ import subprocess
+ import time
+ from collections.abc import Mapping
+@@ -19,8 +20,10 @@ def _decode_output(value: bytearray) -> str:
+ 
+ 
+ def _stop(process: "subprocess.Popen[bytes]") -> None:
+-    if process.poll() is None:
+-        process.kill()
++    try:
++        os.killpg(process.pid, signal.SIGKILL)
++    except ProcessLookupError:
++        pass
+     process.wait()
+ 
+ 
+@@ -34,6 +37,7 @@ def _run(
+         stdout=subprocess.PIPE,
+         stderr=subprocess.PIPE,
+         env=env,
++        start_new_session=True,
+     )
+     assert process.stdout is not None and process.stderr is not None
+ 
+diff --git a/tests/test_wfd_proc.py b/tests/test_wfd_proc.py
+index e49d932..52afb99 100644
+--- a/tests/test_wfd_proc.py
++++ b/tests/test_wfd_proc.py
+@@ -1,5 +1,8 @@
+ import subprocess
+ import sys
++import tempfile
++import time
++from pathlib import Path
+ import unittest
+ 
+ from wfd.proc import CommandOutputLimitExceeded, MAX_COMMAND_OUTPUT_BYTES, _run
+@@ -33,6 +36,20 @@ class BoundedCommandTests(unittest.TestCase):
+         with self.assertRaises(subprocess.TimeoutExpired):
+             _run([sys.executable, "-c", "import time; time.sleep(1)"], timeout=0.05)
+ 
++    def test_timeout_kills_descendants_that_inherit_output_pipes(self):
++        with tempfile.TemporaryDirectory() as directory:
++            marker = Path(directory) / "survived"
++            child = (
++                "import subprocess,sys\n"
++                "subprocess.Popen([sys.executable, '-c', "
++                "'import pathlib,sys,time; time.sleep(0.4); pathlib.Path(sys.argv[1]).write_text(\"survived\")', "
++                "sys.argv[1]])\n"
++            )
++            with self.assertRaises(subprocess.TimeoutExpired):
++                _run([sys.executable, "-c", child, str(marker)], timeout=0.05)
++            time.sleep(0.5)
++            self.assertFalse(marker.exists())
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+-- 
+2.55.0
+
