@@ -87,7 +87,7 @@ class CliTest(unittest.TestCase):
             "renderNodes": [],
         }
         with patch("omarchy_cast.cli.discover_host", return_value=host):
-            code, payload = self.invoke(["plan", "--peer", "tv-01", "--profile", "safe"])
+            code, payload = self.invoke(["plan", "--peer", "AA:BB:CC:DD:EE:FF", "--profile", "safe"])
         self.assertEqual(code, 0)
         self.assertTrue(payload["readOnly"])
         self.assertEqual(payload["selection"]["monitor"], "eDP-1")
@@ -103,14 +103,14 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch.dict("os.environ", {
             "XDG_RUNTIME_DIR": temp, "XDG_STATE_HOME": temp,
         }, clear=False), patch("omarchy_cast.cli.discover_host", return_value=host):
-            code, payload = self.invoke(["dry-run", "--peer", "tv-01"])
+            code, payload = self.invoke(["dry-run", "--peer", "AA:BB:CC:DD:EE:FF"])
         self.assertEqual(code, 0)
         self.assertTrue(payload["dryRun"])
 
     def test_receiver_fixture_and_live_scan_share_the_ui_contract(self) -> None:
         code, payload = self.invoke(["receivers", "--fixture"])
         self.assertEqual(code, 0)
-        self.assertEqual(payload["receivers"][0]["id"], "demo-fire-tv-lounge")
+        self.assertEqual(payload["receivers"][0]["id"], "02:00:00:00:00:FE")
         live = FixtureReceiverDiscovery([{"id": "AA:BB:CC:DD:EE:FF", "name": "Living room TV", "kind": "wfd-display", "capabilities": ["miracast", "audio", "video"]}])
         with patch("omarchy_cast.cli.read_state", return_value={"phase": "idle"}), patch("omarchy_cast.cli.discover_host", return_value={"wifiLinks": [{"interface": "wlan42", "connected": True}]}), patch("omarchy_cast.cli.FluxCastReceiverDiscovery", return_value=live):
             code, payload = self.invoke(["scan", "--timeout", "4"])
@@ -128,7 +128,7 @@ class CliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch.dict("os.environ", {
             "XDG_CONFIG_HOME": temp, "XDG_RUNTIME_DIR": temp, "XDG_STATE_HOME": temp,
         }, clear=False), patch("omarchy_cast.cli.discover_host", return_value=host):
-            code, payload = self.invoke(["transport-test", "--peer", "tv-01", "--scenario", "success"])
+            code, payload = self.invoke(["transport-test", "--peer", "AA:BB:CC:DD:EE:FF", "--scenario", "success"])
         self.assertEqual(code, 0)
         self.assertTrue(payload["transportTest"])
         self.assertEqual(payload["transport"]["status"], "completed")
@@ -162,6 +162,15 @@ class CliTest(unittest.TestCase):
             code, payload = self.invoke(["start", "--peer", "tv-01"])
         self.assertEqual(code, 1)
         self.assertEqual(payload["error"]["code"], "session-start-failed")
+        launch.assert_not_called()
+
+    def test_start_rejects_a_symbolic_receiver_before_spawning_a_service(self) -> None:
+        with patch("omarchy_cast.cli.read_state", return_value={"phase": "idle"}), patch(
+            "omarchy_cast.cli.start_session_service"
+        ) as launch:
+            code, payload = self.invoke(["start", "--peer", "tv-01"])
+        self.assertEqual(code, 1)
+        self.assertIn("MAC address", payload["error"]["message"])
         launch.assert_not_called()
 
     def test_stop_cancels_a_pending_service_while_runtime_state_is_idle(self) -> None:

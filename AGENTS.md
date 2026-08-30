@@ -92,6 +92,10 @@ Security review checklist:
 
 - Treat wireless metadata, subprocess output, controller JSON, runtime files,
   and every predictable same-UID path as untrusted input.
+- Keep security-relevant identities canonical across discovery, UI projection,
+  service launch, execution-plan validation, privileged requests, and engine
+  arguments. A display label or generic stable ID must never substitute for a
+  validated receiver MAC on a real cast path.
 - Privileged subprocesses must drain stdout and stderr concurrently, retain a
   fixed maximum per stream, and kill on overflow or deadline. Never use
   unbounded `capture_output`/`communicate` at a privileged boundary; test both

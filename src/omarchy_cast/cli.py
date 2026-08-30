@@ -12,6 +12,7 @@ from .bounds import MAX_UI_RESPONSE_BYTES, bounded_text
 from .discovery import discover_host
 from .engine import LaunchPlanError, build_launch_plan
 from .guard import GuardError, GuardRequest, orphan_parent_interfaces, reclaim_orphan_interfaces
+from .identity import receiver_address
 from .media_probe import MediaProbeError, probe_media
 from .receivers import DEMO_FIRE_TV, FixtureReceiverDiscovery, FluxCastReceiverDiscovery, ReceiverDiscoveryUnavailable, ReceiverError, discovery_payload
 from .service import ServiceError, start_session_service, stop_pending_session_service
@@ -60,17 +61,17 @@ def build_parser() -> argparse.ArgumentParser:
     receivers.add_argument("--fixture", action="store_true", help="return the deterministic development Fire TV fixture")
     receivers.add_argument("--timeout", type=int, default=8, help="Wi-Fi Direct scan duration in seconds (1-30)")
     plan = subcommands.add_parser("plan", help="preview the supported FluxCast command; read-only")
-    plan.add_argument("--peer", required=True, help="stable receiver identifier")
+    plan.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     plan.add_argument("--mode", choices=("mirror",), default="mirror")
     plan.add_argument("--profile", choices=("safe",), default="safe")
     plan.add_argument("--monitor", help="Hyprland output name; uses the focused output by default")
     dry_run = subcommands.add_parser("dry-run", help="exercise guarded supervision without an engine or network")
-    dry_run.add_argument("--peer", required=True, help="stable receiver identifier")
+    dry_run.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     dry_run.add_argument("--mode", choices=("mirror",), default="mirror")
     dry_run.add_argument("--profile", choices=("safe",), default="safe")
     dry_run.add_argument("--monitor", help="Hyprland output name; uses the focused output by default")
     transport_test = subcommands.add_parser("transport-test", help="exercise fake transport ownership; never invokes FluxCast")
-    transport_test.add_argument("--peer", required=True, help="stable receiver identifier")
+    transport_test.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     transport_test.add_argument("--mode", choices=("mirror",), default="mirror")
     transport_test.add_argument("--profile", choices=("safe",), default="safe")
     transport_test.add_argument("--monitor", help="Hyprland output name; uses the focused output by default")
@@ -80,13 +81,13 @@ def build_parser() -> argparse.ArgumentParser:
     media_probe = subcommands.add_parser("media-probe", help="encode one synthetic second locally; no capture or network")
     media_probe.add_argument("--profile", choices=("safe",), default="safe")
     start = subcommands.add_parser("start", help="start a cast in a shell-independent user service")
-    start.add_argument("--peer", required=True, help="stable receiver identifier")
+    start.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     start.add_argument("--mode", choices=("mirror",), default="mirror")
     start.add_argument("--profile", choices=("safe",), default="safe")
     start.add_argument("--duration", type=int, default=0, help="optional acceptance-test duration in seconds; 0 casts until stopped")
     start.add_argument("--simulate", action="store_true", help=argparse.SUPPRESS)
     connect = subcommands.add_parser("connect", help="run the supported guarded session (normally started by Omacast)")
-    connect.add_argument("--peer", required=True, help="stable receiver identifier")
+    connect.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     connect.add_argument("--mode", choices=("mirror",), default="mirror")
     connect.add_argument("--profile", choices=("safe",), default="safe")
     connect.add_argument("--simulate", action="store_true", help="exercise lifecycle only; never touches hardware")
@@ -195,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             state = read_state()
             if state["phase"] != "idle":
                 raise SessionError("another Omacast session is already active")
+            peer = args.peer if args.simulate else receiver_address(args.peer)
             duration = args.duration or (1 if args.simulate else 0)
             if args.simulate:
                 if not 1 <= duration <= 300:
@@ -203,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise SessionError("a bounded guarded session must run between 60 seconds and 24 hours")
             _emit(start_session_service(
                 executable=sys.argv[0],
-                peer=args.peer,
+                peer=peer,
                 mode=args.mode,
                 profile=args.profile,
                 duration=duration,
@@ -241,7 +243,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             mode = args.mode
             profile = args.profile
-            preview = build_launch_plan(discover_host(), peer=args.peer, mode=mode, profile=profile)
+            peer = receiver_address(args.peer)
+            preview = build_launch_plan(discover_host(), peer=peer, mode=mode, profile=profile)
             selection = preview["selection"]
             if not isinstance(selection, dict) or not isinstance(selection.get("wifiInterface"), str):
                 raise SessionError("host discovery did not provide a safe Wi-Fi interface")
@@ -254,11 +257,11 @@ def main(argv: list[str] | None = None) -> int:
                 session_id,
                 os.getuid(),
                 selection["wifiInterface"],
-                args.peer,
+                peer,
                 frequency if isinstance(frequency, int) else 0,
                 GUARD_LEASE_SECONDS,
             )
-            result = TransportTestSupervisor(GuardedTransportAdapter(request)).run(peer=args.peer, mode=mode, profile=profile, plan=executable_plan(preview), timeout_seconds=args.duration or None, session_id=session_id, executable=True, production=True)
+            result = TransportTestSupervisor(GuardedTransportAdapter(request)).run(peer=peer, mode=mode, profile=profile, plan=executable_plan(preview), timeout_seconds=args.duration or None, session_id=session_id, executable=True, production=True)
             _emit(result)
             return 0 if result["ok"] else 1
         except (LaunchPlanError, SessionError, StateError, ValueError) as exc:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .bounds import bounded_text
 from .command import Runner, run_command
+from .identity import receiver_address
 
 
 class ServiceError(RuntimeError):
@@ -29,6 +30,11 @@ def session_service_command(
     launcher = Path(executable).resolve()
     if not launcher.is_file():
         raise ServiceError("Omacast launcher is unavailable")
+    if not simulate:
+        try:
+            peer = receiver_address(peer)
+        except ValueError as exc:
+            raise ServiceError(str(exc)) from exc
     command = [
         "systemd-run",
         "--user",

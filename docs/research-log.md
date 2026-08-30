@@ -2475,3 +2475,20 @@ exact structural equality; extra fields, wrong values, deeply nested input,
 old help text, and malformed JSON are incompatible. The built-package audit
 executes and compares the same contract. Companion revision 69 requires engine
 contract API 1 while retaining guard API 14.
+
+### Canonical receiver identity through launch (2026-08-31)
+
+Receiver records and launch previews previously accepted a broad “stable ID”
+syntax. Live discovery normally supplied a MAC and the privileged guard later
+required one, but a malformed or symbolic value could still appear actionable
+in the panel and start a background user service before failing at the guard.
+
+One shared validator now canonicalizes receiver addresses to uppercase
+colon-delimited MACs. Live discovery discards malformed peer addresses; all
+receiver records and QML projection require the same form; real preview,
+launcher, controller, guard, and executable transport boundaries revalidate
+it. The panel no longer runs a preview against a symbolic placeholder.
+Explicit simulations retain symbolic IDs because those paths cannot create a
+network, service-backed real cast, privileged request, or media process.
+Regressions cover malformed discovery metadata, generic UI/controller input,
+case canonicalization, pre-service refusal, and command/selection mismatch.

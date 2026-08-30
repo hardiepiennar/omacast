@@ -9,9 +9,9 @@ import re
 from typing import Callable, Iterable, Mapping, Protocol
 
 from .bounds import bounded_text
+from .identity import receiver_address
 
 
-_RECEIVER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _ALLOWED_CAPABILITIES = frozenset({"miracast", "audio", "video"})
 MAX_RECEIVERS = 64
 MAX_DISCOVERY_PEERS = 256
@@ -73,12 +73,13 @@ def _wfd_device_type(details: str) -> int | None:
 
 
 def _receiver_from_record(record: Mapping[str, object]) -> Receiver:
-    receiver_id = record.get("id")
+    try:
+        receiver_id = receiver_address(record.get("id"))
+    except ValueError as exc:
+        raise ReceiverError("receiver id must be a Wi-Fi Direct MAC address") from exc
     name = record.get("name")
     kind = record.get("kind")
     capabilities = record.get("capabilities")
-    if not isinstance(receiver_id, str) or not _RECEIVER_ID.fullmatch(receiver_id):
-        raise ReceiverError("receiver id must be a stable identifier")
     if not isinstance(name, str) or not name.strip() or len(name.strip()) > 120:
         raise ReceiverError("receiver name must be a non-empty display label")
     if any(ord(character) < 32 or ord(character) == 127 for character in name):
@@ -155,7 +156,10 @@ class FluxCastReceiverDiscovery:
             # Information identifies a sink are valid cast targets.
             if _wfd_device_type(details) not in {1, 2, 3}:
                 continue
-            address = str(getattr(peer, "address", "")).upper()
+            try:
+                address = receiver_address(getattr(peer, "address", ""))
+            except ValueError:
+                continue
             advertised_name = str(getattr(peer, "name", "")).strip()
             name = advertised_name or f"Miracast display · {address[-5:]}"
             is_fire_tv = "fire tv" in advertised_name.casefold()
@@ -187,5 +191,5 @@ def discovery_payload(discovery: ReceiverDiscovery, *, timeout_seconds: float = 
 
 
 DEMO_FIRE_TV: tuple[dict[str, object], ...] = (
-    {"id": "demo-fire-tv-lounge", "name": "Fire TV · Lounge", "kind": "fire-tv", "capabilities": ["miracast", "audio", "video"]},
+    {"id": "02:00:00:00:00:FE", "name": "Fire TV · Lounge", "kind": "fire-tv", "capabilities": ["miracast", "audio", "video"]},
 )

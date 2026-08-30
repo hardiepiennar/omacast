@@ -47,7 +47,7 @@ class ServiceTest(unittest.TestCase):
             launcher.write_text("#!/bin/sh\n", encoding="utf-8")
             payload = start_session_service(
                 executable=str(launcher),
-                peer="tv-01",
+                peer="AA:BB:CC:DD:EE:FF",
                 mode="mirror",
                 profile="safe",
                 duration=60,
@@ -67,11 +67,21 @@ class ServiceTest(unittest.TestCase):
             with self.assertRaisesRegex(ServiceError, "unit already exists"):
                 start_session_service(
                     executable=str(launcher),
-                    peer="tv-01",
+                    peer="AA:BB:CC:DD:EE:FF",
                     mode="mirror",
                     profile="safe",
                     duration=60,
                     runner=runner,
+                )
+
+    def test_real_service_rejects_a_symbolic_receiver_before_systemd(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            launcher = Path(temp) / "omacast"
+            launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+            with self.assertRaisesRegex(ServiceError, "MAC address"):
+                session_service_command(
+                    executable=str(launcher), peer="tv-01", mode="mirror",
+                    profile="safe", duration=60,
                 )
 
     def test_pending_launch_can_be_cancelled_before_session_state_exists(self) -> None:

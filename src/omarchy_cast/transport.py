@@ -15,6 +15,7 @@ import time
 from typing import Any, Callable, Mapping, Protocol
 
 from .guard import GuardRequest, prepare_command, validate_helper_result
+from .identity import receiver_address
 from .telemetry import BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, cleanup_live_telemetry
 
 
@@ -205,6 +206,17 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
     requested_source = selection.get("source") if isinstance(selection, Mapping) else None
     if requested_source != "display" or backend_value != "gpu-screen-recorder":
         raise TransportError("transport plan capture source does not match its selection")
+    if executable:
+        if command.count("--wfd-peer") != 1:
+            raise TransportError("transport plan has an ambiguous receiver address")
+        peer_index = command.index("--wfd-peer")
+        try:
+            command_peer = receiver_address(command[peer_index + 1])
+            selection_peer = receiver_address(selection.get("peer") if isinstance(selection, Mapping) else None)
+        except (IndexError, ValueError) as exc:
+            raise TransportError("transport plan receiver address is invalid") from exc
+        if command_peer != selection_peer:
+            raise TransportError("transport plan receiver does not match its selection")
 
 
 def executable_plan(plan: Mapping[str, Any]) -> dict[str, object]:

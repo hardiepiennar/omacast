@@ -109,10 +109,13 @@ Panel {
     for (var i = 0; i < items.length && result.length < maxReceivers; i++) {
       var item = items[i]
       if (!item || typeof item !== "object" || typeof item.id !== "string" || typeof item.name !== "string") continue
-      var id = boundedText(item.id, "", 128)
+      var id = boundedText(item.id, "", 128).toUpperCase()
       var name = boundedText(item.name, "", 120)
       var kind = item.kind === "fire-tv" ? "fire-tv" : item.kind === "wfd-display" ? "wfd-display" : ""
-      if (!id || !name || !kind || ids[id]) continue
+      var validAddress = /^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(id)
+        && (parseInt(id.slice(0, 2), 16) & 1) === 0
+        && id !== "00:00:00:00:00:00" && id !== "FF:FF:FF:FF:FF:FF"
+      if (!validAddress || !name || !kind || ids[id]) continue
       ids[id] = true
       result.push({ id: id, name: name, kind: kind })
     }
@@ -387,7 +390,7 @@ Panel {
   }
 
   function requestPlan() {
-    if (systemReady() && !planProc.running) planProc.running = true
+    if (systemReady() && receiverId && !planProc.running) planProc.running = true
   }
 
   function startScan() {
@@ -695,7 +698,7 @@ Panel {
   }
   Process {
     id: planProc
-    command: [root.controllerPath, "plan", "--peer", root.receiverId || "omacast-preview", "--mode", "mirror", "--profile", "safe"]
+    command: [root.controllerPath, "plan", "--peer", root.receiverId, "--mode", "mirror", "--profile", "safe"]
     stdout: BoundedCollector { id: planOutput }
     stderr: DiscardCollector {}
     onRunningChanged: if (running) planOutput.reset()

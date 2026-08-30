@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .identity import receiver_address
+
 
 class LaunchPlanError(ValueError):
     """The host snapshot cannot safely describe a supported cast launch."""
@@ -51,8 +53,10 @@ def build_launch_plan(
     """Create a JSON-safe command preview, without touching hardware or a peer."""
     if snapshot.get("schemaVersion") != 1:
         raise LaunchPlanError("unsupported discovery schema")
-    if not peer.strip():
-        raise LaunchPlanError("receiver identifier is required")
+    try:
+        peer = receiver_address(peer)
+    except ValueError as exc:
+        raise LaunchPlanError(str(exc)) from exc
     if mode != "mirror":
         raise LaunchPlanError("unsupported output mode")
     if profile not in PROFILES:
@@ -81,7 +85,7 @@ def build_launch_plan(
         "fluxcast", "--protocol", "wfd", "--output-res", f"{selected_profile['width']}x{selected_profile['height']}",
         "--fps", str(selected_profile["fps"]), "--bitrate", f"{selected_profile['bitrateMbps']}M",
         "--wfd-video-encoder", encoder, "--wfd-p2p-backend", "supplicant",
-        "--wfd-supplicant-mode", "connect", "--wfd-peer", peer.strip(),
+        "--wfd-supplicant-mode", "connect", "--wfd-peer", peer,
         "--wfd-interface", str(wifi["interface"]), "--wfd-timeout", "15",
         "--wfd-supplicant-frequency", str(supplicant_frequency),
         "--wfd-no-firewall",
@@ -96,7 +100,7 @@ def build_launch_plan(
         "execution": {"allowed": False, "reason": "read-only launch preview"},
         "profile": selected_profile,
         "selection": {
-            "peer": peer.strip(), "mode": mode, "source": source, "wifiInterface": wifi["interface"],
+            "peer": peer, "mode": mode, "source": source, "wifiInterface": wifi["interface"],
             "wifiFrequencyMhz": frequency, "monitor": output["name"], "audioSource": sink + ".monitor",
             "videoEncoder": encoder,
         },

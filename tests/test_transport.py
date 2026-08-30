@@ -15,7 +15,7 @@ from omarchy_cast.transport import CAPTURE_START_TIMEOUT_SECONDS, CONNECT_TIMEOU
 
 
 def plan() -> dict[str, object]:
-    return {"schemaVersion": 1, "kind": "launch-plan", "readOnly": True, "execution": {"allowed": False}, "selection": {"source": "display"}, "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "4M", "--wfd-p2p-backend", "supplicant", "--wfd-interface", "wlan42", "--wfd-peer", "tv-01", "--wfd-capture-backend", "gpu-screen-recorder", "--monitor", "eDP-1", "--wfd-audio-device", "sink.monitor", "--wfd-video-encoder", "vaapi", "--wfd-no-firewall"]}
+    return {"schemaVersion": 1, "kind": "launch-plan", "readOnly": True, "execution": {"allowed": False}, "selection": {"source": "display", "peer": "00:11:22:33:44:55"}, "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "4M", "--wfd-p2p-backend", "supplicant", "--wfd-interface", "wlan42", "--wfd-peer", "00:11:22:33:44:55", "--wfd-capture-backend", "gpu-screen-recorder", "--monitor", "eDP-1", "--wfd-audio-device", "sink.monitor", "--wfd-video-encoder", "vaapi", "--wfd-no-firewall"]}
 
 
 class TransportTest(unittest.TestCase):
@@ -53,6 +53,25 @@ class TransportTest(unittest.TestCase):
         mismatched_backend["command"] = command
         with self.assertRaisesRegex(TransportError, "does not match"):
             validate_transport_plan(mismatched_backend)
+
+    def test_executable_plan_rechecks_receiver_address_and_selection(self) -> None:
+        executable = plan()
+        executable["execution"] = {"allowed": True}
+        validate_transport_plan(executable, executable=True)
+
+        for command_peer, selection_peer in (
+            ("tv-01", "tv-01"),
+            ("00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"),
+        ):
+            with self.subTest(command_peer=command_peer, selection_peer=selection_peer):
+                invalid = plan()
+                invalid["execution"] = {"allowed": True}
+                command = list(invalid["command"])
+                command[command.index("--wfd-peer") + 1] = command_peer
+                invalid["command"] = command
+                invalid["selection"] = {"source": "display", "peer": selection_peer}
+                with self.assertRaisesRegex(TransportError, "receiver"):
+                    validate_transport_plan(invalid, executable=True)
 
     def test_rtsp_state_requires_an_established_7236_socket(self) -> None:
         sockets = "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n  0: 00000000:1C44 00000000:0000 0A 0:0 0:0 0 0 0 111\n  1: C0A81B41:1C44 C0A81B72:A540 01 0:0 0:0 0 0 0 222\n"

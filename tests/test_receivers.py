@@ -9,24 +9,24 @@ from omarchy_cast.receivers import DisabledReceiverDiscovery, FixtureReceiverDis
 class ReceiverDiscoveryTest(unittest.TestCase):
     def records(self) -> list[dict[str, object]]:
         return [
-            {"id": "fire-tv-bedroom", "name": "Fire TV · Bedroom", "kind": "fire-tv", "capabilities": ["video", "miracast", "audio"]},
-            {"id": "fire-tv-lounge", "name": "Fire TV · Lounge", "kind": "fire-tv", "capabilities": ["miracast", "audio"]},
+            {"id": "02:00:00:00:00:01", "name": "Fire TV · Bedroom", "kind": "fire-tv", "capabilities": ["video", "miracast", "audio"]},
+            {"id": "02:00:00:00:00:02", "name": "Fire TV · Lounge", "kind": "fire-tv", "capabilities": ["miracast", "audio"]},
         ]
 
     def test_fixture_normalizes_capabilities_and_sorts_by_label(self) -> None:
         payload = discovery_payload(FixtureReceiverDiscovery(reversed(self.records())))
         self.assertTrue(payload["readOnly"])
-        self.assertEqual([item["id"] for item in payload["receivers"]], ["fire-tv-bedroom", "fire-tv-lounge"])
+        self.assertEqual([item["id"] for item in payload["receivers"]], ["02:00:00:00:00:01", "02:00:00:00:00:02"])
         self.assertEqual(payload["receivers"][1]["capabilities"], ("audio", "miracast"))
 
     def test_duplicate_or_invalid_records_are_rejected(self) -> None:
         duplicate = self.records() + [self.records()[0]]
         with self.assertRaisesRegex(ReceiverError, "duplicate"):
             normalize_receivers(duplicate)
-        with self.assertRaisesRegex(ReceiverError, "stable"):
+        with self.assertRaisesRegex(ReceiverError, "MAC address"):
             normalize_receivers([{"id": "Fire TV", "name": "TV", "kind": "fire-tv", "capabilities": ["miracast"]}])
         with self.assertRaisesRegex(ReceiverError, "control"):
-            normalize_receivers([{"id": "fire-tv", "name": "Fire TV\nInjected", "kind": "fire-tv", "capabilities": ["miracast"]}])
+            normalize_receivers([{"id": "02:00:00:00:00:03", "name": "Fire TV\nInjected", "kind": "fire-tv", "capabilities": ["miracast"]}])
 
     def test_receiver_limit_stops_consuming_an_unbounded_iterable(self) -> None:
         consumed = 0
@@ -35,22 +35,22 @@ class ReceiverDiscoveryTest(unittest.TestCase):
             nonlocal consumed
             for index in range(1_000):
                 consumed += 1
-                yield {"id": f"fire-tv-{index}", "name": f"Fire TV {index}", "kind": "fire-tv", "capabilities": ["miracast"]}
+                yield {"id": f"02:00:00:00:00:{index:02X}", "name": f"Fire TV {index}", "kind": "fire-tv", "capabilities": ["miracast"]}
 
         with self.assertRaisesRegex(ReceiverError, "too many"):
             normalize_receivers(records())
         self.assertEqual(consumed, 65)
 
     def test_markup_like_name_remains_data_for_plain_text_ui(self) -> None:
-        receiver = normalize_receivers([{"id": "fire-tv", "name": "<b>Fire TV</b>", "kind": "fire-tv", "capabilities": ["miracast"]}])[0]
+        receiver = normalize_receivers([{"id": "02:00:00:00:00:03", "name": "<b>Fire TV</b>", "kind": "fire-tv", "capabilities": ["miracast"]}])[0]
         self.assertEqual(receiver.name, "<b>Fire TV</b>")
 
     def test_validated_fire_tv_sinks_sort_before_generic_wfd_labels(self) -> None:
         receivers = normalize_receivers([
-            {"id": "generic-tv", "name": "[TV] Generic display", "kind": "wfd-display", "capabilities": ["miracast"]},
-            {"id": "fire-tv", "name": "Living room Fire TV", "kind": "fire-tv", "capabilities": ["miracast"]},
+            {"id": "02:00:00:00:00:04", "name": "[TV] Generic display", "kind": "wfd-display", "capabilities": ["miracast"]},
+            {"id": "02:00:00:00:00:05", "name": "Living room Fire TV", "kind": "fire-tv", "capabilities": ["miracast"]},
         ])
-        self.assertEqual([receiver.id for receiver in receivers], ["fire-tv", "generic-tv"])
+        self.assertEqual([receiver.id for receiver in receivers], ["02:00:00:00:00:05", "02:00:00:00:00:04"])
 
     def test_live_adapter_is_explicitly_disabled(self) -> None:
         with self.assertRaises(ReceiverDiscoveryUnavailable):
@@ -66,6 +66,7 @@ class ReceiverDiscoveryTest(unittest.TestCase):
                 SimpleNamespace(address="02:00:00:00:00:02", name="Nearby printer", details="manufacturer=Printer; wfd_ies=(<@ay []>,)"),
                 SimpleNamespace(address="02:00:00:00:00:03", name="Someone's phone", details="manufacturer=Phone"),
                 SimpleNamespace(address="00:11:22:33:44:55", name="[TV] Generic display", details="wfd_dev_info=0x00111c4400c8; sink_rtsp_port=7236"),
+                SimpleNamespace(address="generic-receiver", name="Malformed sink", details="wfd_dev_info=0x00111c4400c8"),
             ]
 
         payload = discovery_payload(FluxCastReceiverDiscovery(interface="wlan42", scanner=scanner), timeout_seconds=6)
@@ -80,6 +81,7 @@ class ReceiverDiscoveryTest(unittest.TestCase):
         # An empty WFD IE and a peer with no WFD advertisement stay excluded.
         self.assertNotIn("02:00:00:00:00:02", [receiver["id"] for receiver in payload["receivers"]])
         self.assertNotIn("02:00:00:00:00:03", [receiver["id"] for receiver in payload["receivers"]])
+        self.assertNotIn("generic-receiver", [receiver["id"] for receiver in payload["receivers"]])
 
     def test_fluxcast_adapter_rejects_peers_without_a_valid_sink_role(self) -> None:
         def scanner(*, interface: str | None, timeout: int) -> list[SimpleNamespace]:

@@ -496,7 +496,11 @@ use stable error codes so the panel does not need to parse human log text.
 The controller must dynamically discover the Wi-Fi interface, P2P device,
 Hyprland outputs, default audio monitor, render node/encoder, firewall state,
 and receiver identity. No user-specific MAC, interface, monitor, subnet, or
-home path may appear in production defaults.
+home path may appear in production defaults. A live receiver identity is the
+canonical colon-delimited MAC returned by discovery—not its display name or a
+generic stable label—and every real launch boundary revalidates that form
+before starting a user service, requesting authorization, or executing media.
+Symbolic peer IDs exist only inside explicit no-hardware simulations.
 
 The media engine must authenticate every inbound or source-initiated RTSP peer
 against the selected receiver and the session-owned P2P interface before RTSP

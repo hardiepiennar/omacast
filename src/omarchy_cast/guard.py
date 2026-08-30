@@ -14,12 +14,12 @@ import re
 
 from .bounds import bounded_text
 from .command import Runner, run_command
+from .identity import receiver_address
 
 
 HELPER_PATH = "/usr/lib/omarchy-cast/omarchy-cast-guard"
 _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
-_PEER = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 MAX_RECOVERY_INTERFACES = 32
 
 
@@ -46,8 +46,10 @@ class GuardRequest:
             raise GuardError("guard uid is outside the permitted user range")
         if not _INTERFACE.fullmatch(self.interface):
             raise GuardError("guard interface name is invalid")
-        if not _PEER.fullmatch(self.peer):
-            raise GuardError("guard receiver address is invalid")
+        try:
+            receiver_address(self.peer)
+        except ValueError as exc:
+            raise GuardError("guard receiver address is invalid") from exc
         if not isinstance(self.frequency_mhz, int) or (
             self.frequency_mhz != 0 and not 2300 <= self.frequency_mhz <= 7125
         ):
