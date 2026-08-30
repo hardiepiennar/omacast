@@ -158,19 +158,30 @@ def validate_helper_result(payload: object) -> dict[str, object]:
         raise GuardError("guard returned an unsupported status document")
     if payload.get("kind") != "omarchy-cast-guard-status":
         raise GuardError("guard returned an unexpected status document")
-    if not isinstance(payload.get("ok"), bool):
+    if type(payload.get("ok")) is not bool:
         raise GuardError("guard status is missing ok")
-    if payload.get("phase") not in {"ready", "active", "cleaned", "error"}:
+    phase = payload.get("phase")
+    if phase not in {"ready", "active", "cleaned", "error"}:
         raise GuardError("guard status has an invalid phase")
     session_id = payload.get("sessionId")
-    if session_id is not None and (not isinstance(session_id, str) or not _SESSION_ID.fullmatch(session_id)):
+    if not isinstance(session_id, str) or not _SESSION_ID.fullmatch(session_id):
         raise GuardError("guard status has an invalid session id")
+    base_fields = {"schemaVersion", "kind", "ok", "phase", "sessionId", "error"}
+    expected_fields = base_fields | ({"triggerPath", "brokerPath"} if phase == "ready" else set())
+    if set(payload) != expected_fields:
+        raise GuardError("guard status has unexpected fields")
+    error = payload.get("error")
+    if phase == "error":
+        if payload.get("ok") is not False or not isinstance(error, str) or not error or len(error) > 240:
+            raise GuardError("guard error status is inconsistent")
+    elif payload.get("ok") is not True or error is not None:
+        raise GuardError("guard success status is inconsistent")
     trigger = payload.get("triggerPath")
-    expected_trigger = f"/run/omarchy-cast/{payload.get('sessionId')}/user/trigger"
-    if trigger is not None and (not isinstance(trigger, str) or trigger != expected_trigger):
+    expected_trigger = f"/run/omarchy-cast/{session_id}/user/trigger"
+    if phase == "ready" and (not isinstance(trigger, str) or trigger != expected_trigger):
         raise GuardError("guard status has an invalid trigger path")
     broker = payload.get("brokerPath")
-    expected_broker = f"/run/omarchy-cast/{payload.get('sessionId')}/supplicant.sock"
-    if broker is not None and (not isinstance(broker, str) or broker != expected_broker):
+    expected_broker = f"/run/omarchy-cast/{session_id}/supplicant.sock"
+    if phase == "ready" and (not isinstance(broker, str) or broker != expected_broker):
         raise GuardError("guard status has an invalid broker path")
     return dict(payload)

@@ -2605,3 +2605,17 @@ latency events receive a budget immediately after decoding; state, live
 telemetry, engine/guard compatibility, recovery, readiness, and cleanup paths
 all handle recursive input without leaking an exception. Regressions inject
 deep JSON independently at each of those layers.
+
+### Closed phase-specific guard statuses (2026-08-31)
+
+The controller validated the types and values it consumed from the privileged
+guard but did not reject extra fields, and it treated the session trigger and
+broker paths as optional even in the `ready` phase. That was broader than the
+package-owned helper protocol and weakened the value of the versioned boundary.
+
+Guard status validation now mirrors the emitted protocol exactly. `ready`
+requires the canonical session trigger and broker paths; `active`, `cleaned`,
+and `error` reject those fields; every phase has an exact field set, a required
+session ID, and consistent `ok`/`error` values. The existing helper already
+emits these shapes, so guard API 14 and companion revision 71 do not change.
+Regressions cover missing, extra, misplaced, and phase-inconsistent fields.

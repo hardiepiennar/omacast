@@ -151,6 +151,9 @@ Security review checklist:
 - Require exact JSON scalar types at every versioned boundary. In Python,
   ordinary equality is insufficient because booleans compare equal to zero
   and one; `true` must never satisfy numeric schema or API revision 1.
+- Versioned status protocols must also use closed, phase-specific field sets
+  and internally consistent success/error values. Do not accept optional
+  privilege-bearing paths in a phase where the producer always requires them.
 - Add adversarial regressions with deadlines. Prove oversized/deep/flooded
   input is bounded, special files cannot block, replacement races cannot
   redirect descriptors, and unrelated targets retain their content and mode.

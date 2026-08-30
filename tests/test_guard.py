@@ -77,23 +77,48 @@ class GuardContractTest(unittest.TestCase):
                 validate_reclaim_result(payload)
 
     def test_status_contract_rejects_unexpected_shapes(self) -> None:
-        result = validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": "b" * 32})
+        session_id = "b" * 32
+        ready = {
+            "schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True,
+            "phase": "ready", "sessionId": session_id, "error": None,
+            "triggerPath": f"/run/omarchy-cast/{session_id}/user/trigger",
+            "brokerPath": f"/run/omarchy-cast/{session_id}/supplicant.sock",
+        }
+        result = validate_helper_result(ready)
         self.assertTrue(result["ok"])
-        for payload in ({}, {"schemaVersion": True, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready"}, {"schemaVersion": 1, "kind": "other", "ok": True, "phase": "ready"}, {"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": "yes", "phase": "ready"}):
+        for payload in (
+            {},
+            {**ready, "schemaVersion": True},
+            {**ready, "kind": "other"},
+            {**ready, "ok": "yes"},
+            {key: value for key, value in ready.items() if key != "brokerPath"},
+            {**ready, "unexpected": []},
+            {**ready, "ok": False},
+            {**ready, "error": "failure"},
+            {"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "active", "sessionId": session_id, "error": None, "triggerPath": ready["triggerPath"]},
+            {"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "error", "sessionId": session_id, "error": "failure"},
+        ):
             with self.assertRaises(GuardError):
                 validate_helper_result(payload)
+        error = validate_helper_result({
+            "schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": False,
+            "phase": "error", "sessionId": session_id, "error": "cleanup incomplete",
+        })
+        self.assertFalse(error["ok"])
 
     def test_status_rejects_non_runtime_trigger_path(self) -> None:
         session_id = "b" * 32
-        result = validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "triggerPath": f"/run/omarchy-cast/{session_id}/user/trigger"})
+        status = {"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "error": None, "triggerPath": f"/run/omarchy-cast/{session_id}/user/trigger", "brokerPath": f"/run/omarchy-cast/{session_id}/supplicant.sock"}
+        result = validate_helper_result(status)
         self.assertEqual(result["triggerPath"], f"/run/omarchy-cast/{session_id}/user/trigger")
         with self.assertRaises(GuardError):
-            validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "triggerPath": "/tmp/trigger"})
+            validate_helper_result({**status, "triggerPath": "/tmp/trigger"})
 
     def test_status_rejects_non_session_broker_path(self) -> None:
         session_id = "b" * 32
         broker = f"/run/omarchy-cast/{session_id}/supplicant.sock"
-        result = validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "brokerPath": broker})
+        status = {"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "error": None, "triggerPath": f"/run/omarchy-cast/{session_id}/user/trigger", "brokerPath": broker}
+        result = validate_helper_result(status)
         self.assertEqual(result["brokerPath"], broker)
         with self.assertRaises(GuardError):
-            validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": session_id, "brokerPath": "/tmp/broker"})
+            validate_helper_result({**status, "brokerPath": "/tmp/broker"})
