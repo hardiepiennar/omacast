@@ -320,8 +320,9 @@
       privileged and receiver-backed injections remain open.
       Guard API 14 now covers explicit orphan reclaim offline: it prevalidates
       all candidates and proves an active/connected candidate prevents every
-      deletion. Installed-helper and receiver-backed orphan injection remain
-      part of the final hardware gate.
+      deletion, requires fresh administrator approval, and revalidates each
+      candidate immediately before removal. Installed-helper and
+      receiver-backed orphan injection remain part of the final hardware gate.
 - [x] Receiver-backed revision-37 acceptance verifies passwordless prepare,
       click/Enter-to-cast, keyboard N/Q controls, panel toggle close, automatic
       TV-side disconnect, and exact cleanup. Passwordless prepare, click start,
@@ -560,6 +561,10 @@
       revision-61 upgrade/removal gates, installed with 160 unaltered files,
       and completed both shipped doctor entry points. The matching installed
       plugin reports `Casting support ready` with no readiness issues.
+- [ ] Version 0.1.4 / companion revision 66 / guard API 14 is the scoped
+      compatibility candidate. Complete the exact clean build, artifact audit,
+      revision-61 upgrade/removal, installed readiness, and one normal Fire TV
+      connect/stream/Stop cleanup run before tagging it.
 - [ ] Exercise forced recovery and complete the canonical three consecutive
       30-minute acceptance sessions. Revision 60's short run and pre-broker
       20.5-minute soak do not satisfy these gates.

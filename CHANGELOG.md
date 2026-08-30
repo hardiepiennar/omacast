@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.4 — 2026-08-30
+
 - Fix the companion `fluxcast --doctor` import cycle and cover the shipped
   diagnostic import order in a fresh Python interpreter.
 - Rename the production WFD capture selector from the misleading
