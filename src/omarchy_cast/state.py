@@ -90,10 +90,19 @@ def _open_session_lock_descriptor(directory_descriptor: int, *, create: bool) ->
     """Open and validate the lock inode without following its pathname."""
     flags = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
-    if create:
-        flags |= os.O_CREAT
     try:
-        descriptor = os.open("session.lock", flags, 0o600, dir_fd=directory_descriptor)
+        created = False
+        if create:
+            try:
+                descriptor = os.open(
+                    "session.lock", flags | os.O_CREAT | os.O_EXCL,
+                    0o600, dir_fd=directory_descriptor,
+                )
+                created = True
+            except FileExistsError:
+                descriptor = os.open("session.lock", flags, dir_fd=directory_descriptor)
+        else:
+            descriptor = os.open("session.lock", flags, dir_fd=directory_descriptor)
     except OSError as exc:
         raise StateError("session lock is unavailable or unsafe") from exc
     try:
@@ -104,7 +113,7 @@ def _open_session_lock_descriptor(directory_descriptor: int, *, create: bool) ->
             raise StateError("session lock is not owned by the current user")
         if metadata.st_nlink != 1:
             raise StateError("session lock has an unsafe link count")
-        if create:
+        if created:
             os.fchmod(descriptor, 0o600)
             metadata = os.fstat(descriptor)
         if stat.S_IMODE(metadata.st_mode) != 0o600:

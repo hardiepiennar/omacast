@@ -297,3 +297,19 @@ class StateTest(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
             self.assertEqual(target.stat().st_mode & 0o777, 0o644)
             self.assertFalse(session_lock_is_held(environment))
+
+    def test_session_lock_rejects_public_mode_without_repairing_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": temp}
+            directory = Path(temp) / "omarchy-cast"
+            directory.mkdir(mode=0o700)
+            lock = directory / "session.lock"
+            lock.write_text("preserve", encoding="utf-8")
+            lock.chmod(0o644)
+
+            with self.assertRaisesRegex(StateError, "permissions are unsafe"):
+                SessionLock(environment).acquire()
+
+            self.assertEqual(lock.read_text(encoding="utf-8"), "preserve")
+            self.assertEqual(lock.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(session_lock_is_held(environment))
