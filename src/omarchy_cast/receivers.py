@@ -160,7 +160,8 @@ class FluxCastReceiverDiscovery:
                 address = receiver_address(getattr(peer, "address", ""))
             except ValueError:
                 continue
-            advertised_name = str(getattr(peer, "name", "")).strip()
+            raw_name = getattr(peer, "name", "")
+            advertised_name = bounded_text(raw_name, limit=120).strip()
             name = advertised_name or f"Miracast display · {address[-5:]}"
             is_fire_tv = "fire tv" in advertised_name.casefold()
             records.append({

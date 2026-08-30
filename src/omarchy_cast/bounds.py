@@ -23,10 +23,14 @@ class BoundError(ValueError):
 def bounded_text(value: object, *, limit: int = MAX_RUNTIME_TEXT_CHARS, fallback: str = "") -> str:
     """Return one display-safe string with control characters normalized."""
     text = value if isinstance(value, str) else fallback
-    text = "".join(character if character in "\n\t" or 32 <= ord(character) != 127 else "�" for character in text)
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 1)] + "…"
+    oversized = len(text) > limit
+    # Normalize only the prefix we can return. This prevents a very large
+    # diagnostic or wireless label from being copied in full before truncation.
+    prefix = text[:limit]
+    normalized = "".join(character if character in "\n\t" or 32 <= ord(character) != 127 else "�" for character in prefix)
+    if not oversized:
+        return normalized
+    return normalized[: max(0, limit - 1)] + "…"
 
 
 def read_bounded_regular_file(

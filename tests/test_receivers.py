@@ -112,3 +112,16 @@ class ReceiverDiscoveryTest(unittest.TestCase):
 
         payload = discovery_payload(FluxCastReceiverDiscovery(scanner=scanner))
         self.assertEqual(payload["receivers"], [])
+
+    def test_live_wireless_labels_are_bounded_before_projection(self) -> None:
+        def scanner(*, interface: str | None, timeout: int):
+            del interface, timeout
+            return [SimpleNamespace(
+                address="02:00:00:00:00:01",
+                name="Fire TV " + "x" * 100_000,
+                details="wfd_dev_info=0x00111c4400c8",
+            )]
+
+        payload = discovery_payload(FluxCastReceiverDiscovery(scanner=scanner))
+        self.assertEqual(len(payload["receivers"]), 1)
+        self.assertLessEqual(len(payload["receivers"][0]["name"]), 120)
