@@ -56,6 +56,26 @@ class ReceiverDiscoveryTest(unittest.TestCase):
         with self.assertRaises(ReceiverDiscoveryUnavailable):
             discovery_payload(DisabledReceiverDiscovery())
 
+    def test_discovery_timeout_rejects_boolean_and_nonfinite_values(self) -> None:
+        discovery = FixtureReceiverDiscovery(self.records())
+        for value in (True, False, float("nan"), float("inf")):
+            with self.subTest(value=value), self.assertRaisesRegex(ReceiverError, "timeout"):
+                discovery.list_receivers(timeout_seconds=value)
+
+    def test_scanner_iterator_failure_is_a_controlled_discovery_error(self) -> None:
+        def scanner(*, interface: str | None, timeout: int):
+            del interface, timeout
+            def peers():
+                yield SimpleNamespace(
+                    address="02:00:00:00:00:01", name="Fire TV",
+                    details="wfd_dev_info=0x00111c4400c8",
+                )
+                raise RuntimeError("iterator failed")
+            return peers()
+
+        with self.assertRaisesRegex(ReceiverDiscoveryUnavailable, "iterator failed"):
+            discovery_payload(FluxCastReceiverDiscovery(scanner=scanner))
+
     def test_fluxcast_adapter_sanitizes_and_sorts_live_peers(self) -> None:
         calls: list[tuple[str | None, int]] = []
 

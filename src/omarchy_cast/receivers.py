@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from contextlib import redirect_stdout
+import math
 import os
 import re
 from typing import Callable, Iterable, Mapping, Protocol
@@ -30,6 +31,11 @@ class ReceiverError(ValueError):
 
 class ReceiverDiscoveryUnavailable(ReceiverError):
     pass
+
+
+def _validate_timeout(timeout_seconds: float) -> None:
+    if type(timeout_seconds) not in {int, float} or not math.isfinite(timeout_seconds) or not 1 <= timeout_seconds <= 30:
+        raise ReceiverError("receiver discovery timeout must be between 1 and 30 seconds")
 
 
 @dataclass(frozen=True)
@@ -113,8 +119,7 @@ class FixtureReceiverDiscovery:
         self._records = tuple(dict(record) for record in records)
 
     def list_receivers(self, *, timeout_seconds: float) -> list[Receiver]:
-        if not 1 <= timeout_seconds <= 30:
-            raise ReceiverError("receiver discovery timeout must be between 1 and 30 seconds")
+        _validate_timeout(timeout_seconds)
         return normalize_receivers(self._records)
 
 
@@ -126,8 +131,7 @@ class FluxCastReceiverDiscovery:
         self._scanner = scanner
 
     def list_receivers(self, *, timeout_seconds: float) -> list[Receiver]:
-        if not 1 <= timeout_seconds <= 30:
-            raise ReceiverError("receiver discovery timeout must be between 1 and 30 seconds")
+        _validate_timeout(timeout_seconds)
         scanner = self._scanner
         if scanner is None:
             try:
@@ -144,32 +148,39 @@ class FluxCastReceiverDiscovery:
             raise ReceiverDiscoveryUnavailable(bounded_text(str(exc), limit=240, fallback="Wi-Fi Direct scan failed") or "Wi-Fi Direct scan failed") from exc
         records: list[dict[str, object]] = []
         peer_count = 0
-        for peer in peers:  # type: ignore[union-attr]
-            peer_count += 1
-            if peer_count > MAX_DISCOVERY_PEERS:
-                raise ReceiverDiscoveryUnavailable("receiver discovery returned too many peer records")
-            if len(records) >= MAX_RECEIVERS:
-                raise ReceiverDiscoveryUnavailable("receiver discovery returned too many records")
-            details = bounded_text(getattr(peer, "details", ""), limit=MAX_PEER_DETAILS_CHARS)
-            # NetworkManager exposes every nearby Wi-Fi Direct peer, including
-            # printers and source-only phones. Only peers whose WFD Device
-            # Information identifies a sink are valid cast targets.
-            if _wfd_device_type(details) not in {1, 2, 3}:
-                continue
-            try:
-                address = receiver_address(getattr(peer, "address", ""))
-            except ValueError:
-                continue
-            raw_name = getattr(peer, "name", "")
-            advertised_name = bounded_text(raw_name, limit=120).strip()
-            name = advertised_name or f"Miracast display · {address[-5:]}"
-            is_fire_tv = "fire tv" in advertised_name.casefold()
-            records.append({
-                "id": address,
-                "name": name,
-                "kind": "fire-tv" if is_fire_tv else "wfd-display",
-                "capabilities": ["miracast", "audio", "video"] if is_fire_tv else ["miracast"],
-            })
+        try:
+            for peer in peers:  # type: ignore[union-attr]
+                peer_count += 1
+                if peer_count > MAX_DISCOVERY_PEERS:
+                    raise ReceiverDiscoveryUnavailable("receiver discovery returned too many peer records")
+                if len(records) >= MAX_RECEIVERS:
+                    raise ReceiverDiscoveryUnavailable("receiver discovery returned too many records")
+                details = bounded_text(getattr(peer, "details", ""), limit=MAX_PEER_DETAILS_CHARS)
+                # NetworkManager exposes every nearby Wi-Fi Direct peer, including
+                # printers and source-only phones. Only peers whose WFD Device
+                # Information identifies a sink are valid cast targets.
+                if _wfd_device_type(details) not in {1, 2, 3}:
+                    continue
+                try:
+                    address = receiver_address(getattr(peer, "address", ""))
+                except ValueError:
+                    continue
+                raw_name = getattr(peer, "name", "")
+                advertised_name = bounded_text(raw_name, limit=120).strip()
+                name = advertised_name or f"Miracast display · {address[-5:]}"
+                is_fire_tv = "fire tv" in advertised_name.casefold()
+                records.append({
+                    "id": address,
+                    "name": name,
+                    "kind": "fire-tv" if is_fire_tv else "wfd-display",
+                    "capabilities": ["miracast", "audio", "video"] if is_fire_tv else ["miracast"],
+                })
+        except ReceiverDiscoveryUnavailable:
+            raise
+        except Exception as exc:
+            raise ReceiverDiscoveryUnavailable(
+                bounded_text(str(exc), limit=240, fallback="Wi-Fi Direct scan failed") or "Wi-Fi Direct scan failed"
+            ) from exc
         return normalize_receivers(records)
 
 
