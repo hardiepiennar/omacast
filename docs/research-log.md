@@ -2355,3 +2355,25 @@ implementations, and the release-artifact audit executes the packaged broker's
 builder rather than trusting source-text matching. Companion revision 65 and
 guard API 13 make this corrected privileged/network contract an explicit
 compatibility boundary. The reconstructed 39-patch engine passes 154 tests.
+
+### Explicit orphaned P2P recovery (2026-08-30)
+
+Issue 2 correctly reported that a P2P client surviving both the owning guard
+and independent recovery permanently blocked the clean-baseline check. The
+old pre-session implementation automatically deleted any matching down client,
+but the security audit removed it because a name and inactive state do not
+prove Omacast ownership.
+
+Guard API 14 keeps automatic startup fail-closed and adds a separate Polkit
+`reclaim` action used only by the existing explicit Restore workflow. The
+unprivileged controller first detects a matching interface, so ordinary state
+recovery causes no authorization prompt. After administrator approval, the
+fixed helper validates the caller UID and selected managed adapter, refuses to
+run while any protected Omacast root session exists, and prevalidates every
+candidate before any deletion. Each candidate must match the selected adapter,
+remain a down `P2P-client`, report `Not connected.`, and have neither IPv4 nor
+global IPv6; link-local IPv6 left by the temporary network is permitted. A
+mixed safe/connected test proves that one unsafe candidate prevents all
+deletion. Prepare and reclaim also hold the same validated root-owned runtime
+directory lock, closing the check/delete race with a newly starting cast.
+Companion revision 66 carries this new privileged contract.

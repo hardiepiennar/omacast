@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import unittest
 
-from omarchy_cast.guard import GuardError, GuardRequest, HELPER_PATH, prepare_command, validate_helper_result
+from omarchy_cast.command import CommandResult
+from omarchy_cast.guard import GuardError, GuardRequest, HELPER_PATH, orphan_interfaces_present, prepare_command, reclaim_command, reclaim_orphan_interfaces, validate_helper_result, validate_reclaim_result
 
 
 class GuardContractTest(unittest.TestCase):
@@ -24,6 +26,33 @@ class GuardContractTest(unittest.TestCase):
                 prepare_command(request)
         with self.assertRaises(GuardError):
             prepare_command(self.request(), helper_path="/tmp/helper")
+
+    def test_reclaim_command_is_fixed_and_validated(self) -> None:
+        self.assertEqual(reclaim_command(uid=1000, interface="wlan42"), (
+            HELPER_PATH, "reclaim", "--schema-version", "1",
+            "--uid", "1000", "--interface", "wlan42",
+        ))
+        for values in ({"uid": 0, "interface": "wlan42"}, {"uid": 1000, "interface": "wlan0;id"}):
+            with self.assertRaises(GuardError):
+                reclaim_command(**values)  # type: ignore[arg-type]
+
+    def test_orphan_probe_and_reclaim_status_are_bounded(self) -> None:
+        def iw_runner(args, *, timeout=5.0):
+            return CommandResult(tuple(args), 0, "phy#0\n  Interface p2p-wlan42-0\n", "")
+
+        self.assertTrue(orphan_interfaces_present("wlan42", runner=iw_runner))
+
+        def reclaim_runner(args, *, timeout=5.0):
+            self.assertEqual(args[:3], ("pkexec", HELPER_PATH, "reclaim"))
+            return CommandResult(tuple(args), 0, json.dumps({
+                "schemaVersion": 1, "kind": "omarchy-cast-guard-reclaim-status",
+                "ok": True, "reclaimed": 1,
+            }), "")
+
+        self.assertEqual(reclaim_orphan_interfaces("wlan42", uid=1000, runner=reclaim_runner)["reclaimed"], 1)
+        for payload in ({}, {"schemaVersion": 1, "kind": "omarchy-cast-guard-reclaim-status", "ok": True, "reclaimed": 33}):
+            with self.assertRaises(GuardError):
+                validate_reclaim_result(payload)
 
     def test_status_contract_rejects_unexpected_shapes(self) -> None:
         result = validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": "b" * 32})

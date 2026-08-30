@@ -318,6 +318,10 @@
       Stable controller codes and state/history propagation are covered by
       offline tests, including dismissed authorization as a no-change result;
       privileged and receiver-backed injections remain open.
+      Guard API 14 now covers explicit orphan reclaim offline: it prevalidates
+      all candidates and proves an active/connected candidate prevents every
+      deletion. Installed-helper and receiver-backed orphan injection remain
+      part of the final hardware gate.
 - [x] Receiver-backed revision-37 acceptance verifies passwordless prepare,
       click/Enter-to-cast, keyboard N/Q controls, panel toggle close, automatic
       TV-side disconnect, and exact cleanup. Passwordless prepare, click start,

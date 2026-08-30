@@ -4,12 +4,12 @@
 set -euo pipefail
 
 readonly schema_version=1 status_kind='omarchy-cast-guard-status'
-readonly api_revision=13 version_kind='omarchy-cast-guard-version'
+readonly api_revision=14 version_kind='omarchy-cast-guard-version'
 readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network'
 readonly wait_for_trigger_seconds=300
 readonly recovery_ready_timeout_seconds=5
 readonly networkd_units=(systemd-networkd.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-networkd-varlink-metrics.socket systemd-networkd-resolve-hook.socket)
-action='' session_id='' uid='' interface='' peer='' frequency='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' heartbeat_fd='' network_file='' networkd_state_file='' networkd_state_pending_file='' network_root_marker='' interfaces_file='' interfaces_armed_file='' network_manager_resume_file='' recovery_ready_file='' broker_socket='' broker_unit='' broker_wfd_file='' token='' ufw_rule_added=false runtime_dirs_created=false broker_started=false broker_cleanup_ok=true interface_cleanup_ok=true network_manager_cleanup_ok=true cleanup_ok=true
+action='' session_id='' uid='' interface='' peer='' frequency='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' heartbeat_fd='' guard_lock_fd='' network_file='' networkd_state_file='' networkd_state_pending_file='' network_root_marker='' interfaces_file='' interfaces_armed_file='' network_manager_resume_file='' recovery_ready_file='' broker_socket='' broker_unit='' broker_wfd_file='' token='' ufw_rule_added=false runtime_dirs_created=false broker_started=false broker_cleanup_ok=true interface_cleanup_ok=true network_manager_cleanup_ok=true cleanup_ok=true network_sys_root='/sys/class/net'
 
 die() { printf '%s\n' "$*" >&2; exit 2; }
 status() { local ok="$1" phase="$2" error="${3:-null}"; printf '{"schemaVersion":%s,"kind":"%s","ok":%s,"phase":"%s","sessionId":"%s","error":%s}\n' "$schema_version" "$status_kind" "$ok" "$phase" "$session_id" "$error"; }
@@ -20,21 +20,41 @@ valid_interface() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; }
 valid_peer() { [[ "$1" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; }
 valid_frequency() { [[ "$1" =~ ^[0-9]+$ ]] && { (( $1 == 0 )) || (( $1 >= 2300 && $1 <= 7125 )); }; }
 valid_duration() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 60 && $1 <= 1800 )); }
-usage() { die 'Usage: omarchy-cast-guard prepare --schema-version 1 --session <32-hex> --uid <uid> --interface <ifname> --peer <MAC> --frequency <MHz-or-0> --duration <60-1800>'; }
+usage() { die 'Usage: omarchy-cast-guard prepare --schema-version 1 --session <32-hex> --uid <uid> --interface <ifname> --peer <MAC> --frequency <MHz-or-0> --duration <60-1800> | reclaim --schema-version 1 --uid <uid> --interface <ifname>'; }
 
 parse_request() {
   [[ ${EUID} -eq 0 ]] || die 'administrator approval is required'
   action="${1:-}"; shift || true
-  [[ "$action" == prepare ]] || usage
-  [[ $# -eq 14 && "$1" == --schema-version && "$2" == 1 && "$3" == --session && "$5" == --uid && "$7" == --interface && "$9" == --peer && "${11}" == --frequency && "${13}" == --duration ]] || usage
-  session_id="$4"; uid="$6"; interface="$8"; peer="${10}"; frequency="${12}"; duration="${14}"
-  valid_session "$session_id" || die 'invalid session identifier'; valid_uid "$uid" || die 'invalid user identifier'; valid_interface "$interface" || die 'invalid Wi-Fi interface'; valid_peer "$peer" || die 'invalid receiver address'; valid_frequency "$frequency" || die 'invalid P2P frequency'; valid_duration "$duration" || die 'invalid session duration'
+  if [[ "$action" == prepare ]]; then
+    [[ $# -eq 14 && "$1" == --schema-version && "$2" == 1 && "$3" == --session && "$5" == --uid && "$7" == --interface && "$9" == --peer && "${11}" == --frequency && "${13}" == --duration ]] || usage
+    session_id="$4"; uid="$6"; interface="$8"; peer="${10}"; frequency="${12}"; duration="${14}"
+    valid_session "$session_id" || die 'invalid session identifier'; valid_peer "$peer" || die 'invalid receiver address'; valid_frequency "$frequency" || die 'invalid P2P frequency'; valid_duration "$duration" || die 'invalid session duration'
+  elif [[ "$action" == reclaim ]]; then
+    [[ $# -eq 6 && "$1" == --schema-version && "$2" == 1 && "$3" == --uid && "$5" == --interface ]] || usage
+    uid="$4"; interface="$6"
+  else
+    usage
+  fi
+  valid_uid "$uid" || die 'invalid user identifier'; valid_interface "$interface" || die 'invalid Wi-Fi interface'
   [[ "${PKEXEC_UID:-}" == "$uid" ]] || die 'requested user does not match the Polkit caller'
   getent passwd "$uid" >/dev/null || die 'requested user does not exist'
-  session_root="$run_root/$session_id"; user_root="$session_root/user"; token_file="$session_root/token"; ready_file="$session_root/ready.json"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; network_file="$network_root/80-omarchy-cast-$session_id.network"; networkd_state_file="$session_root/networkd-units"; networkd_state_pending_file="$session_root/networkd-units.pending"; network_root_marker="$session_root/network-root-created"; interfaces_file="$session_root/p2p-interfaces"; interfaces_armed_file="$session_root/p2p-armed"; network_manager_resume_file="$session_root/network-manager-resume-required"; recovery_ready_file="$session_root/recovery-ready"; broker_socket="$session_root/supplicant.sock"; broker_unit="omarchy-cast-supplicant-$session_id.service"; broker_wfd_file="$session_root/supplicant-wfd-owned"
+  if [[ "$action" == prepare ]]; then
+    session_root="$run_root/$session_id"; user_root="$session_root/user"; token_file="$session_root/token"; ready_file="$session_root/ready.json"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; network_file="$network_root/80-omarchy-cast-$session_id.network"; networkd_state_file="$session_root/networkd-units"; networkd_state_pending_file="$session_root/networkd-units.pending"; network_root_marker="$session_root/network-root-created"; interfaces_file="$session_root/p2p-interfaces"; interfaces_armed_file="$session_root/p2p-armed"; network_manager_resume_file="$session_root/network-manager-resume-required"; recovery_ready_file="$session_root/recovery-ready"; broker_socket="$session_root/supplicant.sock"; broker_unit="omarchy-cast-supplicant-$session_id.service"; broker_wfd_file="$session_root/supplicant-wfd-owned"
+  fi
 }
 verify_user_runtime() { [[ -d "/run/user/$uid" && "$(stat -c '%u:%a' "/run/user/$uid")" == "$uid:700" ]] || die 'user runtime directory is unavailable or unsafe'; }
 verify_interface() { [[ -d "/sys/class/net/$interface" ]] || die 'Wi-Fi interface is unavailable'; command -v iw >/dev/null || die 'iw is required'; [[ "$(iw dev "$interface" info 2>/dev/null | awk '$1 == "type" {print $2; exit}')" == managed ]] || die 'Wi-Fi interface is not a managed station'; }
+acquire_guard_lock() {
+  command -v flock >/dev/null || die 'flock is required'
+  if [[ -e "$run_root" ]]; then
+    [[ -d "$run_root" && ! -L "$run_root" && "$(stat -c '%u:%g:%a' "$run_root" 2>/dev/null)" == '0:0:755' ]] || die 'Omacast runtime ownership is unsafe'
+  else
+    install -d -o root -g root -m755 "$run_root"
+  fi
+  exec {guard_lock_fd}<"$run_root"
+  [[ "$(stat -Lc '%F:%u:%g:%a' "/proc/self/fd/$guard_lock_fd" 2>/dev/null)" == 'directory:0:0:755' ]] || die 'Omacast runtime lock is unsafe'
+  flock -n "$guard_lock_fd" || die 'another Omacast network operation is active'
+}
 verify_network_manager() {
   local current_pid
   current_pid="$(systemctl show --property MainPID --value NetworkManager.service)"
@@ -45,6 +65,42 @@ network_manager_marker_valid() { [[ -f "$network_manager_resume_file" && ! -L "$
 pause_network_manager() { systemctl is-active --quiet NetworkManager.service || return 1; install -m600 /dev/null "$network_manager_resume_file" || return 1; if ! systemctl kill --kill-whom=main --signal=SIGSTOP NetworkManager.service; then rm -f -- "$network_manager_resume_file" || true; return 1; fi; }
 resume_network_manager() { network_manager_marker_valid || { [[ ! -e "$network_manager_resume_file" ]] && return 0; return 1; }; for _ in 1 2 3; do if systemctl kill --kill-whom=main --signal=SIGCONT NetworkManager.service; then rm -f -- "$network_manager_resume_file" || return 1; return 0; fi; sleep 0.1; done; return 1; }
 verify_clean_interface_baseline() { local listed; listed="$(iw dev)" || die 'could not inspect P2P interfaces'; ! awk -v prefix="p2p-$interface-" '$1 == "Interface" && index($2, prefix) == 1 {found=1} END {exit !found}' <<< "$listed" || die 'a P2P client already exists; remove or disconnect it before casting'; }
+verify_no_guard_session() {
+  local entry
+  [[ ! -e "$run_root" ]] && return 0
+  [[ -d "$run_root" && ! -L "$run_root" && "$(stat -c '%u:%g:%a' "$run_root" 2>/dev/null)" == '0:0:755' ]] || die 'Omacast runtime ownership is unsafe'
+  shopt -s nullglob
+  for entry in "$run_root"/*; do
+    [[ -e "$entry" ]] && die 'an Omacast network session still owns runtime state; wait for cleanup before restoring P2P clients'
+  done
+}
+reclaim_orphan_interfaces() {
+  local listed candidate details state link reclaimed=0
+  local -a candidates=()
+  verify_interface
+  verify_no_guard_session
+  command -v ip >/dev/null || die 'ip is required'
+  listed="$(iw dev)" || die 'could not inspect P2P interfaces'
+  while read -r candidate; do
+    [[ -n "$candidate" && "$candidate" == "p2p-$interface-"* ]] || continue
+    valid_interface "$candidate" || die 'an existing P2P interface has an invalid name'
+    [[ -e "$network_sys_root/$candidate/operstate" ]] || die 'an existing P2P interface has no kernel state'
+    state="$(<"$network_sys_root/$candidate/operstate")"
+    details="$(iw dev "$candidate" info 2>/dev/null)" || die 'could not inspect an existing P2P interface'
+    [[ "$state" == down && "$(awk '$1 == "type" {print $2; exit}' <<< "$details")" == P2P-client ]] || die 'an existing P2P interface may still be active'
+    link="$(iw dev "$candidate" link 2>/dev/null)" || die 'could not inspect an existing P2P link'
+    grep -Fxq 'Not connected.' <<< "$link" || die 'an existing P2P client is still connected'
+    ! ip -4 -o address show dev "$candidate" | grep -q . || die 'an existing P2P client still has an IPv4 address'
+    ! ip -6 -o address show dev "$candidate" scope global | grep -q . || die 'an existing P2P client still has a global IPv6 address'
+    candidates+=("$candidate")
+  done < <(awk -v prefix="p2p-$interface-" '$1 == "Interface" && index($2, prefix) == 1 {print $2}' <<< "$listed")
+  for candidate in "${candidates[@]}"; do
+    iw dev "$candidate" del || die 'could not remove an inactive P2P client'
+    ! iw dev "$candidate" info >/dev/null 2>&1 || die 'an inactive P2P client remained after recovery'
+    reclaimed=$((reclaimed + 1))
+  done
+  printf '{"schemaVersion":1,"kind":"omarchy-cast-guard-reclaim-status","ok":true,"reclaimed":%s}\n' "$reclaimed"
+}
 record_session_interfaces() { local candidate listed; [[ -f "$interfaces_file" && ! -L "$interfaces_file" && "$(stat -c '%u:%a' "$interfaces_file" 2>/dev/null)" == "$EUID:600" ]] || return 1; listed="$(iw dev)" || return 1; while read -r candidate; do [[ -n "$candidate" && "$candidate" == "p2p-$interface-"* ]] || continue; grep -Fxq "$candidate" "$interfaces_file" || printf '%s\n' "$candidate" >> "$interfaces_file"; done < <(awk -v prefix="p2p-$interface-" '$1 == "Interface" && index($2, prefix) == 1 {print $2}' <<< "$listed"); }
 remove_session_interfaces() { local owned details type removed all_removed=true; [[ -f "$interfaces_file" && ! -L "$interfaces_file" && "$(stat -c '%u:%a' "$interfaces_file" 2>/dev/null)" == "$EUID:600" ]] || return 1; while read -r owned; do [[ -n "$owned" && "$owned" == "p2p-$interface-"* ]] || continue; if ! details="$(iw dev "$owned" info 2>/dev/null)"; then continue; fi; type="$(awk '$1 == "type" {print $2; exit}' <<< "$details")"; if [[ "$type" != P2P-client ]]; then all_removed=false; continue; fi; removed=false; for _ in 1 2 3; do iw dev "$owned" del 2>/dev/null || true; if ! iw dev "$owned" info >/dev/null 2>&1; then removed=true; break; fi; sleep 0.1; done; [[ "$removed" == true ]] || all_removed=false; done < "$interfaces_file"; [[ "$all_removed" == true ]]; }
 
@@ -229,4 +285,5 @@ if [[ $# -eq 1 && "$1" == --version ]]; then
 fi
 
 parse_request "$@"
-prepare
+acquire_guard_lock
+if [[ "$action" == reclaim ]]; then reclaim_orphan_interfaces; else prepare; fi

@@ -42,7 +42,7 @@ jobs:
                 fakeroot ffmpeg git gpu-screen-recorder iproute2 iw libpulse \
                 networkmanager polkit python python-build python-dbus-next \
                 python-gobject python-hatchling python-installer shellcheck \
-                systemd wpa_supplicant
+                systemd util-linux wpa_supplicant
               useradd --create-home builder
               mkdir -p /build/source /build/dist
               cp -a /workspace/. /build/source/

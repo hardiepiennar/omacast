@@ -8,7 +8,12 @@ small, versioned request for the package-installed helper.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import os
 import re
+
+from .bounds import bounded_text
+from .command import Runner, run_command
 
 
 HELPER_PATH = "/usr/lib/omarchy-cast/omarchy-cast-guard"
@@ -67,6 +72,58 @@ def prepare_command(request: GuardRequest, *, helper_path: str = HELPER_PATH) ->
         "--frequency", str(request.frequency_mhz),
         "--duration", str(request.duration_seconds),
     )
+
+
+def reclaim_command(*, uid: int, interface: str, helper_path: str = HELPER_PATH) -> tuple[str, ...]:
+    if helper_path != HELPER_PATH:
+        raise GuardError("production guard path is fixed by the installed package")
+    if not isinstance(uid, int) or uid < 1000 or uid > 2_147_483_647:
+        raise GuardError("guard uid is outside the permitted user range")
+    if not _INTERFACE.fullmatch(interface):
+        raise GuardError("guard interface name is invalid")
+    return (
+        HELPER_PATH, "reclaim", "--schema-version", "1",
+        "--uid", str(uid), "--interface", interface,
+    )
+
+
+def orphan_interfaces_present(interface: str, *, runner: Runner = run_command) -> bool:
+    if not _INTERFACE.fullmatch(interface):
+        raise GuardError("guard interface name is invalid")
+    result = runner(("iw", "dev"), timeout=5)
+    if result.returncode != 0:
+        raise GuardError("could not inspect Wi-Fi Direct interfaces")
+    prefix = f"p2p-{interface}-"
+    return any(
+        len(fields) == 2 and fields[0] == "Interface" and fields[1].startswith(prefix)
+        for fields in (line.strip().split() for line in result.stdout.splitlines())
+    )
+
+
+def reclaim_orphan_interfaces(
+    interface: str, *, uid: int | None = None, runner: Runner = run_command,
+) -> dict[str, object]:
+    caller_uid = os.getuid() if uid is None else uid
+    result = runner(("pkexec", *reclaim_command(uid=caller_uid, interface=interface)), timeout=60)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "administrator approval was cancelled"
+        raise GuardError(bounded_text(detail.splitlines()[0], limit=240))
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise GuardError("guard returned invalid P2P recovery status") from exc
+    return validate_reclaim_result(payload)
+
+
+def validate_reclaim_result(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict) or set(payload) != {"schemaVersion", "kind", "ok", "reclaimed"}:
+        raise GuardError("guard returned an unexpected P2P recovery status")
+    if payload.get("schemaVersion") != 1 or payload.get("kind") != "omarchy-cast-guard-reclaim-status" or payload.get("ok") is not True:
+        raise GuardError("guard returned an incompatible P2P recovery status")
+    reclaimed = payload.get("reclaimed")
+    if not isinstance(reclaimed, int) or isinstance(reclaimed, bool) or not 0 <= reclaimed <= 32:
+        raise GuardError("guard returned an invalid P2P recovery count")
+    return dict(payload)
 
 
 def validate_helper_result(payload: object) -> dict[str, object]:

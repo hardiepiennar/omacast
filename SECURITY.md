@@ -10,6 +10,13 @@ companion package installs a declarative Polkit action that permits only that
 exact executable with `prepare` as its first argument, and only for the active
 local user. Casts therefore need no recurring password prompt. Installing or
 updating the companion package still requires explicit administrator approval.
+A second exact `reclaim` action always requires administrator approval. It is
+used only from explicit Restore when a down, disconnected P2P client blocks
+the normal fail-closed baseline; it accepts no interface other than the
+validated managed adapter selected by the controller and refuses to run while
+any protected Omacast root session exists. Prepare and reclaim hold the same
+root-owned runtime-directory lock, preventing either operation from racing the
+other's ownership check.
 
 The helper binds the requested UID to Polkit's authenticated `PKEXEC_UID`, then
 accepts a bounded, validated argument contract. It stores privileged
@@ -46,7 +53,10 @@ private socket, with the adapter, receiver, and frequency pinned by the
 authenticated guard request. The broker and recovery helper clear WFD metadata
 only while its exact value and root-owned marker still prove Omacast ownership.
 The guard records P2P clients created after its clean baseline in root-owned
-session state and removes only those recorded devices.
+session state and removes only those recorded devices automatically. Explicit
+administrator-approved reclaim prevalidates every matching device before any
+deletion and accepts only down, disconnected P2P clients without IPv4 or global
+IPv6 addresses.
 
 The detached user service holds a logind idle/sleep inhibitor while casting,
 applies a user-owned CPU weight to its complete supervised process tree, and

@@ -255,6 +255,12 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   Information subelement. The invalid Device Name encoder and advertisement
   are removed from both FluxCast and the privileged broker, and guard API 13
   prevents the corrected controller from accepting an older companion.
+- Ordinary startup continues to reject every unowned `p2p-$interface-*`
+  device. The explicit Restore path may request a separate administrator-
+  approved guard action only after detecting such a blocker. Guard API 14
+  prevalidates the full candidate set, refuses active Omacast root state, and
+  removes only down, disconnected P2P clients without IPv4 or global IPv6.
+  Preparation and reclaim serialize on the same root-owned runtime lock.
 
 ### Not yet proven
 
@@ -823,7 +829,7 @@ root `manifest.json`, a thin `ui/Panel.qml` bar widget, and a package-owned
 session helper. The controller issues a fixed, versioned `pkexec` request for a
 validated UID/interface/session/duration; the helper generates only
 session-named network state and a closed-operation supplicant broker, and an
-  independent recovery process bounds cleanup. Guard API revision 13 binds the
+  independent recovery process bounds cleanup. Guard API revision 14 binds the
 requested UID to
 Polkit's authenticated caller, while the installed declarative action permits
 only the exact guard executable with `prepare` as its first argument for an

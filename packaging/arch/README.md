@@ -20,14 +20,17 @@ fresh Arch Linux container and attests the package provenance.
 
 Arch dependencies include `python-dbus-next` and `python-gobject`, plus FFmpeg,
 GPU Screen Recorder, NetworkManager, wpa_supplicant, iw, PipeWire's PulseAudio
-client, polkit, systemd, and iproute2. The packaged command exposes only the
+client, polkit, systemd, iproute2, and util-linux. The packaged command exposes only the
 Miracast/WFD engine. Unused tray, Chromecast, DLNA, and LAN streaming modules
 and their Python dependencies are excluded from the wheel.
 
 The package provides the patched streaming engine, three immutable helper
-executables under `/usr/lib/omarchy-cast/`, and an exact-purpose Polkit action.
-The action permits only the helper's `prepare` command for the active local
-user; the helper additionally requires the requested UID to match Polkit's
+executables under `/usr/lib/omarchy-cast/`, and two exact-purpose Polkit actions.
+The passwordless action permits only the helper's `prepare` command for the
+active local user. A separate administrator-approved `reclaim` action can
+remove only disconnected, down P2P clients for the selected managed adapter
+when no Omacast root session exists. The helper additionally requires the
+requested UID to match Polkit's
 authenticated caller. The controller supplies a controller-issued session ID,
 a discovered interface, the calling UID, and a 60-second renewable safety lease. A healthy controller
 renews that lease while the cast runs; a missed lease triggers the independent
@@ -47,13 +50,12 @@ installed. The package-owned Polkit action is declarative and is removed with
 the package.
 
 The primary helper exposes an unprivileged JSON `--version` probe. Omacast
-requires guard API revision 13 and the matching FluxCast capability set before
+requires guard API revision 14 and the matching FluxCast capability set before
 enabling discovery or Cast, so independently updated marketplace UI cannot
 cross an older privileged-helper contract.
 
-API revision 13 retains API revision 12's protected-session and recovery
-contract while requiring both the honestly named GPU Screen Recorder engine
-surface and the corrected WFD source capability payload. Independent
+API revision 14 retains API revision 13's protected-session and recovery
+contract while adding the explicit inactive-P2P reclaim boundary. Independent
 recovery validates that identity and publishes a root-owned readiness marker;
 the primary helper refuses to create temporary network state or start the
 supplicant broker until that acknowledgement arrives within its bounded

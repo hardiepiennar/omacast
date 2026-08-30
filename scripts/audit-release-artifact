@@ -69,7 +69,7 @@ done
 package_info="$(bsdtar -xOf "$package" .PKGINFO)"
 grep -Fxq 'pkgname = fluxcast-omarchy-cast' <<<"$package_info" || die "unexpected package name"
 grep -Fxq "pkgver = $expected_version" <<<"$package_info" || die "package metadata does not match its filename"
-for dependency in python gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw polkit systemd iproute2 glib2; do
+for dependency in python gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw polkit systemd iproute2 util-linux glib2; do
   grep -Fxq "depend = $dependency" <<<"$package_info" || die "missing runtime dependency: $dependency"
 done
 for dependency in python-pillow python-pystray python-pychromecast python-upnpclient; do
@@ -93,17 +93,19 @@ python3 - "$policy" <<'PY' || die "Polkit action contract is incompatible"
 import sys
 import xml.etree.ElementTree as ET
 
-action = ET.parse(sys.argv[1]).getroot().find("action")
-assert action is not None and action.attrib == {"id": "com.omacast.guard.prepare"}
-defaults = action.find("defaults")
-assert defaults is not None
-assert {node.tag: node.text for node in defaults} == {
-    "allow_any": "no", "allow_inactive": "no", "allow_active": "yes",
-}
-assert {node.attrib["key"]: node.text for node in action.findall("annotate")} == {
-    "org.freedesktop.policykit.exec.path": "/usr/lib/omarchy-cast/omarchy-cast-guard",
-    "org.freedesktop.policykit.exec.argv1": "prepare",
-}
+actions = {action.attrib["id"]: action for action in ET.parse(sys.argv[1]).getroot().findall("action")}
+assert set(actions) == {"com.omacast.guard.prepare", "com.omacast.guard.reclaim"}
+for name, active in (("prepare", "yes"), ("reclaim", "auth_admin_keep")):
+    action = actions[f"com.omacast.guard.{name}"]
+    defaults = action.find("defaults")
+    assert defaults is not None
+    assert {node.tag: node.text for node in defaults} == {
+        "allow_any": "no", "allow_inactive": "no", "allow_active": active,
+    }
+    assert {node.attrib["key"]: node.text for node in action.findall("annotate")} == {
+        "org.freedesktop.policykit.exec.path": "/usr/lib/omarchy-cast/omarchy-cast-guard",
+        "org.freedesktop.policykit.exec.argv1": name,
+    }
 PY
 bash -n "$guard"
 bash -n "$recovery"
@@ -122,8 +124,8 @@ assert module.source_wfd_ies() == bytes.fromhex("00000600101c4400c8")
 PY
 
 guard_version="$($guard --version)"
-python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":13}' "$guard_version" \
-  || die "guard API contract does not match revision 13"
+python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":14}' "$guard_version" \
+  || die "guard API contract does not match revision 14"
 ! grep -Fq '/etc/dbus-1/system.d' "$guard" || die "guard still writes a temporary system-bus policy"
 grep -Fq 'omarchy-cast-supplicant-broker' "$guard" || die "guard does not start the session-scoped supplicant broker"
 ! grep -Fq 'RuntimeMaxSec' "$guard" || die "guard imposes a fixed wall-clock lifetime on a healthy broker"
@@ -137,6 +139,8 @@ done
 grep -Fq 'user_root="$session_root/user"' "$guard" || die "guard marker directory is not anchored below the root-owned session"
 grep -Fq 'install -d -m711 "$session_root"' "$guard" || die "guard does not create the protected session parent"
 ! grep -Fq '"$action" == stop' "$guard" || die "guard retains the unused privileged Stop verb"
+grep -Fq '"$action" == reclaim' "$guard" || die "guard lacks explicit inactive-P2P recovery"
+grep -Fq 'flock -n "$guard_lock_fd"' "$guard" || die "prepare and reclaim do not share a root-owned operation lock"
 grep -Fq 'interfaces_file="$session_root/p2p-interfaces"' "$guard" || die "guard lacks root-owned recorded P2P cleanup"
 grep -Fq 'interfaces_file="$root/p2p-interfaces"' "$recovery" || die "recovery lacks root-owned recorded P2P cleanup"
 grep -Fq 'interfaces_armed_file="$session_root/p2p-armed"' "$guard" || die "guard lacks the clean-baseline ownership marker"

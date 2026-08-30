@@ -34,9 +34,10 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         version = subprocess.run(("bash", str(guard), "--version"), check=False, capture_output=True, text=True)
         self.assertEqual(version.returncode, 0, version.stderr)
-        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 13})
+        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 14})
         source = guard.read_text(encoding="utf-8")
-        self.assertIn('[[ "$action" == prepare ]] || usage', source)
+        self.assertIn('[[ "$action" == prepare ]]', source)
+        self.assertIn('[[ "$action" == reclaim ]]', source)
         self.assertNotIn('"$action" == stop', source)
         self.assertNotIn('stop() {', source)
         self.assertNotIn(']] && prepare || stop', source)
@@ -60,7 +61,7 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("systemd network runtime directory is unsafe", source)
         self.assertIn('restore_networkd_state', source)
         self.assertIn('runtime_dirs_created=false', source)
-        self.assertIn("api_revision=13", source)
+        self.assertIn("api_revision=14", source)
         self.assertIn('user_root="$session_root/user"', source)
         self.assertNotIn('user_root="/run/user/', source)
         self.assertIn('install -d -m711 "$session_root"', source)
@@ -76,6 +77,9 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("remove_session_interfaces", source)
         self.assertIn("verify_clean_interface_baseline", source)
         self.assertNotIn("remove_stale_interfaces", source)
+        self.assertIn('flock -n "$guard_lock_fd"', source)
+        dispatch = source.rsplit('parse_request "$@"', 1)[1]
+        self.assertLess(dispatch.index("acquire_guard_lock"), dispatch.index('[[ "$action" == reclaim ]]'))
         active_loop = source.split('while owns_session && [[ ! -e "$stop_file" ]]; do', 1)[1].split("done", 1)[0]
         self.assertNotIn("record_session_interfaces", active_loop)
         self.assertNotIn("iw dev", active_loop)
@@ -544,7 +548,7 @@ network_manager_marker_valid
         self.assertIn("PYTHONPATH=src python -m unittest discover -s tests", recipe)
         self.assertNotIn("PYSTRAY_BACKEND", recipe)
         depends = recipe.split("depends=(", 1)[1].split(")", 1)[0]
-        for dependency in ("ffmpeg", "networkmanager", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2", "glib2"):
+        for dependency in ("ffmpeg", "networkmanager", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2", "util-linux", "glib2"):
             self.assertIn(f"'{dependency}'", depends)
         for removed in ("gstreamer", "gst-plugin-pipewire", "gst-plugins-base-libs"):
             self.assertNotIn(f"'{removed}'", depends)
@@ -682,21 +686,103 @@ if record_session_interfaces; then exit 3; fi
 
     def test_polkit_action_is_exact_and_active_local_only(self) -> None:
         policy = ET.parse(ROOT / "packaging" / "arch" / "com.omacast.guard.policy").getroot()
-        action = policy.find("action")
-        self.assertIsNotNone(action)
-        assert action is not None
-        self.assertEqual(action.attrib, {"id": "com.omacast.guard.prepare"})
-        defaults = action.find("defaults")
-        self.assertIsNotNone(defaults)
-        assert defaults is not None
-        self.assertEqual({child.tag: child.text for child in defaults}, {
-            "allow_any": "no", "allow_inactive": "no", "allow_active": "yes",
-        })
-        annotations = {item.attrib["key"]: item.text for item in action.findall("annotate")}
-        self.assertEqual(annotations, {
-            "org.freedesktop.policykit.exec.path": "/usr/lib/omarchy-cast/omarchy-cast-guard",
-            "org.freedesktop.policykit.exec.argv1": "prepare",
-        })
+        actions = {action.attrib["id"]: action for action in policy.findall("action")}
+        self.assertEqual(set(actions), {"com.omacast.guard.prepare", "com.omacast.guard.reclaim"})
+        for name, active in (("prepare", "yes"), ("reclaim", "auth_admin_keep")):
+            action = actions[f"com.omacast.guard.{name}"]
+            defaults = action.find("defaults")
+            self.assertIsNotNone(defaults)
+            assert defaults is not None
+            self.assertEqual({child.tag: child.text for child in defaults}, {
+                "allow_any": "no", "allow_inactive": "no", "allow_active": active,
+            })
+            annotations = {item.attrib["key"]: item.text for item in action.findall("annotate")}
+            self.assertEqual(annotations, {
+                "org.freedesktop.policykit.exec.path": "/usr/lib/omarchy-cast/omarchy-cast-guard",
+                "org.freedesktop.policykit.exec.argv1": name,
+            })
+
+    def test_explicit_recovery_removes_only_fully_inactive_p2p_clients(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+interface=wlan42
+network_sys_root="$2"
+deleted_file="$3"
+present=true
+verify_interface() { :; }
+verify_no_guard_session() { :; }
+iw() {
+  if [[ "$#" -eq 1 && "$1" == dev ]]; then
+    printf '%s\n' 'phy#0' '  Interface p2p-wlan42-0'
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == info ]]; then
+    [[ "$present" == true ]] || return 1
+    printf '%s\n' 'type P2P-client'
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == link ]]; then
+    printf '%s\n' 'Not connected.'
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == del ]]; then
+    present=false
+    printf '%s\n' "$2" >> "$deleted_file"
+  else
+    return 2
+  fi
+}
+ip() { return 0; }
+reclaim_orphan_interfaces
+[[ "$(<"$deleted_file")" == p2p-wlan42-0 ]]
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            state = root / "p2p-wlan42-0"
+            state.mkdir()
+            (state / "operstate").write_text("down\n", encoding="ascii")
+            deleted = root / "deleted"
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(root), str(deleted)),
+                check=False, capture_output=True, text=True, timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["reclaimed"], 1)
+
+    def test_explicit_recovery_prevalidates_every_candidate_before_deletion(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+interface=wlan42
+network_sys_root="$2"
+deleted_file="$3"
+verify_interface() { :; }
+verify_no_guard_session() { :; }
+iw() {
+  if [[ "$#" -eq 1 && "$1" == dev ]]; then
+    printf '%s\n' '  Interface p2p-wlan42-0' '  Interface p2p-wlan42-1'
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == info ]]; then
+    printf '%s\n' 'type P2P-client'
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == link ]]; then
+    [[ "$2" == p2p-wlan42-0 ]] && printf '%s\n' 'Not connected.' || printf '%s\n' 'Connected to 00:11:22:33:44:55'
+  elif [[ "$#" -eq 3 && "$1" == dev && "$3" == del ]]; then
+    printf '%s\n' "$2" >> "$deleted_file"
+  else
+    return 2
+  fi
+}
+ip() { return 0; }
+reclaim_orphan_interfaces
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in ("p2p-wlan42-0", "p2p-wlan42-1"):
+                state = root / name
+                state.mkdir()
+                (state / "operstate").write_text("down\n", encoding="ascii")
+            deleted = root / "deleted"
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(root), str(deleted)),
+                check=False, capture_output=True, text=True, timeout=2,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("still connected", result.stderr)
+            self.assertFalse(deleted.exists())
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
@@ -922,7 +1008,7 @@ if record_session_interfaces; then exit 3; fi
             self.assertNotIn(removed, workflow)
         self.assertIn("BUILD-ENVIRONMENT.txt", workflow)
         self.assertIn("RELEASE-BUILDER.txt", workflow)
-        for dependency in ("ffmpeg", "iproute2", "iw", "libpulse", "networkmanager", "polkit", "systemd", "wpa_supplicant"):
+        for dependency in ("ffmpeg", "iproute2", "iw", "libpulse", "networkmanager", "polkit", "systemd", "util-linux", "wpa_supplicant"):
             self.assertIn(dependency, workflow)
 
     def test_pull_request_workflow_reconstructs_and_tests_companion_patches(self) -> None:

@@ -15,4 +15,15 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/omarchy-cast/omarchy-cast-guard</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">prepare</annotate>
   </action>
+  <action id="com.omacast.guard.reclaim">
+    <description>Remove inactive Wi-Fi Direct clients left by a failed cast</description>
+    <message>Restore inactive Wi-Fi Direct clients that are blocking casting</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/omarchy-cast/omarchy-cast-guard</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">reclaim</annotate>
+  </action>
 </policyconfig>
