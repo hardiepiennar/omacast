@@ -541,6 +541,7 @@ network_manager_marker_valid
 
     def test_recipe_installs_the_immutable_privilege_boundary(self) -> None:
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
+        self.assertIn("pkgrel=73", recipe)
         self.assertIn('omarchy-cast-guard"', recipe)
         self.assertIn('omarchy-cast-guard-recover"', recipe)
         self.assertIn('omarchy-cast-supplicant-broker"', recipe)
@@ -651,6 +652,7 @@ interface=wlan42
 delete_attempts=0
 interface_present=true
 interface_type=P2P-client
+timeout() { shift 2; "$@"; }
 iw() {
   if [[ "$#" -eq 1 && "$1" == dev ]]; then
     printf '%s\n' 'phy#0' '  Interface p2p-wlan42-0' '  Interface p2p-wlan99-0'
@@ -698,6 +700,7 @@ printf '%s\n' p2p-wlan42-0 > "$interfaces_file"
 source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
 interfaces_file="$2"
 interface=wlan42
+timeout() { shift 2; "$@"; }
 iw() { printf '%s\n' 'phy#0' '  Interface p2p-wlan42-0'; }
 if record_session_interfaces; then exit 3; fi
 '''
@@ -706,7 +709,7 @@ if record_session_interfaces; then exit 3; fi
             record = root / "interfaces"
             target = root / "target"
             target.write_text("untouched", encoding="ascii")
-            cases = ("fifo", "symlink", "public")
+            cases = ("fifo", "symlink", "public", "oversized", "too-many-records")
             for case in cases:
                 with self.subTest(case=case):
                     record.unlink(missing_ok=True)
@@ -714,9 +717,18 @@ if record_session_interfaces; then exit 3; fi
                         os.mkfifo(record, mode=0o600)
                     elif case == "symlink":
                         record.symlink_to(target)
-                    else:
+                    elif case == "public":
                         record.write_text("", encoding="ascii")
                         record.chmod(0o644)
+                    elif case == "oversized":
+                        record.write_bytes(b"x" * 1025)
+                        record.chmod(0o600)
+                    else:
+                        record.write_text(
+                            "".join(f"p2p-wlan42-{index:02d}\n" for index in range(65)),
+                            encoding="ascii",
+                        )
+                        record.chmod(0o600)
                     result = subprocess.run(
                         ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), str(record)),
                         check=False,
@@ -755,6 +767,7 @@ deleted_file="$3"
 present=true
 verify_interface() { :; }
 verify_no_guard_session() { :; }
+timeout() { shift 2; "$@"; }
 iw() {
   if [[ "$#" -eq 1 && "$1" == dev ]]; then
     printf '%s\n' 'phy#0' '  Interface p2p-wlan42-0'
@@ -796,6 +809,7 @@ network_sys_root="$2"
 deleted_file="$3"
 verify_interface() { :; }
 verify_no_guard_session() { :; }
+timeout() { shift 2; "$@"; }
 iw() {
   if [[ "$#" -eq 1 && "$1" == dev ]]; then
     printf '%s\n' '  Interface p2p-wlan42-0' '  Interface p2p-wlan42-1'
@@ -827,6 +841,33 @@ reclaim_orphan_interfaces
             self.assertIn("still connected", result.stderr)
             self.assertFalse(deleted.exists())
 
+    def test_explicit_recovery_refuses_a_saturated_interface_inventory(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+interface=wlan42
+network_sys_root="$2"
+verify_interface() { :; }
+verify_no_guard_session() { :; }
+timeout() { shift 2; "$@"; }
+iw() {
+  if [[ "$#" -eq 1 && "$1" == dev ]]; then
+    for index in {0..64}; do printf '  Interface p2p-wlan42-%s\n' "$index"; done
+  else
+    return 2
+  fi
+}
+ip() { return 0; }
+reclaim_orphan_interfaces
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), temp),
+                check=False, capture_output=True, text=True, timeout=2,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("too many P2P interfaces", result.stderr)
+
     def test_explicit_recovery_revalidates_candidate_immediately_before_deletion(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
         harness = r'''
@@ -837,6 +878,7 @@ deleted_file="$3"
 link_checked_file="$4"
 verify_interface() { :; }
 verify_no_guard_session() { :; }
+timeout() { shift 2; "$@"; }
 iw() {
   if [[ "$#" -eq 1 && "$1" == dev ]]; then
     printf '%s\n' '  Interface p2p-wlan42-0'
