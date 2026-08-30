@@ -2559,3 +2559,18 @@ socket table. Its PID baseline cache is pruned to the current bounded process
 set on every sample. The telemetry path remains observational and fail-closed;
 reaching a cap can hide Nerd Mode detail but cannot stop or mutate the stream.
 Regressions exercise oversized child sets and stale-cache pruning.
+
+### Bounded diagnostic numeric parsing (2026-08-31)
+
+Discovery and Nerd Mode bounded the bytes feeding their parsers, but several
+numeric fields still used broad substring matches or converted values before
+checking lexical width and range. Extremely wide packet timestamps, wireless
+counters, progress fields, monitor dimensions, non-finite refresh rates, or
+scientific-notation fragments could therefore raise during a periodic sample
+or project misleading partial values into status.
+
+Wireless, progress, packet-clock, negotiated-mode, and monitor values now have
+closed lexical forms, finite bounds, and exact type checks before conversion.
+Invalid telemetry is omitted or falls back to zero without affecting media.
+Regressions cover 10,000-digit fields, partial decimals and exponents,
+non-finite values, booleans, and out-of-range dimensions and frequencies.

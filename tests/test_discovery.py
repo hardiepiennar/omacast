@@ -53,11 +53,26 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(monitors[0].width, 1920)
         self.assertTrue(monitors[0].focused)
 
+    def test_monitor_numbers_require_exact_bounded_finite_types(self) -> None:
+        monitors = parse_hyprland_monitors(json.dumps([
+            {"name": "bool", "width": True, "height": 1080, "refreshRate": 60},
+            {"name": "huge", "width": 16_385, "height": 1080, "refreshRate": 60},
+            {"name": "refresh", "width": 1920, "height": 1080, "refreshRate": float("inf")},
+        ]))
+        self.assertEqual([monitor.name for monitor in monitors], ["refresh"])
+        self.assertEqual(monitors[0].refresh_rate, 0.0)
+
     def test_parses_connected_and_disconnected_wifi_link(self) -> None:
         connected = parse_iw_link("wlan42", "Connected to aa:bb:cc:dd:ee:ff (on wlan42)\n\tSSID: Example Network\n\tfreq: 2412.0\n")
         disconnected = parse_iw_link("wlan43", "Not connected.\n")
         self.assertEqual((connected.ssid, connected.frequency_mhz), ("Example Network", 2412))
         self.assertFalse(disconnected.connected)
+
+    def test_wifi_frequency_rejects_wide_nonfinite_and_out_of_range_numbers(self) -> None:
+        for candidate in ("9" * 10_000, "Infinity", "2299", "7126", "2412.0000"):
+            with self.subTest(candidate=candidate[:20]):
+                link = parse_iw_link("wlan42", f"Connected\n\tSSID: Example\n\tfreq: {candidate}\n")
+                self.assertIsNone(link.frequency_mhz)
 
     def test_reports_failed_probes_as_diagnostics(self) -> None:
         def runner(args, *, timeout=5.0):

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
+import math
 import os
 from pathlib import Path
+import re
 import shutil
 from typing import Callable
 
@@ -79,19 +81,22 @@ def parse_hyprland_monitors(text: str) -> list[Monitor]:
         width = entry.get("width")
         height = entry.get("height")
         refresh = entry.get("refreshRate", 0)
-        if not isinstance(name, str) or not isinstance(width, int) or not isinstance(height, int):
+        if not isinstance(name, str) or type(width) is not int or type(height) is not int:
             continue
         if not name or len(name) > 128 or any(ord(character) < 32 or ord(character) == 127 for character in name):
             continue
-        if width <= 0 or height <= 0:
+        if not 1 <= width <= 16_384 or not 1 <= height <= 16_384:
             continue
+        refresh_rate = float(refresh) if type(refresh) in {int, float} else 0.0
+        if not math.isfinite(refresh_rate) or not 0.0 <= refresh_rate <= 1_000.0:
+            refresh_rate = 0.0
         monitors.append(
             Monitor(
                 name=name,
                 description=bounded_text(entry.get("description") if isinstance(entry.get("description"), str) else name, limit=240, fallback=name),
                 width=width,
                 height=height,
-                refresh_rate=float(refresh) if isinstance(refresh, (int, float)) else 0.0,
+                refresh_rate=refresh_rate,
                 focused=bool(entry.get("focused")),
             )
         )
@@ -112,8 +117,12 @@ def parse_iw_link(interface: str, text: str) -> WifiLink:
         elif line.startswith("freq:"):
             candidate = line.removeprefix("freq:").strip()
             try:
+                if not re.fullmatch(r"[0-9]{4}(?:\.[0-9]{1,3})?", candidate):
+                    continue
                 frequency_mhz = int(float(candidate))
-            except ValueError:
+                if not 2300 <= frequency_mhz <= 7125:
+                    frequency_mhz = None
+            except (ValueError, OverflowError):
                 pass
     return WifiLink(interface=interface, connected=True, ssid=ssid, frequency_mhz=frequency_mhz)
 

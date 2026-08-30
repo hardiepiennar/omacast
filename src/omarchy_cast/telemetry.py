@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from datetime import UTC, datetime
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -20,7 +21,9 @@ from .state import _open_session_runtime_descriptor, runtime_directory
 
 
 _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
-_NUMBER = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
+_NUMBER = re.compile(r"(?<![0-9A-Za-z_.+-])-?[0-9]{1,20}(?:\.[0-9]{1,9})?(?![0-9A-Za-z_.])")
+_PROGRESS_NUMBER = re.compile(r"^\s*(-?[0-9]{1,20}(?:\.[0-9]{1,9})?)(?:kbits/s)?\s*$")
+_INTEGER = re.compile(r"^-?[0-9]{1,20}$")
 MAX_ARCHIVED_TELEMETRY_BYTES = 8 * 1024 * 1024
 MAX_ENGINE_LOG_BYTES = 256 * 1024
 MAX_DESCENDANT_PROCESSES = 64
@@ -473,7 +476,8 @@ def parse_iw_station(text: str) -> dict[str, int | float]:
         match = _NUMBER.search(value) if separator and target else None
         if match:
             number = float(match.group())
-            fields[target] = int(number) if number.is_integer() else number
+            if math.isfinite(number) and abs(number) <= 1_000_000_000_000:
+                fields[target] = int(number) if number.is_integer() else number
     return fields
 
 
@@ -517,8 +521,19 @@ def _bounded_read(
 
 
 def _number(value: str | None, default: float = 0.0) -> float:
-    match = _NUMBER.search(value or "")
-    return float(match.group()) if match else default
+    match = _PROGRESS_NUMBER.fullmatch(value or "")
+    number = float(match[1]) if match else default
+    return number if math.isfinite(number) and abs(number) <= 1_000_000_000_000_000_000 else default
+
+
+def _bounded_integer(
+    value: str, *, minimum: int, maximum: int,
+) -> int | None:
+    candidate = value.strip()
+    if not _INTEGER.fullmatch(candidate):
+        return None
+    number = int(candidate)
+    return number if minimum <= number <= maximum else None
 
 
 class TelemetrySampler:
@@ -699,9 +714,13 @@ class TelemetrySampler:
         sizes: dict[int, int] = {}
         timebases: dict[int, float] = {}
         for line in self._workspace.read_text("packets").splitlines():
-            timebase = re.fullmatch(r"#tb\s+(\d+):\s+(\d+)/(\d+)", line.strip())
-            if timebase and int(timebase[3]):
-                timebases[int(timebase[1])] = int(timebase[2]) / int(timebase[3])
+            timebase = re.fullmatch(r"#tb\s+([0-9]{1,3}):\s+([0-9]{1,10})/([0-9]{1,10})", line.strip())
+            if timebase:
+                stream = _bounded_integer(timebase[1], minimum=0, maximum=255)
+                numerator = _bounded_integer(timebase[2], minimum=1, maximum=1_000_000_000)
+                denominator = _bounded_integer(timebase[3], minimum=1, maximum=1_000_000_000)
+                if stream is not None and numerator is not None and denominator is not None:
+                    timebases[stream] = numerator / denominator
                 continue
             if line.startswith("#"):
                 continue
@@ -709,10 +728,13 @@ class TelemetrySampler:
             if len(fields) < 5:
                 continue
             try:
-                stream = int(fields[0].strip())
-                timestamp = int(fields[2].strip()) * timebases.get(stream, 1.0)
-                size = int(fields[4].strip())
-            except ValueError:
+                stream = _bounded_integer(fields[0], minimum=0, maximum=255)
+                raw_timestamp = _bounded_integer(fields[2], minimum=-(2**63), maximum=2**63 - 1)
+                size = _bounded_integer(fields[4], minimum=0, maximum=2**31 - 1)
+                if stream is None or raw_timestamp is None or size is None:
+                    continue
+                timestamp = raw_timestamp * timebases.get(stream, 1.0)
+            except (ValueError, OverflowError):
                 continue
             streams.setdefault(stream, []).append(timestamp)
             sizes[stream] = sizes.get(stream, 0) + size
@@ -765,10 +787,14 @@ class TelemetrySampler:
                 continue
             if isinstance(event, dict) and event.get("event") == "media_starting":
                 mode = str(event.get("mode", ""))
-                match = re.fullmatch(r"(\d+)x(\d+)p(\d+)", mode)
+                match = re.fullmatch(r"([0-9]{1,5})x([0-9]{1,5})p([0-9]{1,4})", mode)
                 result = {"mode": mode, "tvIp": event.get("tv_ip")}
                 if match:
-                    result.update({"width": int(match[1]), "height": int(match[2]), "fps": int(match[3])})
+                    width = _bounded_integer(match[1], minimum=1, maximum=16_384)
+                    height = _bounded_integer(match[2], minimum=1, maximum=16_384)
+                    fps = _bounded_integer(match[3], minimum=1, maximum=1_000)
+                    if width is not None and height is not None and fps is not None:
+                        result.update({"width": width, "height": height, "fps": fps})
         return result
 
     def _output(self, now: float) -> dict[str, int | float | str]:

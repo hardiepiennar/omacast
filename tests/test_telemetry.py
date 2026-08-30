@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 from omarchy_cast.bounds import MAX_TELEMETRY_BYTES
 from omarchy_cast.telemetry import (
@@ -44,6 +45,15 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(station["txFailed"], 1)
         self.assertEqual(station["signalDbm"], -55)
         self.assertEqual(station["txBitrateMbps"], 117)
+
+    def test_station_parser_rejects_partial_wide_and_nonfinite_numbers(self) -> None:
+        station = parse_iw_station(
+            f"tx retries:\t{'9' * 10_000}\n"
+            "tx failed:\tInfinity\n"
+            "signal:\t-55.1234567890 dBm\n"
+            "tx bitrate:\t1e999 MBit/s\n"
+        )
+        self.assertEqual(station, {})
 
     def test_live_snapshot_is_private_versioned_and_session_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -332,6 +342,37 @@ class TelemetryTest(unittest.TestCase):
             self.assertEqual(timing["video"]["maxGapMs"], 33.0)
             self.assertEqual(timing["audio"]["maxGapMs"], 21.333)
             self.assertEqual(timing["avSkewMs"], 11.667)
+
+    def test_packet_and_progress_numbers_are_lexically_and_numerically_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            sampler = TelemetrySampler(session_id="a" * 32, engine_pid=999999, wifi_interface="wlan42", environ=environment)
+            huge = "9" * 10_000
+            sampler.paths["packets"].write_text(
+                f"#tb 0: {huge}/1\n0,0,{huge},33,{huge},0x0\n", encoding="utf-8",
+            )
+            sampler.paths["packets"].chmod(0o600)
+            sampler.paths["progress"].write_text(
+                f"frame={huge}\nout_time_us={huge}\nfps=1e999\nprogress=continue\n", encoding="utf-8",
+            )
+            sampler.paths["progress"].chmod(0o600)
+            self.assertEqual(sampler._packet_timing()["video"]["packets"], 0)
+            output = sampler._output(1.0)
+            self.assertEqual(output["frame"], 0)
+            self.assertEqual(output["reportedFps"], 0.0)
+            sampler.stop()
+
+    def test_negotiated_mode_numbers_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            sampler = TelemetrySampler(session_id="a" * 32, engine_pid=999999, wifi_interface="wlan42", environ=environment)
+            sampler.paths["latency"].write_text(
+                json.dumps({"event": "media_starting", "mode": "99999x1080p60", "tv_ip": "192.0.2.1"}) + "\n",
+                encoding="utf-8",
+            )
+            sampler.paths["latency"].chmod(0o600)
+            self.assertEqual(sampler._negotiated(), {"mode": "99999x1080p60", "tvIp": "192.0.2.1"})
+            sampler.stop()
 
     def test_finished_session_cleanup_removes_only_known_live_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

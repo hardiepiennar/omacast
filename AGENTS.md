@@ -122,6 +122,9 @@ Security review checklist:
   unless the contract explicitly proves it is the sole owner.
 - Validate protocol numbers by lexical width and numeric range before calling
   `int`; message-size limits alone do not make numeric conversion safe.
+- Apply the same rule to diagnostic and telemetry numbers: reject partial
+  matches, exponent/non-finite forms, booleans, and values outside a documented
+  finite range before projecting them into status or QML.
 - Bound periodic and persistent state as well as request input: journals,
   pending-request maps, retries, queues, and caches must remain bounded for an
   indefinitely long cast.
