@@ -552,8 +552,10 @@
 - [x] Pull-request CI reconstructs all production FluxCast patches from the
       pinned upstream revision in a pinned Arch snapshot, runs the companion
       suite, and exercises both doctor modes from fresh processes.
-- [ ] Build and install exact package revision 62, then run both shipped doctor
-      entry points before closing the circular-import report.
+- [x] Exact package revision 62 built from `64dbc6e`, passed artifact and
+      revision-61 upgrade/removal gates, installed with 160 unaltered files,
+      and completed both shipped doctor entry points. The matching installed
+      plugin reports `Casting support ready` with no readiness issues.
 - [ ] Exercise forced recovery and complete the canonical three consecutive
       30-minute acceptance sessions. Revision 60's short run and pre-broker
       20.5-minute soak do not satisfy these gates.

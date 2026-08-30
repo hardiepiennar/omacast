@@ -2274,3 +2274,13 @@ workflow now rebuilds the full production patch stack from the pinned upstream
 revision in the same pinned Arch snapshot family, runs the FluxCast suite, and
 executes both diagnostics entry points. Patch-stack breakage is therefore
 visible before merge rather than first appearing during release packaging.
+
+The exact revision-62 artifact built from `64dbc6e` has SHA-256
+`474c123a7a16fc5e086f6f5a0a69306277a51fe31cb28fd53cb20bbf9fd29ff5`.
+It passed the strengthened artifact audit and disposable revision-61 upgrade
+and removal gate, then installed with all 160 package files intact. Both
+system-installed doctor modes completed successfully. After the installed
+plugin fast-forwarded to the same commit and the Omarchy shell restarted, the
+installed controller reported `Casting support ready` with no readiness
+issues. No receiver or temporary network test was required for this
+diagnostic-only regression.
