@@ -31,3 +31,13 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(result.returncode, 124)
         self.assertEqual(result.stdout, "")
         self.assertEqual(result.stderr, "command timed out")
+
+    def test_completed_parent_cannot_leave_inherited_pipes_open(self) -> None:
+        child = "import time; time.sleep(30)"
+        parent = (
+            "import subprocess,sys; "
+            f"subprocess.Popen((sys.executable, '-c', {child!r}))"
+        )
+        result = run_command((sys.executable, "-c", parent), timeout=0.1)
+        self.assertEqual(result.returncode, 124)
+        self.assertEqual(result.stderr, "command timed out")

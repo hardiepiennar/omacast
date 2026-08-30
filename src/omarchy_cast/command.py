@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import selectors
 import signal
 import subprocess
-import threading
 import time
 from typing import Mapping, Protocol, Sequence
 
@@ -47,63 +47,72 @@ def run_command(
     except OSError as exc:
         return CommandResult(argv, 126, "", str(exc))
 
-    buffers = {"stdout": bytearray(), "stderr": bytearray()}
-    exceeded = threading.Event()
-
-    def drain(name: str, stream: object) -> None:
-        try:
-            while True:
-                chunk = stream.read(8192)  # type: ignore[attr-defined]
+    assert process.stdout is not None and process.stderr is not None
+    streams = {process.stdout: ("stdout", bytearray()), process.stderr: ("stderr", bytearray())}
+    selector = selectors.DefaultSelector()
+    for stream in streams:
+        os.set_blocking(stream.fileno(), False)
+        selector.register(stream, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout
+    timed_out = output_limited = False
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            events = selector.select(min(remaining, 0.05))
+            for key, _mask in events:
+                stream = key.fileobj
+                try:
+                    chunk = os.read(stream.fileno(), 8192)
+                except BlockingIOError:
+                    continue
                 if not chunk:
-                    break
-                buffer = buffers[name]
+                    selector.unregister(stream)
+                    continue
+                _name, buffer = streams[stream]
                 room = MAX_COMMAND_OUTPUT_BYTES + 1 - len(buffer)
                 if room > 0:
                     buffer.extend(chunk[:room])
                 if len(buffer) > MAX_COMMAND_OUTPUT_BYTES:
-                    exceeded.set()
-        finally:
-            stream.close()  # type: ignore[attr-defined]
+                    output_limited = True
+                    break
+            if output_limited:
+                break
+        if not timed_out and not output_limited:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+            else:
+                try:
+                    process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+    finally:
+        selector.close()
 
-    assert process.stdout is not None and process.stderr is not None
-    readers = [
-        threading.Thread(target=drain, args=("stdout", process.stdout), daemon=True),
-        threading.Thread(target=drain, args=("stderr", process.stderr), daemon=True),
-    ]
-    for reader in readers:
-        reader.start()
-    deadline = time.monotonic() + timeout
-    timed_out = output_limited = False
-    while process.poll() is None:
-        if exceeded.is_set():
-            output_limited = True
-            break
-        if time.monotonic() >= deadline:
-            timed_out = True
-            break
-        try:
-            process.wait(timeout=min(0.05, max(0.001, deadline - time.monotonic())))
-        except subprocess.TimeoutExpired:
-            pass
-    if timed_out or output_limited:
+    if timed_out or output_limited or process.poll() is None:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        returncode = process.wait()
-    else:
-        returncode = process.returncode
-    for reader in readers:
-        reader.join()
+    try:
+        returncode = process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        returncode = 124
+        timed_out = True
+    for stream in streams:
+        stream.close()
     assert returncode is not None
 
     if timed_out:
         return CommandResult(argv, 124, "", "command timed out")
-    if output_limited or exceeded.is_set():
+    if output_limited:
         return CommandResult(argv, 125, "", f"command output exceeded {MAX_COMMAND_OUTPUT_BYTES} bytes")
     return CommandResult(
         argv,
         returncode,
-        bytes(buffers["stdout"]).decode("utf-8", errors="replace"),
-        bytes(buffers["stderr"]).decode("utf-8", errors="replace"),
+        bytes(streams[process.stdout][1]).decode("utf-8", errors="replace"),
+        bytes(streams[process.stderr][1]).decode("utf-8", errors="replace"),
     )
