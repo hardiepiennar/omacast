@@ -2261,3 +2261,9 @@ existing suite hide the defect. The clean 36-patch reconstruction passes 149
 FluxCast tests, its source `--doctor-json` entry point completes, and all 185
 repository tests pass. Package revision 62 is prepared but must not be called
 installed or accepted until its exact artifact is built and exercised.
+
+The subsequent whole-tree audit found no sibling entry-point failure, but it
+did find that release artifact and disposable lifecycle checks executed only
+the packaged `--help` path. Both gates now execute `--doctor` and
+`--doctor-json`, then parse and validate the structured report. This makes the
+original installed-package failure part of the ordinary release boundary.

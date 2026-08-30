@@ -546,6 +546,9 @@
       and adds a fresh-interpreter import-order regression. The exact 36-patch
       reconstruction passes 149 FluxCast tests, and all 185 repository tests
       pass with companion package revision 62 prepared.
+- [x] Artifact and disposable install/upgrade lifecycle gates execute both
+      packaged doctor entry points and validate the structured report, so an
+      import-order regression cannot pass by exposing a working `--help` only.
 - [ ] Build and install exact package revision 62, then run both shipped doctor
       entry points before closing the circular-import report.
 - [ ] Exercise forced recovery and complete the canonical three consecutive

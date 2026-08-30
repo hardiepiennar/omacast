@@ -155,6 +155,23 @@ for removed_payload in \
   [[ ! -e "$removed_payload" ]] || die "package retains legacy integration payload: ${removed_payload#"$audit_root"}"
 done
 PYTHONPATH="$site_packages" "$engine" --help > "$audit_root/fluxcast-help.txt"
+PYTHONPATH="$site_packages" "$engine" --doctor > "$audit_root/fluxcast-doctor.txt"
+PYTHONPATH="$site_packages" "$engine" --doctor-json > "$audit_root/fluxcast-doctor.json"
+python3 - "$audit_root/fluxcast-doctor.json" <<'PY' \
+  || die "packaged engine returned an invalid diagnostic report"
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as report_file:
+    report = json.load(report_file)
+if not (
+    isinstance(report, dict)
+    and isinstance(report.get("checks"), list)
+    and isinstance(report.get("wfd_candidate"), bool)
+    and isinstance(report.get("summary"), str)
+):
+    raise SystemExit("unexpected diagnostic report shape")
+PY
 for flag in --wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-supplicant-broker --wfd-progress-log; do
   grep -Fq -- "$flag" "$audit_root/fluxcast-help.txt" || die "packaged engine is missing $flag"
 done
