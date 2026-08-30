@@ -64,7 +64,43 @@ Panel {
 
   function parseJson(text, fallback) {
     if (typeof text !== "string" || text.length > maxControllerResponseChars) return fallback
-    try { return JSON.parse(text) } catch (error) { return fallback }
+    try {
+      var value = JSON.parse(text)
+      return jsonShapeWithinBudget(value) ? value : fallback
+    } catch (error) { return fallback }
+  }
+
+  function jsonShapeWithinBudget(value) {
+    var pending = [{ value: value, depth: 0 }]
+    var nodes = 0
+    while (pending.length) {
+      var current = pending.pop()
+      if (++nodes > 4096 || current.depth > 12) return false
+      var item = current.value
+      if (item === null || typeof item === "boolean") continue
+      if (typeof item === "number") {
+        if (!isFinite(item)) return false
+        continue
+      }
+      if (typeof item === "string") {
+        if (item.length > 8192) return false
+        continue
+      }
+      if (Array.isArray(item)) {
+        if (item.length > 128) return false
+        for (var index = 0; index < item.length; index++)
+          pending.push({ value: item[index], depth: current.depth + 1 })
+        continue
+      }
+      if (!item || typeof item !== "object") return false
+      var keys = Object.keys(item)
+      if (keys.length > 128) return false
+      for (var keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+        if (keys[keyIndex].length > 128) return false
+        pending.push({ value: item[keys[keyIndex]], depth: current.depth + 1 })
+      }
+    }
+    return true
   }
 
   function parseJsonObject(text, fallback) {
