@@ -91,6 +91,7 @@ class TransportTest(unittest.TestCase):
         paths = {name: Path("/run/user/1000/omarchy-cast") / name for name in ("progress", "latency", "packets")}
         adapter = GuardedTransportAdapter(GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60), env={})
         command = adapter._engine_command(executable, paths, "/run/omarchy-cast/" + "a" * 32 + "/user/trigger", "/run/omarchy-cast/" + "a" * 32 + "/supplicant.sock")
+        self.assertEqual(command[command.index("--omacast-session") + 1], "a" * 32)
         self.assertEqual(command[command.index("--wfd-supplicant-hold") + 1], "45")
         self.assertNotIn("--wfd-packet-log", command)
 

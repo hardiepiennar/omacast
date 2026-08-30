@@ -1,0 +1,3382 @@
+From 395c115122ad2d821f3c8f9801d1455457314b3a Mon Sep 17 00:00:00 2001
+From: Omacast Maintainers <4540086+hardiepienaar@users.noreply.github.com>
+Date: Mon, 31 Aug 2026 06:51:50 +1200
+Subject: [PATCH 47/47] Restrict engine to guarded Omacast sessions
+
+---
+ pyproject.toml                         |  24 +-
+ src/capture/__init__.py                |  10 +-
+ src/capture/capture.py                 | 601 ++---------------------
+ src/diagnostics.py                     | 196 +-------
+ src/main.py                            | 251 ++++------
+ src/wfd/__init__.py                    | 270 +----------
+ src/wfd/env.py                         |  59 +--
+ src/wfd/media/pipeline.py              | 108 +----
+ src/wfd/media/wlroots.py               |   2 +-
+ src/wfd/p2p/peers.py                   |   2 +-
+ src/wfd/p2p/scan_nm.py                 |  90 ++++
+ src/wfd/probe.py                       |   2 -
+ src/wfd/rtsp/handler.py                |  11 +-
+ src/wfd/session.py                     | 188 ++------
+ tests/test_diagnostics.py              |   4 +-
+ tests/test_omacast_contract.py         | 109 +++++
+ tests/test_wfd.py                      | 641 -------------------------
+ tests/test_wfd_cooperative_shutdown.py |  26 +-
+ tests/test_wfd_p2p_nm.py               |  16 -
+ tests/test_wfd_p2p_ownership.py        | 176 -------
+ tests/test_wfd_p2p_supplicant.py       |  89 ----
+ 21 files changed, 448 insertions(+), 2427 deletions(-)
+ create mode 100644 src/wfd/p2p/scan_nm.py
+ create mode 100644 tests/test_omacast_contract.py
+ delete mode 100644 tests/test_wfd.py
+ delete mode 100644 tests/test_wfd_p2p_nm.py
+ delete mode 100644 tests/test_wfd_p2p_ownership.py
+ delete mode 100644 tests/test_wfd_p2p_supplicant.py
+
+diff --git a/pyproject.toml b/pyproject.toml
+index 5293046..736177e 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -6,22 +6,18 @@ build-backend = "hatchling.build"
+ name = "fluxcast"
+ version = "0.1.5"
+ description = "Omacast's pinned Miracast/Wi-Fi Display engine"
+-readme = "README.md"
++readme = {text = "Pinned Miracast engine used only through Omacast's guarded session controller.", content-type = "text/plain"}
+ license = {text = "GPL-3.0-or-later"}
+ authors = [
+     {name = "IlyaP358"},
+ ]
+ requires-python = ">=3.10"
+-dependencies = [
+-    "dbus-next>=0.2.3",
+-    "pygobject>=3.42.0",
+-]
++dependencies = []
+ keywords = [
+     "miracast", "wfd", "streaming", "tv", "linux", "wireless-display",
+ ]
+ classifiers = [
+     "Development Status :: 4 - Beta",
+-    "Environment :: X11 Applications",
+     "Intended Audience :: End Users/Desktop",
+     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+     "Operating System :: POSIX :: Linux",
+@@ -34,9 +30,8 @@ classifiers = [
+ ]
+ 
+ [project.urls]
+-Homepage = "https://fluxcast.secweb.cloud"
+-Repository = "https://github.com/IlyaP358/fluxcast"
+-Issues = "https://github.com/IlyaP358/fluxcast/issues"
++Repository = "https://github.com/hardiepiennar/omacast"
++Issues = "https://github.com/hardiepiennar/omacast/issues"
+ 
+ [project.scripts]
+ fluxcast = "main:main"
+@@ -52,6 +47,17 @@ exclude = [
+     "src/dlna/**",
+     "src/ui/**",
+     "src/server.py",
++    "src/capture/portal_capture.py",
++    "src/drivers/**",
++    "src/wfd/dump.py",
++    "src/wfd/firewall.py",
++    "src/wfd/gst.py",
++    "src/wfd/media/portal.py",
++    "src/wfd/media/testpattern.py",
++    "src/wfd/media/x11.py",
++    "src/wfd/p2p/device.py",
++    "src/wfd/p2p/nm.py",
++    "src/wfd/p2p/supplicant.py",
+ ]
+ 
+ [tool.hatch.build.targets.sdist]
+diff --git a/src/capture/__init__.py b/src/capture/__init__.py
+index 37c630c..8e10d9a 100644
+--- a/src/capture/__init__.py
++++ b/src/capture/__init__.py
+@@ -1,7 +1,5 @@
+-"""Public surface of the capture package; the code lives in capture.py."""
++"""Supported capture discovery surface."""
+ 
+-from .capture import (  # noqa: F401
+-    CaptureResult, CaptureStartError, FFMPEG_PATH, Monitor, SessionInfo,
+-    choose_capture_backend, describe_capture_selection, detect_session,
+-    gather_monitors, prompt_monitor, start_capture, stop_capture
+-)
++from .capture import Monitor, gather_monitors
++
++__all__ = ("Monitor", "gather_monitors")
+diff --git a/src/capture/capture.py b/src/capture/capture.py
+index 13e84d4..3eae030 100644
+--- a/src/capture/capture.py
++++ b/src/capture/capture.py
+@@ -1,592 +1,63 @@
+-import glob
++"""Bounded Hyprland monitor discovery for Omacast's GSR capture path."""
++
+ import json
+ import os
+-import re
+-import subprocess
+ import shutil
+-import sys
+-import time
+-from typing import Any, Optional, NamedTuple
++import subprocess
++from typing import NamedTuple
+ 
+ from wfd.proc import _run
+ 
+-FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/sbin/ffmpeg"
+-
+ 
+ class Monitor(NamedTuple):
+     display: str
+-    name: str # e.g. 'eDP-1'
++    name: str
+     width: int
+     height: int
+-    x: int # x offset within the combined framebuffer
++    x: int
+     y: int
+-    refresh: float # Hz
+-    primary: bool = False # xrandr 'primary' output
++    refresh: float
++    primary: bool = False
+ 
+ 
+-class SessionInfo(NamedTuple):
+-    session_type: str
+-    desktop: str
+-    wm: str
+-    is_hyprland: bool
+-    is_wayland: bool
+-    is_x11: bool
+-
+-
+-class CaptureStartError(RuntimeError):
+-    pass
+-
+-
+-class CaptureResult(NamedTuple):
+-    process: "subprocess.Popen[bytes]"
+-    aux_process: "Optional[subprocess.Popen[bytes]]" = None
+-    portal_session: Any = None
+-
+-
+-def detect_session() -> SessionInfo:
+-    session_type = (os.environ.get("XDG_SESSION_TYPE") or "").strip().lower()
+-    desktop = (os.environ.get("XDG_CURRENT_DESKTOP") or "").strip()
+-    wm = (os.environ.get("XDG_SESSION_DESKTOP") or "").strip()
+-    hypr_sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+-    is_hyprland = bool(hypr_sig) or "hyprland" in desktop.lower() or "hyprland" in wm.lower()
+-    is_wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or session_type == "wayland"
+-    is_x11 = bool(os.environ.get("DISPLAY")) and (session_type == "x11" or not is_wayland)
+-    if not session_type:
+-        session_type = "wayland" if is_wayland else ("x11" if is_x11 else "unknown")
+-    return SessionInfo(
+-        session_type=session_type,
+-        desktop=desktop or "unknown",
+-        wm=wm or "unknown",
+-        is_hyprland=is_hyprland,
+-        is_wayland=is_wayland,
+-        is_x11=is_x11,
+-    )
+-
+-
+-def _default_audio_monitor() -> str:
+-    pactl = shutil.which("pactl")
+-    if not pactl:
+-        return "default"
+-    try:
+-        result = _run([pactl, "get-default-sink"], timeout=2.0)
+-    except (subprocess.TimeoutExpired, OSError):
+-        return "default"
+-    sink = result.stdout.strip()
+-    if sink:
+-        return sink + ".monitor"
+-    return "default"
+-
+-
+-def _gst_has_element(name: str) -> bool:
+-    try:
+-        result = _run(["gst-inspect-1.0", name], timeout=10.0)
+-        return result.returncode == 0
+-    except (subprocess.TimeoutExpired, OSError):
+-        return False
+-
+-
+-def _auto_capture_backend_order() -> list[str]:
+-    session = detect_session()
+-    if session.is_hyprland:
+-        return ["wf-recorder", "x11grab"]
+-    if session.is_x11:
+-        return ["x11grab", "wf-recorder"]
+-    if session.is_wayland:
+-        return ["portal", "wf-recorder"]
+-    return ["x11grab", "wf-recorder"]
+-
+-
+-def choose_capture_backend(preferred: str = "auto") -> str:
+-    if preferred != "auto":
+-        return preferred
+-    return _auto_capture_backend_order()[0]
+-
+-
+-def describe_capture_selection(backend: str) -> None:
+-    session = detect_session()
+-    print(
+-        "[FluxCast] Session detected: "
+-        f"type={session.session_type}, desktop={session.desktop}, wm={session.wm}"
+-    )
+-    if backend == "portal":
+-        print("[FluxCast] Capture backend: XDG portal (KDE/GNOME Wayland)")
+-    elif backend == "wf-recorder" and session.is_wayland and not session.is_hyprland:
+-        print(
+-            "[FluxCast] Capture backend: wf-recorder (best-effort on this Wayland session). "
+-            "If capture fails, use an X11 session or install portal stack for KDE/GNOME."
+-        )
+-    elif backend == "x11grab" and session.is_wayland:
+-        print(
+-            "[FluxCast] Capture backend: x11grab (forced). "
+-            "On Wayland this may produce a black stream."
+-        )
+-    else:
+-        print(f"[FluxCast] Capture backend: {backend}")
+-
+-
+-def _detect_live_displays() -> list:
+-    locks = glob.glob("/tmp/.X*-lock")
+-    displays = []
+-    for lock in sorted(locks):
+-        m = re.search(r"/\.X(\d+)-lock$", lock)
+-        if m:
+-            displays.append(f":{m.group(1)}")
+-    return displays or [":0"]
+-
+-
+-def _parse_xrandr(display: str) -> list:
+-    xrandr = shutil.which("xrandr")
+-    if not xrandr:
+-        return []
+-
+-    env = os.environ.copy()
+-    env["DISPLAY"] = display
+-    try:
+-        result = _run([xrandr, "--query"], timeout=4, env=env)
+-    except (subprocess.TimeoutExpired, OSError):
+-        return []
+-
+-    if result.returncode != 0:
+-        return []
+-
+-    monitors: list = []
+-    lines = result.stdout.splitlines()
+-    for i, line in enumerate(lines):
+-        m = re.match(
+-            r"^(\S+)\s+connected\s+(primary\s+)?(\d+)x(\d+)\+(\d+)\+(\d+)",
+-            line,
+-        )
+-        if not m:
+-            continue
+-        primary = m.group(2) is not None
+-        name, w, h, x, y = m.group(1), int(m.group(3)), int(m.group(4)), int(m.group(5)), int(m.group(6))
+-        refresh = 0.0
+-        if i + 1 < len(lines):
+-            rm = re.search(r"([\d.]+)\*", lines[i + 1])
+-            if rm:
+-                refresh = float(rm.group(1))
+-        monitors.append(Monitor(
+-            display=display, name=name,
+-            width=w, height=h, x=x, y=y, refresh=refresh, primary=primary,
+-        ))
+-    return monitors
+-
+-
+-def _parse_hyprland_monitors() -> list:
++def gather_monitors() -> list[Monitor]:
+     hyprctl = shutil.which("hyprctl")
+-    if not hyprctl or not detect_session().is_hyprland:
++    if not hyprctl or not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+         return []
+     try:
+         result = _run([hyprctl, "monitors", "-j"], timeout=4)
+-        payload = json.loads(result.stdout) if result.returncode == 0 else []
+-    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
++        if result.returncode != 0 or len(result.stdout.encode("utf-8")) > 1_048_576:
++            return []
++        payload = json.loads(result.stdout)
++    except (subprocess.TimeoutExpired, OSError, UnicodeError, json.JSONDecodeError):
++        return []
++    if not isinstance(payload, list) or len(payload) > 64:
+         return []
+ 
+-    monitors: list = []
+-    for entry in payload if isinstance(payload, list) else []:
++    monitors: list[Monitor] = []
++    for entry in payload:
++        if not isinstance(entry, dict) or entry.get("disabled", False):
++            continue
+         try:
+-            if entry.get("disabled", False):
++            name = entry["name"]
++            if not isinstance(name, str) or not 1 <= len(name) <= 128:
++                continue
++            width = int(entry["width"])
++            height = int(entry["height"])
++            x = int(entry.get("x", 0))
++            y = int(entry.get("y", 0))
++            refresh = float(entry.get("refreshRate", 0.0))
++            if not 1 <= width <= 16384 or not 1 <= height <= 16384:
++                continue
++            if not -131072 <= x <= 131072 or not -131072 <= y <= 131072:
++                continue
++            if not 0 <= refresh <= 1000:
+                 continue
+             monitors.append(Monitor(
+                 display=os.environ.get("WAYLAND_DISPLAY", "wayland"),
+-                name=str(entry["name"]),
+-                width=int(entry["width"]),
+-                height=int(entry["height"]),
+-                x=int(entry.get("x", 0)),
+-                y=int(entry.get("y", 0)),
+-                refresh=float(entry.get("refreshRate", 0.0)),
+-                primary=bool(entry.get("focused", False)),
++                name=name, width=width, height=height, x=x, y=y,
++                refresh=refresh, primary=bool(entry.get("focused", False)),
+             ))
+-        except (KeyError, TypeError, ValueError):
++        except (KeyError, TypeError, ValueError, OverflowError):
+             continue
+     return monitors
+-
+-
+-def gather_monitors() -> list:
+-    hyprland_monitors = _parse_hyprland_monitors()
+-    if hyprland_monitors:
+-        return hyprland_monitors
+-    all_monitors: list = []
+-    for disp in _detect_live_displays():
+-        all_monitors.extend(_parse_xrandr(disp))
+-    return all_monitors
+-
+-
+-def prompt_monitor() -> Monitor:
+-    monitors = gather_monitors()
+-
+-    if not monitors:
+-        print("[FluxCast] WARNING: xrandr returned no monitors. Falling back to :0 1920x1080.")
+-        return Monitor(display=":0", name="(unknown)", width=1920, height=1080,
+-                       x=0, y=0, refresh=60.0)
+-
+-    # Default to the primary output (falls back to the first if none is marked).
+-    default_idx = next((i for i, mon in enumerate(monitors) if mon.primary), 0)
+-
+-    print("\n[FluxCast] Available monitors to capture:")
+-    print(f"  {'#':<4} {'Monitor':<12} {'Display':<8} "
+-          f"{'Resolution':<14} {'Position':<14} {'Refresh'}")
+-    print(f"  {'-'*4} {'-'*12} {'-'*8} {'-'*14} {'-'*14} {'-'*8}")
+-
+-    for i, mon in enumerate(monitors):
+-        pos = f"{mon.x},{mon.y}"
+-        hz = f"{mon.refresh:.1f} Hz" if mon.refresh else "—"
+-        active = " ← active" if i == default_idx else ""
+-        print(f"  [{i}]  {mon.name:<12} {mon.display:<8} "
+-              f"{mon.width}x{mon.height:<8} {pos:<14} {hz}{active}")
+-
+-    print()
+-    raw = input(f"Select monitor [{default_idx}]: ").strip()
+-    if raw == "":
+-        return monitors[default_idx]
+-    try:
+-        idx = int(raw)
+-        if not 0 <= idx < len(monitors):
+-            raise ValueError
+-        return monitors[idx]
+-    except ValueError:
+-        print(f"[FluxCast] Invalid choice, using monitor {default_idx}.")
+-        return monitors[default_idx]
+-
+-
+-def start_capture(
+-    monitor: Monitor,
+-    fps: int = 30,
+-    bitrate: str = "4M",
+-    output_resolution: Optional[str] = None,
+-    backend: str = "auto",
+-) -> "CaptureResult":
+-    backends = [backend] if backend != "auto" else _auto_capture_backend_order()
+-    errors: list[str] = []
+-
+-    for idx, candidate in enumerate(backends):
+-        describe_capture_selection(candidate)
+-        try:
+-            if candidate == "portal":
+-                return _start_capture_portal(monitor, fps, bitrate, output_resolution)
+-            if candidate == "x11grab":
+-                proc = _start_capture_x11grab(monitor, fps, bitrate, output_resolution)
+-            else:
+-                proc = _start_capture_wf_recorder(monitor, fps, bitrate, output_resolution)
+-            return CaptureResult(process=proc)
+-        except CaptureStartError as exc:
+-            errors.append(f"{candidate}: {exc}")
+-            if idx < len(backends) - 1:
+-                print(f"[FluxCast] Capture backend {candidate} failed, trying fallback...")
+-
+-    detail = "; ".join(errors) if errors else "unknown capture error"
+-    print(f"[FluxCast] ERROR: Could not start capture backend ({detail})")
+-    sys.exit(1)
+-
+-
+-def _start_capture_wf_recorder(
+-    monitor: Monitor,
+-    fps: int = 30,
+-    bitrate: str = "4M",
+-    output_resolution: Optional[str] = None,
+-) -> "subprocess.Popen[bytes]":
+-    if not shutil.which("wf-recorder"):
+-        raise CaptureStartError("wf-recorder not found in PATH")
+-    src_res = f"{monitor.width}x{monitor.height}"
+-
+-    if output_resolution:
+-        ow, oh = output_resolution.lower().split("x")
+-        out_w, out_h = int(ow), int(oh)
+-    else:
+-        out_w, out_h = 1920, 1080
+-
+-    audio_monitor = _default_audio_monitor()
+-
+-    cmd = [
+-        "wf-recorder",
+-        "-y",
+-        "-D",
+-        "-r", str(fps),
+-        f"--audio={audio_monitor}",
+-        "-C", "aac",
+-        "-P", "b:a=128k",
+-        "-c", "libx264",
+-        "-m", "hls",
+-        # scale to target res and force SAR=1:1 so the TV sees 16:9, not 16:10
+-        "-F", f"scale={out_w}:{out_h},setsar=1",
+-        "-p", "preset=ultrafast",
+-        "-p", "tune=zerolatency",
+-        "-p", "hls_time=1",
+-        "-p", "hls_list_size=3",
+-        "-p", "hls_flags=append_list",
+-        "-p", "pix_fmt=yuv420p",
+-        "-p", "profile=main",
+-        "-f", "/tmp/fluxcast/stream.m3u8",
+-        "-o", monitor.name,
+-    ]
+-
+-    print(f"[FluxCast] Capturing Wayland monitor : {monitor.name} ({src_res})")
+-    print(f"[FluxCast] Output: {out_w}x{out_h}, audio: {audio_monitor}")
+-
+-    hls_dir = "/tmp/fluxcast"
+-    if os.path.exists(hls_dir):
+-        shutil.rmtree(hls_dir)
+-    os.makedirs(hls_dir, exist_ok=True)
+-
+-    try:
+-        process = subprocess.Popen(
+-            cmd,
+-            stdin=subprocess.DEVNULL,
+-            stdout=subprocess.DEVNULL,
+-            stderr=subprocess.DEVNULL,
+-        )
+-    except FileNotFoundError as e:
+-        raise CaptureStartError(f"required executable not found: {e}") from e
+-
+-    time.sleep(1.5)
+-    if process.poll() is not None:
+-        raise CaptureStartError("wf-recorder exited immediately")
+-
+-    return process
+-
+-
+-def stop_capture(result: "Optional[CaptureResult]") -> None:
+-    if result is None:
+-        return
+-    for proc in (result.process, result.aux_process):
+-        if proc is None or proc.poll() is not None:
+-            continue
+-        proc.terminate()
+-        try:
+-            proc.wait(timeout=5)
+-        except subprocess.TimeoutExpired:
+-            proc.kill()
+-    if result.portal_session is not None:
+-        from .portal_capture import close_portal_capture
+-        close_portal_capture(result.portal_session)
+-
+-
+-def _start_capture_portal(
+-    monitor: Monitor,
+-    fps: int = 30,
+-    bitrate: str = "4M",
+-    output_resolution: Optional[str] = None,
+-) -> "CaptureResult":
+-    if not shutil.which("gst-launch-1.0"):
+-        raise CaptureStartError("portal backend requires gst-launch-1.0")
+-
+-    required = ("pipewiresrc", "videoconvert", "videoscale", "videorate",
+-                "x264enc", "h264parse", "hlssink2")
+-    missing = [e for e in required if not _gst_has_element(e)]
+-    if missing:
+-        raise CaptureStartError(
+-            "portal backend requires missing GStreamer elements: " + ", ".join(missing)
+-        )
+-
+-    from .portal_capture import (
+-        PortalCaptureError,
+-        close_portal_capture,
+-        start_portal_capture,
+-    )
+-
+-    b = bitrate.upper().rstrip("B")
+-    if b.endswith("M"):
+-        bitrate_kbits = int(float(b[:-1]) * 1000)
+-    elif b.endswith("K"):
+-        bitrate_kbits = int(float(b[:-1]))
+-    else:
+-        bitrate_kbits = max(1, int(b) // 1000)
+-
+-    out_w, out_h = monitor.width, monitor.height
+-    if output_resolution:
+-        try:
+-            ow, oh = output_resolution.lower().split("x")
+-            out_w, out_h = int(ow), int(oh)
+-        except (ValueError, AttributeError):
+-            pass
+-
+-    hls_dir = "/tmp/fluxcast"
+-    if os.path.exists(hls_dir):
+-        shutil.rmtree(hls_dir)
+-    os.makedirs(hls_dir, exist_ok=True)
+-
+-    audio_monitor = _default_audio_monitor()
+-    audio_enc = (
+-        "avenc_aac" if _gst_has_element("avenc_aac") else
+-        "faac" if _gst_has_element("faac") else None
+-    )
+-    has_audio = audio_enc is not None and _gst_has_element("pulsesrc")
+-
+-    print("[FluxCast] Opening portal screen-share dialog (KDE/GNOME Wayland)...")
+-    try:
+-        session = start_portal_capture(
+-            timeout=120.0,
+-            preferred_position=(monitor.x, monitor.y),
+-            preferred_size=(monitor.width, monitor.height),
+-        )
+-    except PortalCaptureError as exc:
+-        raise CaptureStartError(f"portal capture setup failed: {exc}") from exc
+-
+-    if session.size is not None and not output_resolution:
+-        out_w, out_h = session.size[0], session.size[1]
+-
+-    # Normalize to 16:9
+-    if not output_resolution:
+-        out_w, out_h = 1920, 1080
+-
+-    video_chain = [
+-        "pipewiresrc",
+-        f"fd={session.pw_fd}",
+-        f"path={session.pw_node_id}",
+-        "do-timestamp=true",
+-        # always-copy=true!! immediately copy PipeWire buffer to CPU memory so
+-        # x264enc doesn't stall waiting for DMA-buf download mid-pipeline
+-        "always-copy=true",
+-        "!", "queue", "max-size-buffers=8", "max-size-time=0", "leaky=downstream",
+-        "!", "videorate", "skip-to-first=true",
+-        "!", f"video/x-raw,framerate={fps}/1",
+-        "!", "videoconvert",
+-        "!", "videoscale", "add-borders=false",
+-        "!", f"video/x-raw,width={out_w},height={out_h},format=I420,pixel-aspect-ratio=1/1",
+-        "!", "x264enc",
+-        "tune=zerolatency",
+-        "speed-preset=ultrafast",
+-        f"bitrate={bitrate_kbits}",
+-        f"key-int-max={fps}",
+-        "threads=0",
+-        "bframes=0",
+-        "byte-stream=true",
+-        "aud=true",
+-        "!", "h264parse", "config-interval=-1",
+-        "!", "video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline",
+-        "!", "sink.video",
+-    ]
+-
+-    audio_chain: list[str] = []
+-    if has_audio:
+-        audio_chain = [
+-            "pulsesrc", f"device={audio_monitor}", "do-timestamp=true",
+-            "!", "audioconvert",
+-            "!", "audioresample",
+-            "!", "audio/x-raw,rate=48000,channels=2",
+-            "!", audio_enc, "bitrate=128000",
+-            "!", "aacparse",
+-            "!", "sink.audio",
+-        ]
+-
+-    gst_cmd = [
+-        "gst-launch-1.0", "-e", "-q",
+-        "hlssink2", "name=sink",
+-        f"location={hls_dir}/stream%05d.ts",
+-        f"playlist-location={hls_dir}/stream.m3u8",
+-        "target-duration=1",
+-        "playlist-length=3",
+-        "max-files=4",
+-        *video_chain,
+-        *audio_chain,
+-    ]
+-
+-    print(f"[FluxCast] Portal capture: node={session.pw_node_id}, output={out_w}x{out_h}@{fps}")
+-    if session.position and session.size:
+-        print(
+-            f"[FluxCast] Portal source: "
+-            f"pos={session.position[0]},{session.position[1]} "
+-            f"size={session.size[0]}x{session.size[1]}"
+-        )
+-    if has_audio:
+-        print(f"[FluxCast] Capturing audio: {audio_monitor}")
+-
+-    try:
+-        gst_proc = subprocess.Popen(
+-            gst_cmd,
+-            stdin=subprocess.DEVNULL,
+-            stdout=subprocess.DEVNULL,
+-            stderr=subprocess.DEVNULL,
+-            pass_fds=(session.pw_fd,),
+-        )
+-    except FileNotFoundError as exc:
+-        close_portal_capture(session)
+-        raise CaptureStartError(f"gst-launch-1.0 not found: {exc}") from exc
+-
+-    time.sleep(2.5)
+-    if gst_proc.poll() is not None:
+-        close_portal_capture(session)
+-        raise CaptureStartError("portal GStreamer HLS pipeline exited immediately")
+-
+-    return CaptureResult(process=gst_proc, portal_session=session)
+-
+-
+-def _start_capture_x11grab(
+-    monitor: Monitor,
+-    fps: int = 30,
+-    bitrate: str = "4M",
+-    output_resolution: Optional[str] = None,
+-) -> "subprocess.Popen[bytes]":
+-    ffmpeg = shutil.which("ffmpeg")
+-    if not ffmpeg:
+-        raise CaptureStartError("ffmpeg is required for x11grab backend")
+-    if not os.environ.get("DISPLAY"):
+-        raise CaptureStartError("DISPLAY is not set for x11grab")
+-
+-    display = os.environ.get("DISPLAY", monitor.display or ":0")
+-    src_res = f"{monitor.width}x{monitor.height}"
+-    out_res = output_resolution or src_res
+-    audio_monitor = _default_audio_monitor()
+-    hls_dir = "/tmp/fluxcast"
+-
+-    if os.path.exists(hls_dir):
+-        shutil.rmtree(hls_dir)
+-    os.makedirs(hls_dir, exist_ok=True)
+-
+-    cmd = [
+-        ffmpeg,
+-        "-hide_banner",
+-        "-loglevel", "warning",
+-        "-y",
+-        "-thread_queue_size", "1024",
+-        "-f", "x11grab",
+-        "-framerate", str(fps),
+-        "-video_size", src_res,
+-        "-i", f"{display}+{monitor.x},{monitor.y}",
+-        "-thread_queue_size", "1024",
+-        "-f", "pulse",
+-        "-i", audio_monitor,
+-        "-map", "0:v:0",
+-        "-map", "1:a:0",
+-    ]
+-
+-    if out_res != src_res:
+-        cmd += ["-vf", f"scale={out_res.replace('x', ':')}:flags=bilinear,format=yuv420p"]
+-    else:
+-        cmd += ["-vf", "format=yuv420p"]
+-
+-    cmd += [
+-        "-c:v", "libx264",
+-        "-preset", "veryfast",
+-        "-tune", "zerolatency",
+-        "-pix_fmt", "yuv420p",
+-        "-r", str(fps),
+-        "-g", str(max(1, fps)),
+-        "-b:v", bitrate,
+-        "-maxrate", bitrate,
+-        "-bufsize", "2M",
+-        "-c:a", "aac",
+-        "-b:a", "128k",
+-        "-ac", "2",
+-        "-ar", "48000",
+-        "-f", "hls",
+-        "-hls_time", "2",
+-        "-hls_list_size", "6",
+-        "-hls_flags", "append_list",
+-        "-hls_segment_filename", os.path.join(hls_dir, "stream%d.ts"),
+-        os.path.join(hls_dir, "stream.m3u8"),
+-    ]
+-
+-    print(f"[FluxCast] Capturing X11 region : {display}+{monitor.x},{monitor.y} ({src_res})")
+-    if out_res != src_res:
+-        print(f"[FluxCast] Scaling output to : {out_res}")
+-
+-    try:
+-        process = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+-    except FileNotFoundError as exc:
+-        raise CaptureStartError(f"required executable not found: {exc}") from exc
+-
+-    time.sleep(1.5)
+-    if process.poll() is not None:
+-        raise CaptureStartError("x11grab capture exited immediately")
+-    return process
+diff --git a/src/diagnostics.py b/src/diagnostics.py
+index 223cf9b..ae9bf8f 100644
+--- a/src/diagnostics.py
++++ b/src/diagnostics.py
+@@ -1,5 +1,4 @@
+ import json
+-import importlib.util
+ import ipaddress
+ import os
+ import platform
+@@ -79,47 +78,6 @@ def _command_check(
+     return Check(binary, status, purpose, "not found in PATH")
+ 
+ 
+-def _gst_element_check(element: str, purpose: str, install_hint: str) -> Check:
+-    gst_inspect = shutil.which("gst-inspect-1.0")
+-    if not gst_inspect:
+-        return Check(
+-            f"gst element {element}",
+-            STATUS_WARN,
+-            f"{purpose} could not be verified",
+-            f"gst-inspect-1.0 not found; {install_hint}",
+-        )
+-
+-    try:
+-        result = _run([gst_inspect, element], timeout=5.0)
+-    except (OSError, subprocess.TimeoutExpired) as exc:
+-        return Check(
+-            f"gst element {element}",
+-            STATUS_WARN,
+-            f"{purpose} could not be verified",
+-            str(exc),
+-        )
+-
+-    if result.returncode == 0:
+-        return Check(
+-            f"gst element {element}",
+-            STATUS_OK,
+-            purpose,
+-            element,
+-        )
+-
+-    detail = (result.stderr or result.stdout).strip()
+-    if detail:
+-        detail = detail.replace("\n", " | ") + "; " + install_hint
+-    else:
+-        detail = install_hint
+-    return Check(
+-        f"gst element {element}",
+-        STATUS_WARN,
+-        f"{purpose} is missing",
+-        detail,
+-    )
+-
+-
+ def _first_matching_command(commands: list[str]) -> Optional[str]:
+     for command in commands:
+         if shutil.which(command):
+@@ -127,18 +85,6 @@ def _first_matching_command(commands: list[str]) -> Optional[str]:
+     return None
+ 
+ 
+-def _python_module_check(module: str, purpose: str, required: bool = False) -> Check:
+-    if importlib.util.find_spec(module) is not None:
+-        return Check(module, STATUS_OK, purpose, "python module is installed")
+-    status = STATUS_FAIL if required else STATUS_WARN
+-    return Check(
+-        module,
+-        status,
+-        purpose,
+-        "python module is missing; install with pip",
+-    )
+-
+-
+ def _ffmpeg_encoders() -> Check:
+     ffmpeg = _first_matching_command(["ffmpeg", "/usr/sbin/ffmpeg"])
+     if not ffmpeg:
+@@ -182,120 +128,22 @@ def _ffmpeg_encoders() -> Check:
+     )
+ 
+ 
+-_PORTAL_BACKENDS = [
+-    "xdg-desktop-portal-hyprland",
+-    "xdg-desktop-portal-kde",
+-    "xdg-desktop-portal-gnome",
+-    "xdg-desktop-portal-wlr",
+-    "xdg-desktop-portal-lxqt",
+-]
+-
+-
+-def _portal_process_check() -> Check:
+-    """Check whether xdg-desktop-portal and a backend are actually running."""
+-
+-    def _pgrep(name: str) -> bool:
+-        try:
+-            r = _run(["pgrep", "-f", name], timeout=2.0)
+-            return r.returncode == 0
+-        except (OSError, subprocess.TimeoutExpired):
+-            return False
+-
+-    running_backend = next((b for b in _PORTAL_BACKENDS if _pgrep(b)), None)
+-    if running_backend:
+-        return Check(
+-            "xdg-desktop-portal",
+-            STATUS_OK,
+-            "Wayland portal stack is running",
+-            running_backend,
+-        )
+-
+-    if _pgrep("xdg-desktop-portal"):
+-        return Check(
+-            "xdg-desktop-portal",
+-            STATUS_WARN,
+-            "portal daemon running but no backend process detected",
+-            "is a portal backend installed and enabled?",
+-        )
+-
+-    return Check(
+-        "xdg-desktop-portal",
+-        STATUS_WARN,
+-        "portal daemon not running",
+-        "not needed for GPU Screen Recorder (Hyprland/Sway); required for GNOME/KDE capture",
+-    )
+-
+-
+ def _display_capture_check() -> Check:
+     wayland = os.environ.get("WAYLAND_DISPLAY")
+-    x11 = os.environ.get("DISPLAY")
+     gpu_screen_recorder = _find_binary("gpu-screen-recorder")
+-    xrandr = shutil.which("xrandr")
+-    portal = _find_binary(
+-        "xdg-desktop-portal",
+-        extra_paths=["/usr/libexec/xdg-desktop-portal", "/usr/lib/xdg-desktop-portal"],
+-    )
+-    portal_kde = _find_binary(
+-        "xdg-desktop-portal-kde",
+-        extra_paths=["/usr/libexec/xdg-desktop-portal-kde", "/usr/lib/xdg-desktop-portal-kde"],
+-    )
+-    portal_gnome = _find_binary(
+-        "xdg-desktop-portal-gnome",
+-        extra_paths=["/usr/libexec/xdg-desktop-portal-gnome", "/usr/lib/xdg-desktop-portal-gnome"],
+-    )
+-    portal_wlr = _find_binary(
+-        "xdg-desktop-portal-wlr",
+-        extra_paths=["/usr/libexec/xdg-desktop-portal-wlr", "/usr/lib/xdg-desktop-portal-wlr"],
+-    )
+-    portal_hyprland = _find_binary(
+-        "xdg-desktop-portal-hyprland",
+-        extra_paths=["/usr/libexec/xdg-desktop-portal-hyprland", "/usr/lib/xdg-desktop-portal-hyprland"],
+-    )
+-
+-    if wayland and gpu_screen_recorder:
++    hyprland = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
++    if wayland and hyprland and gpu_screen_recorder:
+         return Check(
+             "screen capture",
+             STATUS_OK,
+-            "Wayland capture path is available",
++            "Hyprland GPU Screen Recorder path is available",
+             f"WAYLAND_DISPLAY={wayland}; gpu-screen-recorder={gpu_screen_recorder}",
+         )
+-    if wayland and portal and (portal_kde or portal_gnome or portal_wlr or portal_hyprland):
+-        backend = portal_kde or portal_gnome or portal_wlr or portal_hyprland
+-        return Check(
+-            "screen capture",
+-            STATUS_OK,
+-            "Wayland portal stack is available",
+-            f"WAYLAND_DISPLAY={wayland}; portal={portal}; backend={backend}",
+-        )
+-    if x11 and xrandr:
+-        return Check(
+-            "screen capture",
+-            STATUS_OK,
+-            "X11 capture path is available",
+-            f"DISPLAY={x11}; xrandr={xrandr}",
+-        )
+-    if wayland:
+-        detail = "Install gpu-screen-recorder or xdg-desktop-portal + desktop-specific backend."
+-        if not portal:
+-            detail = "xdg-desktop-portal not found; install portal stack for KDE/GNOME capture."
+-        return Check(
+-            "screen capture",
+-            STATUS_WARN,
+-            "Wayland detected, but capture backend is incomplete",
+-            detail,
+-        )
+-    if x11:
+-        return Check(
+-            "screen capture",
+-            STATUS_WARN,
+-            "X11 detected, but xrandr is missing",
+-            "monitor detection may fail",
+-        )
+     return Check(
+         "screen capture",
+-        STATUS_WARN,
+-        "no active WAYLAND_DISPLAY or DISPLAY detected",
+-        "run from the graphical desktop session",
++        STATUS_FAIL,
++        "the supported Hyprland capture path is unavailable",
++        "run from an Omarchy/Hyprland session with gpu-screen-recorder installed",
+     )
+ 
+ 
+@@ -671,7 +519,7 @@ def _wfd_candidate(checks: list[Check], *, p2p_backend: str) -> bool:
+     return network_hw_ok and media_ok and dnsmasq_ok
+ 
+ 
+-def run_diagnostics(skip_firewall: bool = False, *, p2p_backend: str = "networkmanager") -> DiagnosticReport:
++def run_diagnostics(skip_firewall: bool = True, *, p2p_backend: str = "supplicant") -> DiagnosticReport:
+     firewall_check = (
+         Check("firewall", STATUS_SKIP, "disabled by --wfd-no-firewall")
+         if skip_firewall
+@@ -680,34 +528,12 @@ def run_diagnostics(skip_firewall: bool = False, *, p2p_backend: str = "networkm
+     checks = [
+         _python_check(),
+         _command_check("ffmpeg", "video/audio transcoding", required=True),
+-        _command_check("gpu-screen-recorder", "Wayland/wlroots screen capture"),
+-        _portal_process_check(),
++        _command_check("gpu-screen-recorder", "Hyprland screen capture", required=True),
+         _command_check("pactl", "PulseAudio/PipeWire-Pulse audio monitor detection"),
+-        _command_check("xrandr", "X11 monitor detection fallback"),
+-        _command_check("nmcli", "NetworkManager Wi-Fi Direct control"),
+-        _command_check(
+-            "dnsmasq",
+-            "NetworkManager P2P DHCP server",
+-            extra_paths=["/usr/sbin/dnsmasq"],
+-        ),
++        _command_check("nmcli", "NetworkManager host Wi-Fi discovery"),
+         _command_check("iw", "kernel Wi-Fi interface inspection"),
+-        _command_check("wpa_cli", "active Wi-Fi Direct scan/control"),
++        _command_check("wpa_cli", "active Wi-Fi Direct discovery fallback"),
+         _command_check("gdbus", "passive wpa_supplicant D-Bus capability checks"),
+-        _command_check("gst-launch-1.0", "optional future WFD GStreamer pipeline"),
+-        _command_check("gst-inspect-1.0", "optional future WFD codec inspection"),
+-        _gst_element_check(
+-            "pipewiresrc",
+-            "Wayland portal GStreamer capture source",
+-            "install the GStreamer PipeWire plugin "
+-            "(Debian/Ubuntu: gstreamer1.0-pipewire; Arch/Fedora: gst-plugin-pipewire)",
+-        ),
+-        _gst_element_check(
+-            "x264enc",
+-            "Wayland portal GStreamer H.264 encoder",
+-            "install the GStreamer x264 plugin "
+-            "(Debian/Ubuntu: gstreamer1.0-plugins-ugly; Arch/Fedora: gst-plugins-ugly)",
+-        ),
+-        _python_module_check("dbus_next", "WFD portal capture control plane for KDE/GNOME Wayland"),
+         _ffmpeg_encoders(),
+         _display_capture_check(),
+         _audio_check(),
+@@ -725,7 +551,7 @@ def run_diagnostics(skip_firewall: bool = False, *, p2p_backend: str = "networkm
+         summary = (
+             "Miracast/WFD looks possible via NetworkManager."
+             if p2p_backend == "networkmanager"
+-            else "Miracast/WFD looks possible via the direct supplicant backend."
++            else "Miracast/WFD looks possible via Omacast's guarded supplicant backend."
+         )
+     elif any(check.name in {"NetworkManager", "iw P2P"} and check.status == STATUS_OK for check in checks):
+         summary = "Wi-Fi Direct hardware is visible, but media/capture readiness is incomplete."
+diff --git a/src/main.py b/src/main.py
+index e03336e..7112c2f 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -1,197 +1,115 @@
+-"""
+-FluxCast entry point
+-
+-Usage:
+-    python main.py [OPTIONS]
+-
+-General Options:
+-    --protocol wfd           Miracast/Wi-Fi Display (default and only protocol)
+-    --doctor                 Print passive system capability diagnostics and exit
+-    --doctor-json            Print diagnostics as JSON and exit
+-
+-Streaming & Encoding Options:
+-    --output-res WxH         Scale output (e.g. 1920x1080); default: native
+-    --fps N                  Frames per second (default: 30)
+-    --bitrate Xm             Video bitrate (default: 4M)
+-
+-Wi-Fi Display (Miracast) Options:
+-    --wfd-scan               Run active Wi-Fi Direct discovery and exit
+-    --wfd-peer PEER          Peer selector: index, MAC, or name
+-    --wfd-dry-run            Print D-Bus call without activating connection
+-    --wfd-test-pattern       Stream generated test video instead of the desktop
+-    --wfd-ffmpeg-stats       Show ffmpeg progress statistics for WFD streams
+-    --wfd-media-pipeline auto|ffmpeg|gst
+-                             RTP media sender (default: auto)
+-    --wfd-capture-backend gpu-screen-recorder
+-                             Omacast desktop capture backend
+-    --wfd-latency-log PATH   Write latency/session events to JSONL log file
+-    --wfd-no-audio           Stream video only
+-    --wfd-aosp-pmt-pid       MPEG-TS tables as Android sinks expect them; for a sink
+-                             that connects but shows a black screen (uses ffmpeg)
+-    --wfd-dump-ts [PATH]     Dump the transmitted MPEG-TS and self-check it
+-    --wfd-audio-device DEV   Pulse/PipeWire monitor source for audio
+-    --wfd-rtsp-port PORT     RTSP port advertised in WFD IEs (default: 7236)
+-    --wfd-rtp-source-port P  Local RTP source port (default: 19002)
+-    --wfd-interface IFACE    Wi-Fi interface to use, e.g. wlan0
+-    --wfd-timeout N          Wi-Fi Direct scan timeout in seconds (default: 8)
+-    --wfd-go-intent 0-15     P2P group-owner intent; 0 lets the TV be the owner (default: 0)
+-    --wfd-p2p-backend BACKEND
+-                             networkmanager (default) or direct supplicant control
+-    --wfd-supplicant-mode MODE
+-                             connect (default), authorize, or join
+-    --wfd-monitor NAME       Deprecated alias for --monitor
+-"""
++"""Omacast's pinned, guarded Wi-Fi Display engine entry point."""
+ 
+ import argparse
++import os
++import re
+ import signal
+ import sys
+ 
++
+ def _wfd_sigterm(_signum, _frame) -> None:
+-    """Turn service-manager termination into the WFD path's normal unwind."""
+     raise KeyboardInterrupt
+ 
+ 
+ def parse_args() -> argparse.Namespace:
+-    parser = argparse.ArgumentParser(
+-        description="FluxCast — stream your Linux desktop to a Smart TV"
+-    )
+-
+-    # General Options
++    parser = argparse.ArgumentParser(description="FluxCast — Omacast's guarded Miracast engine")
+     general = parser.add_argument_group("General Options")
+-    general.add_argument("--protocol", default="wfd",
+-                         choices=["wfd"],
+-                         help="Connection protocol: wfd (Miracast; only supported mode)")
+-    general.add_argument("--doctor", action="store_true",
+-                         help="Print passive system capability diagnostics and exit")
+-    general.add_argument("--doctor-json", action="store_true", dest="doctor_json",
+-                         help="Print diagnostics as JSON and exit")
++    general.add_argument("--protocol", default="wfd", choices=["wfd"])
++    general.add_argument("--doctor", action="store_true")
++    general.add_argument("--doctor-json", action="store_true", dest="doctor_json")
++    general.add_argument("--omacast-session", default=None, dest="omacast_session",
++                         help="Controller-issued guarded session identifier")
+ 
+-    # Streaming & Encoding Options
+-    stream_opts = parser.add_argument_group("Streaming & Encoding Options")
+-    stream_opts.add_argument("--output-res", default=None, dest="output_res",
+-                             help="Scale output to WxH, e.g. 1920x1080 (default: native)")
+-    stream_opts.add_argument("--fps", type=int, default=30,
+-                             help="Frames per second (default: 30)")
+-    stream_opts.add_argument("--bitrate", default="4M",
+-                             help="Video bitrate (default: 4M)")
++    stream = parser.add_argument_group("Omacast Safe profile")
++    stream.add_argument("--output-res", default=None, dest="output_res")
++    stream.add_argument("--fps", type=int, default=30)
++    stream.add_argument("--bitrate", default="4M")
++    stream.add_argument("--monitor", default=None, dest="monitor_name")
+ 
+-    # Wi-Fi Display (Miracast) Options
+-    wfd = parser.add_argument_group("Wi-Fi Display (Miracast) Options")
+-    wfd.add_argument("--monitor", default=None, dest="monitor_name",
+-                     help="Pre-select monitor by name, e.g. eDP-1")
+-    wfd.add_argument("--wfd-scan", action="store_true", dest="wfd_scan",
+-                     help="Run active Wi-Fi Direct discovery and exit")
+-    wfd.add_argument("--wfd-peer", default=None, dest="wfd_peer",
+-                     help="WFD peer selector for --protocol wfd: index, MAC, or name")
+-    wfd.add_argument("--wfd-dry-run", action="store_true", dest="wfd_dry_run",
+-                     help="Print WFD connection D-Bus call without activating it")
+-    wfd.add_argument("--wfd-test-pattern", action="store_true", dest="wfd_test_pattern",
+-                     help="For --protocol wfd, stream generated test video instead of the desktop")
+-    wfd.add_argument("--wfd-ffmpeg-stats", action="store_true", dest="wfd_ffmpeg_stats",
+-                     help="For --protocol wfd, show ffmpeg progress statistics")
+-    wfd.add_argument("--wfd-media-pipeline", default="auto",
+-                     choices=["auto", "ffmpeg", "gst"],
+-                     dest="wfd_media_pipeline",
+-                     help="For --protocol wfd, RTP media sender: auto (gst for test-pattern, ffmpeg for desktop), ffmpeg, or gst")
++    wfd = parser.add_argument_group("Guarded Wi-Fi Display session")
++    wfd.add_argument("--wfd-scan", action="store_true", dest="wfd_scan")
++    wfd.add_argument("--wfd-peer", default=None, dest="wfd_peer")
+     wfd.add_argument("--wfd-capture-backend", default="gpu-screen-recorder",
+-                     dest="wfd_capture_backend", choices=["gpu-screen-recorder"],
+-                     help="Desktop capture backend for --protocol wfd: gpu-screen-recorder "
+-                          "(the only Omacast-supported capture path)")
+-    wfd.add_argument("--wfd-video-encoder", default="auto",
+-                     choices=["auto", "software", "vaapi"],
+-                     dest="wfd_video_encoder",
+-                     help="H.264 encoder for WFD desktop capture: auto, software, or "
+-                          "Intel/AMD VAAPI (default: auto)")
+-    wfd.add_argument("--wfd-latency-log", nargs="?", const="/tmp/fluxcast-wfd-latency.jsonl",
+-                     default=None, dest="wfd_latency_log",
+-                     help="For --protocol wfd, JSONL file path for latency/session logging "
+-                          "(default: /tmp/fluxcast-wfd-latency.jsonl)")
+-    wfd.add_argument("--wfd-progress-log", default=None, dest="wfd_progress_log",
+-                     help="For --protocol wfd, write machine-readable ffmpeg progress at 250 ms intervals")
+-    wfd.add_argument("--wfd-packet-log", default=None, dest="wfd_packet_log",
+-                     help="For --protocol wfd, write per-stream packet timestamps before muxing")
+-    wfd.add_argument("--wfd-dump-ts", nargs="?", const="/tmp/fluxcast-wfd-stream.ts",
+-                     default=None, dest="wfd_dump_ts",
+-                     help="For --protocol wfd, write the transmitted MPEG-TS to this file and "
+-                          "print a self-check of its PID layout, SPS/PPS and IDR cadence "
+-                          "(default: /tmp/fluxcast-wfd-stream.ts). Debug only, the file grows "
+-                          "at the stream bitrate")
+-    wfd.add_argument("--wfd-aosp-pmt-pid", action="store_true", dest="wfd_aosp_pmt_pid",
+-                     help="For --protocol wfd, write the MPEG-TS tables the way Android "
+-                          "sinks expect them. Use it when the session connects but the "
+-                          "sink shows a black screen, seen on Android TV boxes and "
+-                          "projectors. Uses the ffmpeg sender")
+-    wfd.add_argument("--wfd-no-audio", action="store_true", dest="wfd_no_audio",
+-                     help="For --protocol wfd, stream video only")
+-    wfd.add_argument("--wfd-audio-device", default=None, dest="wfd_audio_device",
+-                     help="Pulse/PipeWire monitor source for --protocol wfd audio")
+-    wfd.add_argument("--wfd-rtsp-port", type=int, default=7236, dest="wfd_rtsp_port",
+-                     help="RTSP port advertised in WFD IEs (default: 7236)")
+-    wfd.add_argument("--wfd-no-firewall", action="store_true", dest="wfd_no_firewall",
+-                     help="Do not auto-open the WFD RTSP port via firewalld for the "
+-                          "session (use if you manage the firewall yourself)")
+-    wfd.add_argument("--wfd-rtp-source-port", type=int, default=19002, dest="wfd_rtp_source_port",
+-                     help="Local RTP source port for --protocol wfd (default: 19002)")
+-    wfd.add_argument("--wfd-interface", default=None, dest="wfd_interface",
+-                     help="Wi-Fi interface to use for --wfd-scan, e.g. wlan0")
+-    wfd.add_argument("--wfd-timeout", type=int, default=8, dest="wfd_timeout",
+-                     help="Wi-Fi Direct scan timeout in seconds (default: 8)")
+-    wfd.add_argument("--wfd-go-intent", type=int, default=0, dest="wfd_go_intent",
+-                     choices=range(0, 16), metavar="0-15",
+-                     help="P2P group-owner intent (0-15); 0 forces the TV to be "
+-                          "the group owner, which most Miracast TVs require to "
+-                          "start the session (default: 0)")
+-    wfd.add_argument("--wfd-p2p-backend", default="networkmanager",
+-                     choices=["networkmanager", "supplicant"], dest="wfd_p2p_backend",
+-                     help="P2P control backend: networkmanager (default), or "
+-                          "supplicant for direct role control")
+-    wfd.add_argument("--wfd-supplicant-mode", default="connect",
+-                     choices=["authorize", "connect", "join"],
+-                     dest="wfd_supplicant_mode",
+-                     help="Direct supplicant role mode: connect initiates locally "
+-                          "(default), authorize lets the sink initiate, join targets an "
+-                          "already-running sink group")
++                     choices=["gpu-screen-recorder"], dest="wfd_capture_backend")
++    wfd.add_argument("--wfd-video-encoder", default=None,
++                     choices=["libx264", "vaapi"], dest="wfd_video_encoder")
++    wfd.add_argument("--wfd-latency-log", default=None, dest="wfd_latency_log")
++    wfd.add_argument("--wfd-progress-log", default=None, dest="wfd_progress_log")
++    wfd.add_argument("--wfd-audio-device", default=None, dest="wfd_audio_device")
++    wfd.add_argument("--wfd-no-firewall", action="store_true", dest="wfd_no_firewall")
++    wfd.add_argument("--wfd-interface", default=None, dest="wfd_interface")
++    wfd.add_argument("--wfd-timeout", type=int, default=8, dest="wfd_timeout")
++    wfd.add_argument("--wfd-p2p-backend", default=None, choices=["supplicant"],
++                     dest="wfd_p2p_backend")
++    wfd.add_argument("--wfd-supplicant-mode", default=None, choices=["connect"],
++                     dest="wfd_supplicant_mode")
+     wfd.add_argument("--wfd-supplicant-hold", type=int, default=45,
+-                     dest="wfd_supplicant_hold", metavar="SECONDS",
+-                     help="How long the direct supplicant role diagnostic waits and then "
+-                          "holds a formed group (default: 45)")
+-    wfd.add_argument("--wfd-supplicant-preconnect-delay", type=int, default=0,
+-                     dest="wfd_supplicant_preconnect_delay", metavar="SECONDS",
+-                     help="Diagnostic delay after discovery and before the direct "
+-                          "supplicant request (default: 0)")
++                     dest="wfd_supplicant_hold", metavar="SECONDS")
+     wfd.add_argument("--wfd-supplicant-network-trigger", default=None,
+-                     dest="wfd_supplicant_network_trigger", metavar="PATH",
+-                     help="Create a guarded-session trigger file immediately before "
+-                          "the direct-supplicant pre-connection delay")
++                     dest="wfd_supplicant_network_trigger", metavar="PATH")
+     wfd.add_argument("--wfd-supplicant-broker", default=None,
+-                     dest="wfd_supplicant_broker", metavar="SOCKET",
+-                     help="Use the session-scoped Omacast broker instead of granting "
+-                          "the user direct supplicant mutation access")
++                     dest="wfd_supplicant_broker", metavar="SOCKET")
+     wfd.add_argument("--wfd-supplicant-frequency", type=int, default=0,
+-                     dest="wfd_supplicant_frequency", metavar="MHZ",
+-                     help="Preferred direct P2P operating frequency in MHz; use the "
+-                          "existing Wi-Fi frequency for single-channel adapters")
+-    wfd.add_argument("--wfd-monitor", default=None, dest="monitor_name",
+-                     help="Deprecated alias for --monitor, kept for compatibility")
++                     dest="wfd_supplicant_frequency", metavar="MHZ")
+     return parser.parse_args()
+ 
+ 
+-# ── terminal helpers ──────────────────────────────────────────────────────────
++_SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
++_MAC = re.compile(r"^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
++_NAME = re.compile(r"^[A-Za-z0-9_.:@+-]{1,128}$")
++
++
++def _validate_omacast_session(args: argparse.Namespace) -> None:
++    """Reject every streaming launch outside the controller-owned contract."""
++    from wfd import WFDNotReady
++
++    session_id = args.omacast_session
++    if not isinstance(session_id, str) or not _SESSION_ID.fullmatch(session_id):
++        raise WFDNotReady("Streaming requires an Omacast guarded session.")
++    expected_root = f"/run/omarchy-cast/{session_id}"
++    if args.wfd_supplicant_broker != f"{expected_root}/supplicant.sock":
++        raise WFDNotReady("The supplicant broker does not belong to this session.")
++    if args.wfd_supplicant_network_trigger != f"{expected_root}/user/trigger":
++        raise WFDNotReady("The network trigger does not belong to this session.")
++    owner_fd = re.compile(rf"^/proc/{os.getppid()}/fd/[0-9]+$")
++    if not owner_fd.fullmatch(args.wfd_progress_log or ""):
++        raise WFDNotReady("The progress output is not owned by the controller.")
++    if not owner_fd.fullmatch(args.wfd_latency_log or ""):
++        raise WFDNotReady("The latency output is not owned by the controller.")
++    if args.wfd_progress_log == args.wfd_latency_log:
++        raise WFDNotReady("Progress and latency outputs must be distinct.")
++    exact = {
++        "protocol": "wfd", "output_res": "1280x720", "fps": 60,
++        "bitrate": "7M", "wfd_capture_backend": "gpu-screen-recorder",
++        "wfd_p2p_backend": "supplicant", "wfd_supplicant_mode": "connect",
++        "wfd_no_firewall": True,
++    }
++    if any(getattr(args, name) != value for name, value in exact.items()):
++        raise WFDNotReady("The launch is outside Omacast's supported Safe profile.")
++    for value, label in (
++        (args.wfd_interface, "Wi-Fi interface"),
++        (args.monitor_name, "monitor"),
++        (args.wfd_audio_device, "audio source"),
++    ):
++        if not isinstance(value, str) or not _NAME.fullmatch(value):
++            raise WFDNotReady(f"The {label} identifier is invalid.")
++    if not isinstance(args.wfd_peer, str) or not _MAC.fullmatch(args.wfd_peer):
++        raise WFDNotReady("The receiver identifier must be a MAC address.")
++    if not 1 <= args.wfd_timeout <= 30:
++        raise WFDNotReady("The receiver scan timeout is outside the supported range.")
++    if not 0 <= args.wfd_supplicant_frequency <= 7125:
++        raise WFDNotReady("The P2P frequency is outside the supported range.")
++    if not 1 <= args.wfd_supplicant_hold <= 75:
++        raise WFDNotReady("The P2P group timeout is outside the supported range.")
+ 
+-# ── main ─────────────────────────────────────────────────────────────────────
+ 
+ def main() -> None:
+     args = parse_args()
+-
+     if args.doctor or args.doctor_json:
+         from diagnostics import print_report, run_diagnostics
+-        report = run_diagnostics(skip_firewall=getattr(args, "wfd_no_firewall", False))
+-        if args.doctor_json:
+-            print(report.to_json())
+-        else:
+-            print_report(report)
++        report = run_diagnostics(skip_firewall=True, p2p_backend="supplicant")
++        print(report.to_json()) if args.doctor_json else print_report(report)
+         return
+-
+     if args.wfd_scan:
+         from wfd import WFDNotReady, active_scan, print_scan
+         try:
+@@ -207,6 +125,7 @@ def main() -> None:
+     signal.signal(signal.SIGTERM, _wfd_sigterm)
+     try:
+         try:
++            _validate_omacast_session(args)
+             start_experimental_backend(args)
+         except WFDNotReady as exc:
+             print(f"[FluxCast WFD] ERROR: {exc}")
+diff --git a/src/wfd/__init__.py b/src/wfd/__init__.py
+index 367f94e..5acfce6 100644
+--- a/src/wfd/__init__.py
++++ b/src/wfd/__init__.py
+@@ -1,257 +1,13 @@
+-import re
+-import random
+-import socket
+-import socketserver
+-import shutil
+-import subprocess
+-import threading
+-import time
+-import json
+-import os
+-from datetime import datetime, timezone
+-from dataclasses import dataclass, replace
+-from typing import Optional
+-
+-from diagnostics import print_report, run_diagnostics
+-from capture.portal_capture import PortalCaptureError, PortalCaptureSession, close_portal_capture, start_portal_capture
+-
+- 
+-from .constants import WFD_RTSP_PORT, _DEVICE_NAME, WFD_CEA_640P60, WFD_CEA_720P30, WFD_CEA_720P60, WFD_CEA_1080P30, WFD_CEA_1080P60, WFD_VESA_1200P30, WFD_VESA_1200P60, WFD_LEVEL_31, WFD_LEVEL_32, WFD_LEVEL_40, WFD_LEVEL_42, WFD_LEVEL_50, WFD_LEVEL_51, WFD_AUDIO_AAC, WFD_AUDIO_LPCM_48K, NM_DEST, NM_PATH
+-
+-
+-from .ie import _wfd_ie_device_info, WFDPeer, _parse_gdbus_byte_array, _parse_wfd_ies_rtsp_port
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .config import WFDNotReady, WFDMediaConfig, WFDVideoFormat, WFDCEAMode
+-
+-
+-from .rtsp.message import RTSPMessage, _read_rtsp_message, _parse_parameters, _parse_rtp_ports, _parse_transport_client_ports
+-
+-
+-
+-
+-
+-
+-
+-
+-from .modes import WFD_CEA_MODES, WFD_VESA_MODES, _parse_sink_video_format, _choose_profile, _encoder_h264_profile, _max_wfd_level, _wfd_level_for_mode, _desired_resolution, _choose_cea_mode, _selected_video_format, _h264_level_for_mode
+-
+-
+-
+-from .encoding import _parse_resolution, _fit_inside, _letterbox_vf, _vbv_bufsize, _bitrate_to_kbits, _kbits_to_bitrate_text, _quality_floor_kbits, _calculate_gop
+-
+-
+-from .env import _detect_audio_monitor, _is_hyprland_session, _is_wayland_session, _is_x11_session, _wfd_capture_backend_order
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .gst import _gst_has_element, _wfd_gst_prog_map, _gst_rtp_link, _gst_dump_branch, _gst_wfd_sender_available, _gst_pipewiresrc_properties, _gst_x264enc_props_cache, _gst_x264enc_properties, _pipewiresrc_selector_attempts, _gst_pick_aac_encoder
+-
+-
+-
+-
+-
+-
+-from .dump import _process_written_bytes, _ts_dump_reported, report_ts_dump, schedule_ts_dump_report
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .latency import _append_latency_log
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .net import _safe_source_port, _rtp_url, _interface_for_ip, _netdev_tx_bytes, _ffmpeg_sender_args
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .media.pipeline import WFDMediaPipeline
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .rtsp.handler import _WFDRTSPHandler
+-
+-
+-from .rtsp.rtsp_server import _ThreadingTCPServer, WFDRTSPServer
+-
+-
+-
+-
+-from .proc import _run
+-
+-
+-from .firewall import _firewalld_active, _FIREWALL_AUTH_TIMEOUT, _FIREWALL_QUERY_TIMEOUT, _WFD_FIREWALL_ZONE, _print_firewall_manual_hint, _open_wfd_firewall_port, _close_wfd_firewall_port
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .p2p.dbus import _wfd_source_ie, _object_paths, _variant_string, _variant_uint, _variant_uint_tuple, NM_ACTIVE_STATE_NAMES, NM_DEVICE_STATE_NAMES, NM_DEVICE_REASON_NAMES, _gdbus_call, _nm_get_property, _nm_get_string, _variant_byte_array
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .p2p.nm import _nm_device_summary, _nm_active_devices, _wait_for_nm_activation, _nm_p2p_device_path, _nm_start_find, _nm_stop_find, _nm_scan, _connection_settings, _connect_peer, _disconnect_device, _deactivate_connection
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .p2p.peers import _select_peer, _scan_and_select, _default_wifi_interface, _parse_peer_name, active_scan, print_scan
+-
+-
+-
+-
+-
+-
+-from .p2p.device import _p2p_device_iface_paths, _set_p2p_device_name, _read_p2p_go_intent, _set_p2p_go_intent
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .session import _cleanup_step, start_experimental_backend
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-from .p2p.addressing import _get_peer_ip_from_arp, _get_peer_ip_from_p2p_iface, _wait_for_peer_ip
+-
+-
+-
+-
+-
+-
+-from .probe import _active_rtsp_probe
+-
+-
++"""Supported public surface of Omacast's pinned WFD engine."""
++
++from .config import WFDMediaConfig, WFDNotReady
++from .p2p.peers import active_scan, print_scan
++from .session import start_experimental_backend
++
++__all__ = (
++    "WFDMediaConfig",
++    "WFDNotReady",
++    "active_scan",
++    "print_scan",
++    "start_experimental_backend",
++)
+diff --git a/src/wfd/env.py b/src/wfd/env.py
+index 79898ca..f0b5235 100644
+--- a/src/wfd/env.py
++++ b/src/wfd/env.py
+@@ -1,57 +1,14 @@
+-import os
++"""Media environment helpers used by the supported capture path."""
++
+ import subprocess
+ 
+-from .config import WFDMediaConfig
++from .proc import _run
+ 
+ 
+ def _detect_audio_monitor() -> str:
+     try:
+-        sink = subprocess.check_output(
+-            ["pactl", "get-default-sink"],
+-            text=True,
+-            stderr=subprocess.DEVNULL,
+-        ).strip()
+-        if sink:
+-            return sink + ".monitor"
+-    except Exception:
+-        pass
+-
+-    try:
+-        out = subprocess.check_output(
+-            ["pactl", "list", "short", "sinks"],
+-            text=True,
+-            stderr=subprocess.DEVNULL,
+-        )
+-        for line in out.splitlines():
+-            if "RUNNING" in line:
+-                return line.split("\t")[1] + ".monitor"
+-    except Exception:
+-        pass
+-    return "default"
+-
+-def _is_hyprland_session() -> bool:
+-    desktop = (os.environ.get("XDG_CURRENT_DESKTOP") or "").lower()
+-    session = (os.environ.get("XDG_SESSION_DESKTOP") or "").lower()
+-    return bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")) or "hyprland" in desktop or "hyprland" in session
+-
+-def _is_wayland_session() -> bool:
+-    session_type = (os.environ.get("XDG_SESSION_TYPE") or "").lower()
+-    return bool(os.environ.get("WAYLAND_DISPLAY")) or session_type == "wayland"
+-
+-def _is_x11_session() -> bool:
+-    session_type = (os.environ.get("XDG_SESSION_TYPE") or "").lower()
+-    return bool(os.environ.get("DISPLAY")) and (session_type == "x11" or not _is_wayland_session())
+-
+-def _wfd_capture_backend_order(config: WFDMediaConfig) -> list[str]:
+-    if config.capture_backend != "auto":
+-        return [config.capture_backend]
+-    if _is_hyprland_session():
+-        return ["gpu-screen-recorder", "x11grab"]
+-    if _is_x11_session():
+-        return ["x11grab", "gpu-screen-recorder"]
+-    if _is_wayland_session():
+-        if _is_hyprland_session():
+-            return ["gpu-screen-recorder", "x11grab"]
+-        # Prefer portal capture on KDE/GNOME Wayland.
+-        return ["portal", "gpu-screen-recorder"]
+-    return ["x11grab", "gpu-screen-recorder"]
++        result = _run(["pactl", "get-default-sink"], timeout=2.0)
++    except (OSError, subprocess.TimeoutExpired):
++        return "default"
++    sink = result.stdout.strip()
++    return sink + ".monitor" if result.returncode == 0 and sink else "default"
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+index 7af989f..84c17d5 100644
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -3,19 +3,13 @@ import subprocess
+ import threading
+ from typing import Optional
+ 
+-from capture.portal_capture import PortalCaptureSession, close_portal_capture
+ from ..config import WFDMediaConfig, WFDNotReady
+ from ..encoding import _bitrate_to_kbits
+-from ..env import _is_hyprland_session, _is_wayland_session, _wfd_capture_backend_order
+-from ..gst import _gst_wfd_sender_available
+ from ..net import _interface_for_ip, _netdev_tx_bytes, _rtp_url
+-from .portal import PortalMixin
+-from .testpattern import TestPatternMixin
+ from .wlroots import WlrootsMixin
+-from .x11 import X11Mixin
+ 
+ 
+-class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
++class WFDMediaPipeline(WlrootsMixin):
+     def __init__(
+         self,
+         config: WFDMediaConfig,
+@@ -30,9 +24,6 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+         self.processes: list[subprocess.Popen[bytes]] = []
+         self.tx_interface: Optional[str] = None
+         self.tx_baseline: Optional[int] = None
+-        self.portal_session: Optional[PortalCaptureSession] = None
+-        self._portal_gst_cmd: Optional[list[str]] = None
+-        self._portal_pw_fd: Optional[int] = None
+         self._lpcm_muxer = None   # WFDLPCMMuxer instance for Microsoft adapter
+         self._progress_threads: list[threading.Thread] = []
+ 
+@@ -43,36 +34,7 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+         self.tx_interface = _interface_for_ip(self.local_ip)
+         self.tx_baseline = _netdev_tx_bytes(self.tx_interface)
+ 
+-        requested_pipeline = self.config.media_pipeline
+-        pipeline = requested_pipeline
+-        if pipeline == "auto":
+-            pipeline = "gst" if self.config.test_pattern and _gst_wfd_sender_available() else "ffmpeg"
+-        # mpegtsmux has no way to set the PSI version_number, so the AOSP
+-        # layout is only reachable through ffmpeg (#84).
+-        if self.config.aosp_pmt_pid and pipeline == "gst":
+-            if requested_pipeline == "auto":
+-                print("[FluxCast WFD Media] AOSP TS layout requested; using the ffmpeg sender "
+-                      "(mpegtsmux cannot set the PAT/PMT version).")
+-                pipeline = "ffmpeg"
+-            else:
+-                print("[FluxCast WFD Media] WARNING --wfd-media-pipeline gst cannot set the "
+-                      "PAT/PMT version to AOSP's 1; the sink may ignore the tables.")
+-
+-        if pipeline == "gst":
+-            if not self.config.test_pattern:
+-                raise WFDNotReady("GStreamer WFD sender is currently implemented for --wfd-test-pattern only.")
+-            try:
+-                self._start_gst_test_pattern()
+-            except WFDNotReady:
+-                if requested_pipeline == "auto":
+-                    print("[FluxCast WFD Media] GStreamer sender failed to start; falling back to ffmpeg.")
+-                    self._start_test_pattern()
+-                else:
+-                    raise
+-        elif self.config.test_pattern:
+-            self._start_test_pattern()
+-        else:
+-            self._start_desktop()
++        self._start_desktop()
+ 
+     def tx_summary(self) -> str:
+         current = _netdev_tx_bytes(self.tx_interface)
+@@ -97,28 +59,6 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+         if self._lpcm_muxer is not None:
+             self._lpcm_muxer.stop()
+             self._lpcm_muxer = None
+-        close_portal_capture(self.portal_session)
+-        self.portal_session = None
+-
+-    def restart_video(self) -> None:
+-        if self._portal_gst_cmd is None or self._portal_pw_fd is None:
+-            return
+-        for proc in self.processes:
+-            if proc.poll() is None:
+-                proc.terminate()
+-            try:
+-                proc.wait(timeout=2)
+-            except subprocess.TimeoutExpired:
+-                proc.kill()
+-                proc.wait(timeout=1)
+-        self.processes.clear()
+-        new_proc = subprocess.Popen(
+-            self._portal_gst_cmd,
+-            stderr=None,
+-            pass_fds=(self._portal_pw_fd,),
+-        )
+-        self.processes = [new_proc]
+-        print("[FluxCast WFD Media] Pipeline restarted for IDR request.")
+ 
+     def _transport_rate_bps(self) -> int:
+         # Leave enough TS overhead for audio, PSI tables and null packets while
+@@ -145,14 +85,6 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+         """
+         Low-latency RTP/MPEG-TS output args.
+         """
+-        if self.config.dump_ts_path:
+-            # A second ffmpeg output would get its own encoder (mpeg2video), so
+-            # the dump would not be the stream we transmit. Only gst can tee it.
+-            print(
+-                "[FluxCast WFD TS] --wfd-dump-ts is not supported on the ffmpeg "
+-                "pipeline; re-run with --wfd-media-pipeline gst to capture it."
+-            )
+-
+         aosp_args: list[str] = []
+         if self.config.aosp_pmt_pid:
+             # AOSP's TSPacketizer stamps version_number=1 on PAT and PMT
+@@ -188,38 +120,4 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+         if not shutil.which("ffmpeg"):
+             raise WFDNotReady("ffmpeg is required for WFD desktop streaming.")
+ 
+-        backends = _wfd_capture_backend_order(self.config)
+-        if self.config.aosp_pmt_pid and "gst-x11" in backends:
+-            print("[FluxCast WFD Media] WARNING the gst-x11 backend muxes with mpegtsmux, "
+-                  "which cannot set the PAT/PMT version to AOSP's 1.")
+-        errors: list[str] = []
+-        for idx, backend in enumerate(backends):
+-            try:
+-                if backend == "x11grab":
+-                    self._start_desktop_x11grab()
+-                elif backend == "gst-x11":
+-                    self._start_desktop_gst_x11()
+-                elif backend == "portal":
+-                    # mpegtsmux cannot stamp the PSI version, so the AOSP
+-                    # layout needs ffmpeg to do the muxing (#84).
+-                    if self.config.aosp_pmt_pid:
+-                        self._start_desktop_portal_ffmpeg()
+-                    else:
+-                        self._start_desktop_portal()
+-                else:
+-                    self._start_desktop_gpu_screen_recorder()
+-                return
+-            except WFDNotReady as exc:
+-                errors.append(f"{backend}: {exc}")
+-                if idx < len(backends) - 1:
+-                    print(f"[FluxCast WFD Media] Backend {backend} failed, trying fallback...")
+-        detail = "; ".join(errors) if errors else "No usable capture backend"
+-        if self.config.capture_backend == "auto" and _is_wayland_session() and not _is_hyprland_session():
+-            detail += (
+-                "; KDE/GNOME Wayland desktop capture uses portal backend in this build. "
+-                "Install dbus-next + xdg-desktop-portal stack + gst-launch-1.0, "
+-                "then allow screen-share in the portal picker dialog."
+-            )
+-        raise WFDNotReady(detail)
+-
+-
++        self._start_desktop_gpu_screen_recorder()
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 70d281a..9fc9097 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -57,7 +57,7 @@ class WlrootsMixin:
+         keyint_seconds = max(1, round(gop / self.config.fps))
+ 
+         # GPU Screen Recorder owns capture, scaling, H.264, AAC and their
+-        # common clock. Unlike wf-recorder 0.6, it emits silent AAC packets
++        # common clock. It emits silent AAC packets
+         # while the selected output is idle, so the live mux never stalls and
+         # releases a multi-second burst when playback begins.
+         capture_cmd = [
+diff --git a/src/wfd/p2p/peers.py b/src/wfd/p2p/peers.py
+index 7124eb9..a2ef1ba 100644
+--- a/src/wfd/p2p/peers.py
++++ b/src/wfd/p2p/peers.py
+@@ -7,7 +7,7 @@ from typing import Optional
+ from ..config import WFDNotReady
+ from ..ie import WFDPeer
+ from ..proc import _run
+-from .nm import _nm_scan
++from .scan_nm import _nm_scan
+ 
+ 
+ def _select_peer(peers: list[WFDPeer], selector: Optional[str]) -> WFDPeer:
+diff --git a/src/wfd/p2p/scan_nm.py b/src/wfd/p2p/scan_nm.py
+new file mode 100644
+index 0000000..0b5f3c0
+--- /dev/null
++++ b/src/wfd/p2p/scan_nm.py
+@@ -0,0 +1,90 @@
++"""NetworkManager-backed receiver discovery without connection mutation APIs."""
++
++import time
++from typing import Optional
++
++from ..config import WFDNotReady
++from ..constants import NM_DEST, NM_PATH
++from ..ie import WFDPeer, _parse_gdbus_byte_array, _parse_wfd_ies_rtsp_port
++from .dbus import _gdbus_call, _nm_get_property, _nm_get_string, _object_paths
++
++
++def _p2p_device_path(interface: Optional[str] = None) -> Optional[str]:
++    result = _gdbus_call([
++        "--dest", NM_DEST, "--object-path", NM_PATH,
++        "--method", "org.freedesktop.DBus.Properties.Get",
++        "org.freedesktop.NetworkManager", "Devices",
++    ])
++    if result.returncode != 0:
++        raise WFDNotReady((result.stderr or result.stdout).strip())
++    requested = interface or ""
++    for path in _object_paths(result.stdout):
++        iface = _nm_get_string(path, "org.freedesktop.NetworkManager.Device", "Interface")
++        if iface and "p2p" in iface.lower() and (not requested or requested in iface):
++            return path
++    return None
++
++
++def _start_find(path: str, timeout: int) -> None:
++    result = _gdbus_call([
++        "--dest", NM_DEST, "--object-path", path,
++        "--method", "org.freedesktop.NetworkManager.Device.WifiP2P.StartFind",
++        f"{{'timeout': <int32 {timeout}>}}",
++    ])
++    if result.returncode != 0:
++        raise WFDNotReady((result.stderr or result.stdout).strip())
++
++
++def _stop_find(path: str) -> None:
++    try:
++        _gdbus_call([
++            "--dest", NM_DEST, "--object-path", path,
++            "--method", "org.freedesktop.NetworkManager.Device.WifiP2P.StopFind",
++        ], timeout=3.0)
++    except Exception:
++        pass
++
++
++def _peer_paths(path: str) -> list[str]:
++    raw = _nm_get_property(path, "org.freedesktop.NetworkManager.Device.WifiP2P", "Peers")
++    return _object_paths(raw)[:256]
++
++
++def _nm_scan(interface: Optional[str], timeout: int,
++             selected_address: Optional[str] = None) -> list[WFDPeer]:
++    path = _p2p_device_path(interface)
++    if not path:
++        raise WFDNotReady("NetworkManager did not expose a Wi-Fi P2P device.")
++    iface = _nm_get_string(path, "org.freedesktop.NetworkManager.Device", "Interface") or path
++    print(f"[FluxCast WFD] Starting NetworkManager Wi-Fi Direct scan on {iface} for {timeout}s...")
++    _start_find(path, timeout)
++    try:
++        deadline = time.monotonic() + max(1, timeout)
++        while selected_address and time.monotonic() < deadline:
++            found = any(
++                _nm_get_string(peer, "org.freedesktop.NetworkManager.WifiP2PPeer", "HwAddress").lower()
++                == selected_address.lower()
++                for peer in _peer_paths(path)
++            )
++            if found:
++                break
++            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
++        if not selected_address:
++            time.sleep(max(1, timeout))
++        peer_paths = _peer_paths(path)
++    finally:
++        _stop_find(path)
++
++    peers: list[WFDPeer] = []
++    for peer_path in peer_paths:
++        name = _nm_get_string(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "Name")[:256]
++        address = _nm_get_string(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "HwAddress")
++        wfd_raw = _nm_get_property(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "WfdIEs")
++        if len(wfd_raw) > 65_536:
++            wfd_raw = ""
++        sink_port = _parse_wfd_ies_rtsp_port(_parse_gdbus_byte_array(wfd_raw))
++        peers.append(WFDPeer(
++            address=address, name=name, details=f"sink_rtsp_port={sink_port}",
++            path=peer_path, source="NetworkManager", rtsp_port=sink_port,
++        ))
++    return peers
+diff --git a/src/wfd/probe.py b/src/wfd/probe.py
+index eae78b4..6db38b7 100644
+--- a/src/wfd/probe.py
++++ b/src/wfd/probe.py
+@@ -7,7 +7,6 @@ from typing import Optional
+ 
+ from .config import WFDMediaConfig
+ from .constants import WFD_AUDIO_AAC, WFD_AUDIO_LPCM_48K
+-from .dump import schedule_ts_dump_report
+ from .ie import WFDPeer
+ from .media.pipeline import WFDMediaPipeline
+ from .modes import (
+@@ -362,7 +361,6 @@ def _active_rtsp_probe(
+                         if eff_cfg.aosp_pmt_pid:
+                             print("[FluxCast WFD RTSP] AOSP-compatible MPEG-TS requested: PMT 0x0100, PSI version 1 (#84).")
+                         _start_probe_media(rtsp_server, media)
+-                        schedule_ts_dump_report(eff_cfg.dump_ts_path)
+                         # Keep-alive: respond to GET_PARAMETER/SET_PARAMETER heartbeats.
+                         while True:
+                             ka = _read_rtsp_message(rfile)
+diff --git a/src/wfd/rtsp/handler.py b/src/wfd/rtsp/handler.py
+index 69a5d5a..9b9c6ad 100644
+--- a/src/wfd/rtsp/handler.py
++++ b/src/wfd/rtsp/handler.py
+@@ -7,7 +7,6 @@ from typing import Optional
+ 
+ from ..config import WFDCEAMode, WFDMediaConfig, WFDNotReady, WFDVideoFormat
+ from ..constants import WFD_AUDIO_AAC, WFD_AUDIO_LPCM_48K
+-from ..dump import schedule_ts_dump_report
+ from ..encoding import _parse_resolution
+ from ..latency import _append_latency_log
+ from ..media.pipeline import WFDMediaPipeline
+@@ -407,10 +406,9 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+                     "Range": "npt=now-",
+                 },
+             )
+-            # Schedule RTSP M16 keepalive NOW, before _start_media() blocks
+-            # on the portal dialog (8-13 s). LG WebOS resets the TCP connection
+-            # ~40-45 s after PLAY. Starting the 20 seconds timer here gives a safe
+-            # 20 second head start regardless of portal dialog speed.
++            # Schedule RTSP M16 keepalive before capture startup. LG WebOS
++            # resets the TCP connection ~40-45 s after PLAY, so starting the
++            # 20 second timer here leaves a safe margin.
+             # Microsoft adapter sends TEARDOWN in response to M16 GET_PARAMETER.
+             if "microsoft" not in self.media_config.peer_name.lower():
+                 self._schedule_rtsp_keepalive(20.0)
+@@ -468,7 +466,6 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+             )
+             if effective_config.aosp_pmt_pid:
+                 print("[FluxCast WFD RTSP] AOSP-compatible MPEG-TS requested: PMT 0x0100, PSI version 1 (#84).")
+-            schedule_ts_dump_report(effective_config.dump_ts_path)
+             _append_latency_log(
+                 self.media_config.latency_log_path,
+                 "media_starting",
+@@ -513,7 +510,7 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+             return
+         media = self.media
+         # Only stop the chain if processes have already EXITED.
+-        # If media is None (portal dialog still open), keep sending keepalives.
++        # If media has not started yet, keep sending keepalives.
+         if media is not None and not all(p.poll() is None for p in media.processes):
+             return
+         if "M16_KEEPALIVE" in self.pending.values():
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 4093400..4f12197 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -1,24 +1,11 @@
++import os
+ import time
+ 
+ from diagnostics import print_report, run_diagnostics
+ 
+ from .config import WFDMediaConfig, WFDNotReady
+ from .constants import WFD_RTSP_PORT
+-from .dump import report_ts_dump
+-from .env import _is_hyprland_session, _is_wayland_session
+-from .firewall import _close_wfd_firewall_port, _open_wfd_firewall_port
+-from .p2p.device import _set_p2p_device_name, _set_p2p_go_intent
+-from .p2p.nm import (
+-    _connect_peer, _deactivate_connection, _disconnect_device,
+-    _nm_p2p_device_path, _wait_for_nm_activation,
+-)
+ from .p2p.peers import _scan_and_select
+-from .p2p.supplicant import (
+-    _supplicant_cancel_and_disconnect,
+-    _supplicant_interface_path,
+-    connect_supplicant_group,
+-    run_supplicant_role_test,
+-)
+ from .p2p.broker import broker_request
+ from .probe import ActiveRTSPProbe
+ from .rtsp.rtsp_server import WFDRTSPServer
+@@ -39,10 +26,9 @@ def _cleanup_step(label: str, action) -> None:
+         print(f"[FluxCast WFD] Cleanup step '{label}' failed: {exc}")
+ 
+ def start_experimental_backend(args) -> None:
+-    p2p_backend = getattr(args, "wfd_p2p_backend", "networkmanager")
+     report = run_diagnostics(
+-        skip_firewall=getattr(args, "wfd_no_firewall", False),
+-        p2p_backend=p2p_backend,
++        skip_firewall=True,
++        p2p_backend="supplicant",
+     )
+     print_report(report)
+     print()
+@@ -53,132 +39,75 @@ def start_experimental_backend(args) -> None:
+             "Fix the warn/fail rows above, then run --wfd-scan."
+         )
+ 
+-    monitor = None
+-    if not getattr(args, "wfd_test_pattern", False) and not getattr(args, "wfd_dry_run", False):
+-        selected_backend = getattr(args, "wfd_capture_backend", "auto")
+-        portal_mode = selected_backend == "portal" or (
+-            selected_backend == "auto" and _is_wayland_session() and not _is_hyprland_session()
++    from capture import gather_monitors
++    all_monitors = gather_monitors()
++    monitor = next((m for m in all_monitors if m.name == args.monitor_name), None)
++    if monitor is None:
++        available = ", ".join(m.name for m in all_monitors) or "none"
++        raise WFDNotReady(
++            f"Monitor '{args.monitor_name}' not found. Available: {available}"
+         )
+-        if portal_mode:
+-            print(
+-                "[FluxCast WFD] Portal backend: monitor selection will be done "
+-                "in the desktop portal dialog."
+-            )
+-        else:
+-            wfd_monitor_name = getattr(args, "monitor_name", None)
+-            if wfd_monitor_name:
+-                from capture import gather_monitors
+-                all_monitors = gather_monitors()
+-                monitor = next((m for m in all_monitors if m.name == wfd_monitor_name), None)
+-                if monitor is None:
+-                    available = ", ".join(m.name for m in all_monitors) or "none"
+-                    raise WFDNotReady(
+-                        f"Monitor '{wfd_monitor_name}' not found. Available: {available}"
+-                    )
+-            else:
+-                from capture import prompt_monitor
+-                monitor = prompt_monitor()
+ 
+-    broker_path = getattr(args, "wfd_supplicant_broker", None)
+-    if not broker_path:
+-        _set_p2p_device_name(args.wfd_interface)
++    broker_path = args.wfd_supplicant_broker
+     peer = _scan_and_select(
+         args.wfd_interface, getattr(args, "wfd_peer", None), args.wfd_timeout
+     )
+-    if p2p_backend == "supplicant" and getattr(args, "wfd_dry_run", False):
+-        run_supplicant_role_test(args, peer)
+-        return
+-
+-    device_path = ""
+-    if p2p_backend == "networkmanager":
+-        device_path = _nm_p2p_device_path(args.wfd_interface)
+-        if not device_path:
+-            raise WFDNotReady("NetworkManager P2P device disappeared before connection.")
+-
+-    if getattr(args, "wfd_dry_run", False):
+-        _connect_peer(
+-            device_path,
+-            peer,
+-            rtsp_port=getattr(args, "wfd_rtsp_port", WFD_RTSP_PORT),
+-            dry_run=True,
+-        )
+-        return
+-
+-    no_audio = getattr(args, "wfd_no_audio", False)
+-    if getattr(args, "wfd_test_pattern", False):
+-        if no_audio:
+-            print("[FluxCast WFD] Test pattern smoke mode is video-only (--wfd-no-audio).")
+-        else:
+-            print("[FluxCast WFD] Test pattern smoke mode includes AAC audio.")
+-
+     media_config = WFDMediaConfig(
+         monitor=monitor,
+         fps=args.fps,
+         bitrate=args.bitrate,
+         output_resolution=args.output_res,
+         audio_device=getattr(args, "wfd_audio_device", None),
+-        no_audio=no_audio,
+-        test_pattern=getattr(args, "wfd_test_pattern", False),
+-        ffmpeg_stats=getattr(args, "wfd_ffmpeg_stats", False),
+-        source_port=getattr(args, "wfd_rtp_source_port", 19002),
+-        media_pipeline=getattr(args, "wfd_media_pipeline", "auto"),
++        no_audio=False,
++        test_pattern=False,
++        ffmpeg_stats=False,
++        source_port=19002,
++        media_pipeline="ffmpeg",
+         latency_log_path=getattr(args, "wfd_latency_log", None),
+         progress_log_path=getattr(args, "wfd_progress_log", None),
+-        packet_log_path=getattr(args, "wfd_packet_log", None),
+-        capture_backend=getattr(args, "wfd_capture_backend", "auto"),
+-        video_encoder=getattr(args, "wfd_video_encoder", "auto"),
++        packet_log_path=None,
++        capture_backend="gpu-screen-recorder",
++        video_encoder=args.wfd_video_encoder,
+         peer_name=peer.name,
+-        aosp_pmt_pid=getattr(args, "wfd_aosp_pmt_pid", False),
+-        dump_ts_path=getattr(args, "wfd_dump_ts", None),
++        aosp_pmt_pid=False,
++        dump_ts_path=None,
+     )
+-    if media_config.dump_ts_path:
+-        print(f"[FluxCast WFD] Dumping transmitted MPEG-TS to: {media_config.dump_ts_path}")
+     if media_config.latency_log_path:
+         print(f"[FluxCast WFD] Latency log file: {media_config.latency_log_path}")
+     if media_config.progress_log_path:
+         print(f"[FluxCast WFD] Progress log file: {media_config.progress_log_path}")
+-    if media_config.packet_log_path:
+-        print(f"[FluxCast WFD] Packet timing log enabled")
+-
+-    rtsp_port = getattr(args, "wfd_rtsp_port", WFD_RTSP_PORT)
++    rtsp_port = WFD_RTSP_PORT
+     rtsp = WFDRTSPServer(
+         media_config=media_config,
+         peer_address=peer.address,
+         interface=args.wfd_interface,
+         port=rtsp_port,
+     )
+-    firewall_opened = False
+-    active_path = ""
+-    previous_go_intent = None
+-    supplicant_interface_path = ""
+     active_probe = None
+-    if p2p_backend == "supplicant" and not broker_path:
+-        supplicant_interface_path = _supplicant_interface_path(args.wfd_interface)
+     try:
+-        if p2p_backend == "networkmanager":
+-            # Clear stale P2P device state from previous runs before activation.
+-            try:
+-                _disconnect_device(device_path)
+-            except Exception:
+-                pass
+         rtsp.start()
+-        if p2p_backend == "supplicant":
+-            connect_supplicant_group(args, peer, supplicant_interface_path or None)
+-        else:
+-            # Lower our GO intent before negotiation so the TV becomes the group
+-            # owner; most Miracast sinks only start the RTSP session in that role.
+-            previous_go_intent = _set_p2p_go_intent(
+-                args.wfd_interface, getattr(args, "wfd_go_intent", 0)
++        trigger = args.wfd_supplicant_network_trigger
++        try:
++            descriptor = os.open(
++                trigger,
++                os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC,
++                0o600,
+             )
+-            active_path = _connect_peer(
+-                device_path,
+-                peer,
+-                rtsp_port=rtsp_port,
+-            )
+-            _wait_for_nm_activation(active_path)
+-
+-        if not getattr(args, "wfd_no_firewall", False):
+-            firewall_opened = _open_wfd_firewall_port(rtsp_port)
++            os.close(descriptor)
++        except OSError as exc:
++            raise WFDNotReady(
++                f"Could not trigger the guarded P2P network session: {exc}"
++            ) from exc
++        print("[FluxCast WFD] Guarded P2P network session triggered.")
++        result = broker_request(broker_path, "connect", timeout=50.0)
++        group = result.get("group")
++        if (
++            not isinstance(group, dict)
++            or set(group) != {"interface", "role"}
++            or not isinstance(group.get("interface"), str)
++            or not isinstance(group.get("role"), str)
++        ):
++            raise WFDNotReady("The supplicant broker returned invalid group status.")
+ 
+         # Active probe for newer TVs (Samsung 2024++, some LGs). The session
+         # owns its thread, outbound socket, and any media it starts.
+@@ -197,31 +126,8 @@ def start_experimental_backend(args) -> None:
+         if active_probe is not None:
+             _cleanup_step("active RTSP probe shutdown", active_probe.stop)
+         _cleanup_step("media shutdown", rtsp.stop_all_media)
+-        _cleanup_step("TS dump report",
+-                      lambda: report_ts_dump(media_config.dump_ts_path))
+         _cleanup_step("RTSP server shutdown", rtsp.stop)
+-        if firewall_opened:
+-            _cleanup_step("firewall close", lambda: _close_wfd_firewall_port(rtsp_port))
+-        if active_path:
+-            _cleanup_step("connection deactivate",
+-                          lambda: _deactivate_connection(active_path))
+-        if p2p_backend == "supplicant":
+-            if broker_path:
+-                _cleanup_step(
+-                    "brokered P2P disconnect",
+-                    lambda: broker_request(broker_path, "cleanup", timeout=10.0),
+-                )
+-            else:
+-                _cleanup_step(
+-                    "direct P2P disconnect",
+-                    lambda: _supplicant_cancel_and_disconnect(supplicant_interface_path),
+-                )
+-        else:
+-            _cleanup_step("P2P device disconnect", lambda: _disconnect_device(device_path))
+-        if previous_go_intent is not None:
+-            _cleanup_step(
+-                "GO intent restore",
+-                lambda: _set_p2p_go_intent(
+-                    args.wfd_interface, previous_go_intent, restoring=True
+-                ),
+-            )
++        _cleanup_step(
++            "brokered P2P disconnect",
++            lambda: broker_request(broker_path, "cleanup", timeout=10.0),
++        )
+diff --git a/tests/test_diagnostics.py b/tests/test_diagnostics.py
+index 3f8db80..ec62246 100644
+--- a/tests/test_diagnostics.py
++++ b/tests/test_diagnostics.py
+@@ -138,7 +138,9 @@ class DisplayCaptureCheckTest(unittest.TestCase):
+             del extra_paths
+             return "/usr/bin/gpu-screen-recorder" if name == "gpu-screen-recorder" else None
+ 
+-        with mock.patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-1"}, clear=True), mock.patch(
++        with mock.patch.dict(os.environ, {
++            "WAYLAND_DISPLAY": "wayland-1", "HYPRLAND_INSTANCE_SIGNATURE": "sig"
++        }, clear=True), mock.patch(
+             "diagnostics._find_binary", side_effect=find_binary
+         ), mock.patch("diagnostics.shutil.which", return_value=None):
+             check = diagnostics._display_capture_check()
+diff --git a/tests/test_omacast_contract.py b/tests/test_omacast_contract.py
+new file mode 100644
+index 0000000..4882b18
+--- /dev/null
++++ b/tests/test_omacast_contract.py
+@@ -0,0 +1,109 @@
++import contextlib
++import io
++import os
++from pathlib import Path
++import sys
++import unittest
++from unittest import mock
++
++import main
++from wfd.config import WFDNotReady
++from wfd.media.pipeline import WFDMediaPipeline
++
++
++SESSION = "a" * 32
++
++
++class GuardedLaunchContractTest(unittest.TestCase):
++    def parse(self, *extra):
++        arguments = [
++            "--omacast-session", SESSION,
++            "--protocol", "wfd", "--output-res", "1280x720",
++            "--fps", "60", "--bitrate", "7M",
++            "--wfd-video-encoder", "vaapi",
++            "--wfd-p2p-backend", "supplicant",
++            "--wfd-supplicant-mode", "connect",
++            "--wfd-peer", "00:11:22:33:44:55",
++            "--wfd-interface", "wlan0", "--wfd-timeout", "15",
++            "--wfd-supplicant-frequency", "2412", "--wfd-no-firewall",
++            "--monitor", "eDP-1",
++            "--wfd-capture-backend", "gpu-screen-recorder",
++            "--wfd-audio-device", "sink.monitor",
++            "--wfd-progress-log", f"/proc/{os.getpid()}/fd/10",
++            "--wfd-latency-log", f"/proc/{os.getpid()}/fd/11",
++            "--wfd-supplicant-network-trigger",
++            f"/run/omarchy-cast/{SESSION}/user/trigger",
++            "--wfd-supplicant-broker",
++            f"/run/omarchy-cast/{SESSION}/supplicant.sock",
++            "--wfd-supplicant-hold", "45",
++            *extra,
++        ]
++        with mock.patch.object(sys, "argv", ["fluxcast", *arguments]):
++            return main.parse_args()
++
++    def test_exact_controller_contract_is_accepted(self):
++        with mock.patch("main.os.getppid", return_value=os.getpid()):
++            main._validate_omacast_session(self.parse())
++
++    def test_unguarded_stream_is_rejected(self):
++        with mock.patch.object(sys, "argv", ["fluxcast"]):
++            args = main.parse_args()
++        with self.assertRaisesRegex(WFDNotReady, "guarded session"):
++            main._validate_omacast_session(args)
++
++    def test_receiver_must_be_an_exact_mac(self):
++        args = self.parse()
++        args.wfd_peer = "Living Room TV"
++        with mock.patch("main.os.getppid", return_value=os.getpid()), self.assertRaisesRegex(
++            WFDNotReady, "MAC address"
++        ):
++            main._validate_omacast_session(args)
++
++    def test_controller_outputs_must_be_parent_descriptors(self):
++        args = self.parse()
++        args.wfd_progress_log = "/tmp/progress"
++        with mock.patch("main.os.getppid", return_value=os.getpid()), self.assertRaisesRegex(
++            WFDNotReady, "owned by the controller"
++        ):
++            main._validate_omacast_session(args)
++
++    def test_removed_routes_are_parser_errors(self):
++        for option in ("--wfd-test-pattern", "--wfd-dry-run", "--wfd-dump-ts"):
++            with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()):
++                with mock.patch.object(sys, "argv", ["fluxcast", option]), self.assertRaises(SystemExit):
++                    main.parse_args()
++
++
++class SupportedPipelineTest(unittest.TestCase):
++    def test_start_has_only_the_gpu_screen_recorder_route(self):
++        pipeline = mock.create_autospec(WFDMediaPipeline, instance=True)
++        pipeline.processes = []
++        pipeline.local_ip = "192.168.49.2"
++        with mock.patch("wfd.media.pipeline._interface_for_ip", return_value="p2p-wlan0-0"), \
++                mock.patch("wfd.media.pipeline._netdev_tx_bytes", return_value=0):
++            WFDMediaPipeline.start(pipeline)
++        pipeline._start_desktop.assert_called_once_with()
++
++    def test_desktop_start_has_no_fallback(self):
++        pipeline = mock.create_autospec(WFDMediaPipeline, instance=True)
++        WFDMediaPipeline._start_desktop(pipeline)
++        pipeline._start_desktop_gpu_screen_recorder.assert_called_once_with()
++
++
++class ArtifactSurfaceTest(unittest.TestCase):
++    def test_wheel_excludes_abandoned_routes(self):
++        project = Path(__file__).resolve().parents[1] / "pyproject.toml"
++        metadata = project.read_text(encoding="utf-8")
++        for path in (
++            "src/capture/portal_capture.py", "src/drivers/**", "src/wfd/firewall.py",
++            "src/wfd/gst.py", "src/wfd/media/portal.py", "src/wfd/media/testpattern.py",
++            "src/wfd/media/x11.py", "src/wfd/p2p/device.py", "src/wfd/p2p/nm.py",
++            "src/wfd/p2p/supplicant.py",
++        ):
++            self.assertIn(f'"{path}"', metadata)
++        self.assertNotIn("dbus-next", metadata)
++        self.assertNotIn("pygobject", metadata)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+deleted file mode 100644
+index 7abf17d..0000000
+--- a/tests/test_wfd.py
++++ /dev/null
+@@ -1,641 +0,0 @@
+-import contextlib
+-import inspect
+-import io
+-import os
+-import subprocess
+-import sys
+-import unittest
+-from types import SimpleNamespace
+-from unittest import mock
+-
+-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+-
+-from wfd import ts_probe  # noqa: E402
+-import wfd  # noqa: E402
+-
+-
+-def patch_all(name, **kwargs):
+-    """Patch `name` in every wfd module that binds it, with one shared mock.
+-
+-    A module that did `from ..gst import _gst_has_element` holds its own
+-    reference, so patching the package facade stops working the moment the
+-    caller moves into a submodule, and naming one submodule rots silently the
+-    next time it moves again. Raising when nothing matched means a renamed or
+-    deleted target fails loudly instead of quietly testing nothing.
+-    """
+-    replacement = mock.MagicMock(**kwargs)
+-    targets = [module for modname, module in list(sys.modules.items())
+-               if module is not None
+-               and (modname == "wfd" or modname.startswith("wfd."))
+-               and name in vars(module)]
+-    if not targets:
+-        raise AssertionError(f"{name} is not bound in any wfd module")
+-
+-    @contextlib.contextmanager
+-    def _patched():
+-        with contextlib.ExitStack() as stack:
+-            for module in targets:
+-                stack.enter_context(mock.patch.object(module, name, replacement))
+-            yield replacement
+-
+-    return _patched()
+-
+-
+-def _round4(value):
+-    """GST_ROUND_UP_4, how GStreamer sizes an I420 plane stride."""
+-    return (value + 3) & ~3
+-
+-
+-def _completed(stdout="", returncode=0, stderr=""):
+-    return subprocess.CompletedProcess(
+-        args=[], returncode=returncode, stdout=stdout, stderr=stderr
+-    )
+-
+-
+-class VideoModeTableTest(unittest.TestCase):
+-    KNOWN_INCONSISTENT = {"1920x1200p30", "1920x1200p60"}
+-
+-    def test_native_byte_matches_the_mode_bit(self):
+-        mismatched = set()
+-        for bit, mode in {**wfd.WFD_CEA_MODES, **wfd.WFD_VESA_MODES}.items():
+-            native = int(mode.native, 16)
+-            table = 1 if mode.table == "vesa" else 0
+-            if (native & 0x07, native >> 3) != (table, bit.bit_length() - 1):
+-                mismatched.add(mode.name)
+-
+-        self.assertEqual(mismatched, self.KNOWN_INCONSISTENT)
+-
+-    def test_level_is_a_single_defined_bit(self):
+-        defined = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40}
+-        for mode in {**wfd.WFD_CEA_MODES, **wfd.WFD_VESA_MODES}.values():
+-            level = wfd._wfd_level_for_mode(mode)
+-            self.assertIn(level, defined, f"{mode.name} has an undefined level")
+-
+-    def test_explicit_480p_uses_advertised_480p_mode(self):
+-        config = wfd.WFDMediaConfig(
+-            monitor=None, output_resolution="640x480", fps=60
+-        )
+-        sink = wfd.WFDVideoFormat(
+-            native="28", preferred="00", profile="01", level="02",
+-            cea_mask=wfd.WFD_CEA_640P60 | wfd.WFD_CEA_720P30,
+-            vesa_mask=0, hh_mask=0,
+-        )
+-
+-        self.assertEqual(wfd._choose_cea_mode(config, sink).name, "640x480p60")
+-
+-    def test_explicit_480p_is_not_silently_promoted_to_720p(self):
+-        config = wfd.WFDMediaConfig(
+-            monitor=None, output_resolution="640x480", fps=60
+-        )
+-        sink = wfd.WFDVideoFormat(
+-            native="28", preferred="00", profile="01", level="02",
+-            cea_mask=wfd.WFD_CEA_720P30, vesa_mask=0, hh_mask=0,
+-        )
+-
+-        self.assertEqual(wfd._choose_cea_mode(config, sink).name, "640x480p60")
+-
+-    def test_explicit_1080p_is_not_silently_downgraded_to_advertised_720p(self):
+-        config = wfd.WFDMediaConfig(monitor=None, output_resolution="1920x1080", fps=30)
+-        sink = wfd.WFDVideoFormat(
+-            native="28", preferred="00", profile="01", level="02",
+-            cea_mask=wfd.WFD_CEA_720P30, vesa_mask=0, hh_mask=0,
+-        )
+-        self.assertEqual(wfd._choose_cea_mode(config, sink).name, "1920x1080p30")
+-
+-
+-class FfmpegProgressArgsTest(unittest.TestCase):
+-    def test_ffmpeg_paths_do_not_force_periodic_audio_resampling(self):
+-        starters = (
+-            wfd.WFDMediaPipeline._start_test_pattern,
+-            wfd.WFDMediaPipeline._start_desktop_gpu_screen_recorder,
+-            wfd.WFDMediaPipeline._start_desktop_x11grab,
+-            wfd.WFDMediaPipeline._start_desktop_portal_ffmpeg,
+-        )
+-        for starter in starters:
+-            self.assertNotIn("aresample=async=1", inspect.getsource(starter))
+-
+-    def test_progress_stats_are_disabled_by_default(self):
+-        args = wfd._ffmpeg_sender_args()
+-
+-        self.assertEqual(
+-            args,
+-            ["ffmpeg", "-hide_banner", "-y", "-loglevel", "warning"],
+-        )
+-
+-    def test_progress_stats_can_be_enabled(self):
+-        args = wfd._ffmpeg_sender_args(show_stats=True)
+-
+-        self.assertIn("-stats", args)
+-
+-    def test_gpu_capture_owns_one_audio_video_clock(self):
+-        class Mon:
+-            name, width, height = "eDP-1", 1920, 1080
+-
+-        class Proc:
+-            def __init__(self):
+-                self.stdout = io.BytesIO()
+-                self.stderr = io.BytesIO()
+-
+-            def poll(self):
+-                return None
+-
+-            def terminate(self):
+-                pass
+-
+-        commands = []
+-
+-        def popen(command, *args, **kwargs):
+-            commands.append(list(command))
+-            return Proc()
+-
+-        config = wfd.WFDMediaConfig(
+-            monitor=Mon(), output_resolution="1280x720", fps=60,
+-            bitrate="4M", audio_device="sink.monitor", progress_log_path="/tmp/wfd-progress.log",
+-            packet_log_path="/tmp/wfd-packets.csv",
+-        )
+-        pipeline = wfd.WFDMediaPipeline(
+-            config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
+-            sink_rtp_port=35034,
+-        )
+-        with (
+-            mock.patch("wfd.media.wlroots.subprocess.Popen", side_effect=popen),
+-            mock.patch("wfd.media.wlroots.time.sleep"),
+-            contextlib.redirect_stdout(io.StringIO()),
+-        ):
+-            pipeline._start_desktop_gpu_screen_recorder()
+-
+-        capture_cmd, ffmpeg_cmd = commands
+-        self.assertEqual(capture_cmd[0], "gpu-screen-recorder")
+-        self.assertIn("sink.monitor", capture_cmd)
+-        self.assertEqual(capture_cmd[capture_cmd.index("-s") + 1], "1280x720")
+-        self.assertEqual(capture_cmd[capture_cmd.index("-f") + 1], "60")
+-        self.assertEqual(capture_cmd[capture_cmd.index("-q") + 1], "7000")
+-        self.assertEqual(capture_cmd[capture_cmd.index("-tune") + 1], "performance")
+-        self.assertIn("profile=constrained_baseline;level=32;aud=1", capture_cmd)
+-        self.assertIn(
+-            "cluster_time_limit=20;cluster_size_limit=16384;live=1;flush_packets=1",
+-            capture_cmd,
+-        )
+-        self.assertEqual(ffmpeg_cmd.count("-i"), 1)
+-        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-stats_period") + 1], "0.25")
+-        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-progress") + 1], "pipe:2")
+-        self.assertEqual(ffmpeg_cmd[-1], "/tmp/wfd-packets.csv")
+-        self.assertEqual(ffmpeg_cmd[-2], "framecrc")
+-        self.assertEqual(ffmpeg_cmd[-4], "1")
+-        self.assertEqual(ffmpeg_cmd[-5], "-flush_packets")
+-        self.assertIn("0:a:0", ffmpeg_cmd)
+-        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:v") + 1], "copy")
+-        self.assertEqual(ffmpeg_cmd[ffmpeg_cmd.index("-c:a") + 1], "copy")
+-        self.assertEqual(
+-            ffmpeg_cmd[ffmpeg_cmd.index("-bsf:a") + 1],
+-            "setts=pts=PTS-0.064/TB:dts=DTS-0.064/TB",
+-        )
+-
+-
+-class FirewallPortTest(unittest.TestCase):
+-    def test_existing_port_skips_privileged_add(self):
+-        calls = []
+-        port = wfd.WFD_RTSP_PORT
+-
+-        def fake_run(args, timeout=5.0):
+-            calls.append((args, timeout))
+-            return _completed("yes")
+-
+-        with (
+-            patch_all("_firewalld_active", return_value=True),
+-            patch_all("_run", side_effect=fake_run),
+-        ):
+-            opened = wfd._open_wfd_firewall_port(port)
+-
+-        self.assertFalse(opened)
+-        self.assertEqual(len(calls), 1)
+-        self.assertIn(f"--query-port={port}/tcp", calls[0][0])
+-
+-    def test_closed_port_is_opened_after_successful_query(self):
+-        calls = []
+-        port = wfd.WFD_RTSP_PORT
+-
+-        def fake_run(args, timeout=5.0):
+-            calls.append((args, timeout))
+-            if f"--query-port={port}/tcp" in args:
+-                return _completed("no", returncode=1)
+-            return _completed("success")
+-
+-        with (
+-            patch_all("_firewalld_active", return_value=True),
+-            patch_all("_run", side_effect=fake_run),
+-        ):
+-            opened = wfd._open_wfd_firewall_port(port)
+-
+-        self.assertTrue(opened)
+-        self.assertIn(f"--query-port={port}/tcp", calls[0][0])
+-        self.assertIn(f"--add-port={port}/tcp", calls[1][0])
+-
+-    def test_query_error_fails_closed_without_add(self):
+-        port = wfd.WFD_RTSP_PORT
+-        calls = []
+-
+-        def fake_run(args, timeout=5.0):
+-            calls.append(args)
+-            return _completed("", returncode=1, stderr="Authorization failed")
+-
+-        output = io.StringIO()
+-        with (
+-            patch_all("_firewalld_active", return_value=True),
+-            patch_all("_run", side_effect=fake_run),
+-            contextlib.redirect_stdout(output),
+-        ):
+-            opened = wfd._open_wfd_firewall_port(port)
+-
+-        self.assertFalse(opened)
+-        self.assertEqual(len(calls), 1)
+-        self.assertIn(f"--query-port={port}/tcp", calls[0])
+-        self.assertIn("Authorization failed", output.getvalue())
+-        self.assertIn("--wfd-no-firewall", output.getvalue())
+-
+-    def test_query_timeout_fails_closed_without_add(self):
+-        calls = []
+-        port = wfd.WFD_RTSP_PORT
+-
+-        def fake_run(args, timeout=5.0):
+-            calls.append(args)
+-            raise subprocess.TimeoutExpired(args, timeout)
+-
+-        with (
+-            patch_all("_firewalld_active", return_value=True),
+-            patch_all("_run", side_effect=fake_run),
+-        ):
+-            opened = wfd._open_wfd_firewall_port(port)
+-
+-        self.assertFalse(opened)
+-        self.assertEqual(len(calls), 1)
+-        self.assertIn(f"--query-port={port}/tcp", calls[0])
+-
+-
+-class ProgMapTest(unittest.TestCase):
+-    def test_default_prog_map_is_unchanged(self):
+-        self.assertEqual(
+-            wfd._wfd_gst_prog_map(True), "program_map,sink_4113=1,sink_4352=1"
+-        )
+-        self.assertEqual(wfd._wfd_gst_prog_map(False), "program_map,sink_4113=1")
+-
+-    def test_flag_pins_the_pmt_pid_as_uint(self):
+-        # PMT_%d is read as uint; a plain int is silently ignored.
+-        for with_audio in (True, False):
+-            self.assertIn(",PMT_1=(uint)256", wfd._wfd_gst_prog_map(with_audio, True))
+-
+-    def test_pcr_pid_is_never_requested(self):
+-        for aosp in (True, False):
+-            for with_audio in (True, False):
+-                self.assertNotIn("PCR_1", wfd._wfd_gst_prog_map(with_audio, aosp))
+-
+-    def test_media_config_defaults_to_off(self):
+-        self.assertFalse(wfd.WFDMediaConfig(monitor=None).aosp_pmt_pid)
+-
+-
+-class AospTablesVersionTest(unittest.TestCase):
+-    def _args(self, aosp):
+-        config = wfd.WFDMediaConfig(monitor=None, output_resolution="1280x720",
+-                                    aosp_pmt_pid=aosp)
+-        pipeline = wfd.WFDMediaPipeline(config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
+-                                        sink_rtp_port=35034)
+-        return pipeline._common_output_args()
+-
+-    def test_default_sends_no_version_override(self):
+-        args = self._args(False)
+-        self.assertNotIn("-tables_version", args)
+-        self.assertNotIn("-sdt_period", args)
+-        self.assertEqual(args[args.index("-mpegts_pmt_start_pid") + 1], "4096")
+-
+-    def test_transport_is_constant_rate_and_udp_burst_paced(self):
+-        config = wfd.WFDMediaConfig(
+-            monitor=None, output_resolution="1280x720", bitrate="4M"
+-        )
+-        pipeline = wfd.WFDMediaPipeline(
+-            config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
+-            sink_rtp_port=35034,
+-        )
+-        args = pipeline._common_output_args()
+-
+-        self.assertEqual(args[args.index("-muxrate") + 1], "6000000")
+-        output = args[-1]
+-        self.assertIn("bitrate=7200000", output)
+-        self.assertIn("burst_bits=42496", output)
+-
+-    def test_transport_does_not_force_per_packet_flushes(self):
+-        # The constant-rate muxer and UDP pacer own packet timing. Forcing the
+-        # muxer to flush every packet defeats that buffering and creates jitter.
+-        self.assertNotIn("-flush_packets", self._args(False))
+-
+-    def test_transport_uses_receiver_proven_zero_mux_delay(self):
+-        args = self._args(False)
+-        self.assertEqual(args[args.index("-muxdelay") + 1], "0")
+-        self.assertEqual(args[args.index("-muxpreload") + 1], "0")
+-
+-    def test_flag_stamps_version_1_like_aosp(self):
+-        # AOSP writes 0xc3 (version_number=1) in PAT and PMT; both muxers
+-        # default to 0, which a sink seeded at 0 can treat as already seen.
+-        args = self._args(True)
+-        self.assertEqual(args[args.index("-tables_version") + 1], "1")
+-        self.assertEqual(args[args.index("-mpegts_pmt_start_pid") + 1], "256")
+-
+-    def test_version_args_precede_the_output(self):
+-        args = self._args(True)
+-        self.assertLess(args.index("-tables_version"), args.index("-f"))
+-
+-
+-class AspectRatioTest(unittest.TestCase):
+-    """A portrait monitor must be letterboxed into the WFD mode, not stretched."""
+-
+-    def test_fit_inside_keeps_ratio_and_even_dimensions(self):
+-        for src, expected in [((1920, 1080), (1280, 720)), ((2560, 1440), (1280, 720)),
+-                              ((1080, 1920), (400, 710)), ((1024, 768), (960, 720)),
+-                              ((3440, 1440), (1280, 534))]:
+-            got = wfd._fit_inside(src[0], src[1], 1280, 720)
+-            self.assertEqual(got, expected, f"{src} fitted wrong")
+-            self.assertEqual((got[0] % 2, got[1] % 2), (0, 0), "yuv420p needs even sizes")
+-            self.assertLessEqual(got[0], 1280)
+-            self.assertLessEqual(got[1], 720)
+-
+-    def test_fit_inside_keeps_the_i420_strides_unpadded(self):
+-        """GStreamer pads I420 strides to 4 bytes; ffmpeg's rawvideo does not
+-        expect that, so a width off a multiple of 8 drifts every frame (#84)."""
+-        for src in [(1440, 2560), (1080, 1920), (2160, 3840), (1366, 768),
+-                    (1920, 1080), (1024, 768), (3440, 1440), (0, 0)]:
+-            for out in [(1280, 720), (1920, 1080), (1366, 768)]:
+-                w, h = wfd._fit_inside(src[0], src[1], out[0], out[1])
+-                self.assertEqual(w % 8, 0, f"{src}->{out} width {w} pads the Y stride")
+-                self.assertEqual(_round4(w) * h + 2 * _round4(w // 2) * (h // 2),
+-                                 w * h * 3 // 2,
+-                                 f"{src}->{out} frame is not w*h*3/2 bytes")
+-
+-    def test_fit_inside_survives_a_missing_source_size(self):
+-        self.assertEqual(wfd._fit_inside(0, 0, 1280, 720), (1280, 720))
+-
+-    def test_portrait_capture_size_drives_the_silent_capture_threshold(self):
+-        """The pipe carries cap_w x cap_h frames, so the one-frame floor must
+-        be measured on those, not on the padded output size (#84)."""
+-        src = inspect.getsource(wfd.WFDMediaPipeline._start_desktop_portal_ffmpeg)
+-        self.assertIn("frame_bytes = cap_w * cap_h * 3 // 2", src)
+-
+-    def test_ffmpeg_filter_fits_without_stretching(self):
+-        vf = wfd._letterbox_vf("1280x720")
+-        self.assertIn("force_original_aspect_ratio=decrease", vf)
+-        self.assertIn("pad=1280:720:(ow-iw)/2:(oh-ih)/2", vf)
+-        self.assertIn("setsar=1", vf)
+-
+-    def _gst_commands(self):
+-        """Generated gst argv for every WFD pipeline that scales."""
+-        class Mon:
+-            name, width, height, x, y, display = "eDP-1", 1080, 1920, 0, 0, ":0"
+-
+-        class Sess:
+-            session_handle, pw_node_id, pw_fd, restore_token = "/h", 7, 42, None
+-            source_type, position, size = 1, (0, 0), (1080, 1920)
+-            stream_label, runtime, bus = "m", None, None
+-
+-        captured = []
+-
+-        class Proc:
+-            returncode = 0
+-            pid = 4242
+-
+-            def __init__(self):
+-                self.stdout = io.BytesIO()
+-
+-            def poll(self):
+-                return None
+-
+-            def terminate(self):
+-                pass
+-
+-            def wait(self, timeout=None):
+-                return 0
+-
+-            def communicate(self, *a, **k):
+-                return (b"", b"")
+-
+-            def __enter__(self):
+-                return self
+-
+-            def __exit__(self, *a):
+-                return False
+-
+-        config = wfd.WFDMediaConfig(monitor=Mon(), output_resolution="1280x720", fps=30,
+-                                    bitrate="4M", no_audio=True, peer_name="X")
+-        pipeline = wfd.WFDMediaPipeline(config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
+-                                        sink_rtp_port=35034)
+-        pipeline.tx_interface = "lo"
+-        with (
+-            mock.patch.object(wfd.shutil, "which", side_effect=lambda n: "/usr/bin/" + n),
+-            patch_all("_gst_has_element", return_value=True),
+-            patch_all("_detect_audio_monitor", return_value="m"),
+-            patch_all("_gst_pipewiresrc_properties", return_value=set()),
+-            patch_all("_gst_x264enc_properties", return_value=set()),
+-            patch_all("_pipewiresrc_selector_attempts",
+-                              return_value=[("path", ["path=7"])]),
+-            patch_all("start_portal_capture", return_value=Sess()),
+-            patch_all("close_portal_capture"),
+-            patch_all("_process_written_bytes", return_value=None),
+-            mock.patch.object(wfd.subprocess, "Popen",
+-                              side_effect=lambda cmd, *a, **k: (captured.append(list(cmd)),
+-                                                                Proc())[1]),
+-            mock.patch.object(wfd.time, "sleep"),
+-            contextlib.redirect_stdout(io.StringIO()),
+-        ):
+-            pipeline._start_desktop_gst_x11()
+-            pipeline._start_desktop_portal()
+-            config.aosp_pmt_pid = True
+-            pipeline._start_desktop_portal_ffmpeg()
+-        return [c for c in captured if c and c[0].startswith("gst-launch")]
+-
+-    def test_generated_pipelines_never_stretch(self):
+-        commands = self._gst_commands()
+-        self.assertGreaterEqual(len(commands), 3, "expected one argv per gst pipeline")
+-        for cmd in commands:
+-            index = cmd.index("videoscale")
+-            caps = next(a for a in cmd[index:] if a.startswith("video/x-raw") and "width=" in a)
+-            self.assertIn("pixel-aspect-ratio=1/1", caps)
+-
+-def _sequence(values):
+-    """Yield the given values, then repeat the last one forever."""
+-    state = list(values)
+-    def next_value(*_a, **_k):
+-        return state.pop(0) if len(state) > 1 else state[0]
+-    return next_value
+-
+-
+-class CapturePipeTest(unittest.TestCase):
+-    """The portal->ffmpeg pipe must not report success on a silent capture."""
+-
+-    def _run(self, written, producer_alive=True, consumer_alive=True, min_bytes=1):
+-        # written may be a list (consumed in order) or a callable per poll.
+-        config = wfd.WFDMediaConfig(monitor=None, aosp_pmt_pid=True)
+-        pipeline = wfd.WFDMediaPipeline(config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
+-                                        sink_rtp_port=35034)
+-        procs = []
+-
+-        class Proc:
+-            def __init__(self, alive):
+-                self.stdout = io.BytesIO()
+-                self.pid = 1000 + len(procs)
+-                self._alive = alive
+-                self.terminated = False
+-
+-            def poll(self):
+-                return None if self._alive else 1
+-
+-            def terminate(self):
+-                self.terminated = True
+-
+-        def fake_popen(cmd, *a, **k):
+-            proc = Proc(producer_alive if not procs else consumer_alive)
+-            procs.append(proc)
+-            return proc
+-
+-        errors = []
+-        with (
+-            mock.patch.object(wfd.subprocess, "Popen", side_effect=fake_popen),
+-            patch_all("_process_written_bytes",
+-                              side_effect=written if callable(written)
+-                              else _sequence(written)),
+-            mock.patch.object(wfd.time, "sleep"),
+-        ):
+-            ok = pipeline._spawn_capture_pipe(["gst"], ["ffmpeg"], errors, "path",
+-                                              min_bytes=min_bytes)
+-        return ok, errors, pipeline, procs
+-
+-    def test_flowing_capture_is_accepted(self):
+-        ok, errors, pipeline, _ = self._run([0, 5_000_000], min_bytes=1_000_000)
+-        self.assertTrue(ok)
+-        self.assertEqual(errors, [])
+-        self.assertEqual(len(pipeline.processes), 2)
+-
+-    def test_silent_capture_is_rejected_even_though_audio_keeps_flowing(self):
+-        # The regression this guards: RTP kept leaving the box because audio
+-        # was fine, so a dead video source looked healthy.
+-        ok, errors, pipeline, procs = self._run([0, 0], min_bytes=1_000_000)
+-        self.assertFalse(ok)
+-        self.assertIn("produced no frames", errors[0])
+-        self.assertEqual(pipeline.processes, [])
+-        self.assertTrue(all(p.terminated for p in procs))
+-
+-    def test_partial_frame_is_not_enough(self):
+-        ok, errors, _, _ = self._run([0, 4096], min_bytes=1_000_000)
+-        self.assertFalse(ok)
+-        self.assertIn("produced no frames", errors[0])
+-
+-    def test_dead_capture_process_is_rejected(self):
+-        ok, errors, pipeline, _ = self._run([0, 5_000_000], producer_alive=False)
+-        self.assertFalse(ok)
+-        self.assertIn("capture pipeline exited", errors[0])
+-        self.assertEqual(pipeline.processes, [])
+-
+-    def test_portal_fd_is_inherited_by_the_capture_process(self):
+-        # subprocess closes everything above stderr, so without pass_fds the
+-        # PipeWire fd is gone in the child and capture yields nothing (#84).
+-        seen = {}
+-
+-        class Proc:
+-            stdout = io.BytesIO()
+-            pid = 1
+-
+-            def poll(self):
+-                return None
+-
+-            def terminate(self):
+-                pass
+-
+-        def fake_popen(cmd, *a, **kwargs):
+-            if "stdout" in kwargs:
+-                seen["pass_fds"] = kwargs.get("pass_fds")
+-            return Proc()
+-
+-        config = wfd.WFDMediaConfig(monitor=None, aosp_pmt_pid=True)
+-        pipeline = wfd.WFDMediaPipeline(config, tv_ip="10.42.0.2", local_ip="10.42.0.1",
+-                                        sink_rtp_port=35034)
+-        with (
+-            mock.patch.object(wfd.subprocess, "Popen", side_effect=fake_popen),
+-            patch_all("_process_written_bytes", return_value=None),
+-            mock.patch.object(wfd.time, "sleep"),
+-        ):
+-            pipeline._spawn_capture_pipe(["gst"], ["ffmpeg"], [], "path", pass_fds=(42,))
+-
+-        self.assertEqual(seen.get("pass_fds"), (42,))
+-
+-    def test_unreadable_proc_io_does_not_block_startup(self):
+-        # /proc may be unavailable; fall back to "process is alive".
+-        ok, errors, _, _ = self._run([None, None], min_bytes=1_000_000)
+-        self.assertTrue(ok)
+-        self.assertEqual(errors, [])
+-
+-
+-class TsDumpTest(unittest.TestCase):
+-    def test_pipeline_is_untouched_without_a_dump_path(self):
+-        self.assertEqual(
+-            wfd._gst_rtp_link(None), ["!", "rtpmp2tpay", "pt=33", "mtu=1328"]
+-        )
+-        self.assertEqual(wfd._gst_dump_branch(None), [])
+-        self.assertIsNone(wfd.WFDMediaConfig(monitor=None).dump_ts_path)
+-
+-    def test_dump_path_tees_the_muxer_output(self):
+-        link = wfd._gst_rtp_link("/tmp/x.ts")
+-        branch = wfd._gst_dump_branch("/tmp/x.ts")
+-        self.assertEqual(link[:3], ["!", "tee", "name=tsdump"])
+-        self.assertIn("rtpmp2tpay", link)
+-        self.assertEqual(branch[0], "tsdump.")
+-        self.assertIn("location=/tmp/x.ts", branch)
+-
+-
+-class TsProbeTest(unittest.TestCase):
+-    def test_sps_parser_reads_profile_level_and_size(self):
+-        sps = bytes.fromhex("42c01e d8 0a 03 c9 fd 80 88 00 00 03 00 88 00 00 1e 47 8c 18 cd".replace(" ", ""))
+-        info = ts_probe._parse_sps(ts_probe._unescape_rbsp(sps))
+-        self.assertIsNotNone(info)
+-        self.assertEqual(info.profile_idc, 66)
+-        self.assertEqual(info.level_idc, 30)
+-
+-    def test_pcr_outside_the_declared_pcr_pid_is_reported(self):
+-        report = ts_probe.TSReport(
+-            pmt_pcr_pid=0x1000, pcr_count=4, pcr_pids={0x1000: 2, 0x0000: 1, 0x1011: 1}
+-        )
+-        text = ts_probe.format_report(report)
+-        self.assertIn("PCR also on PIDs the PMT does not name", text)
+-        self.assertIn("0x0000:1", text)
+-        self.assertIn("0x1011:1", text)
+-
+-    def test_pcr_only_on_the_declared_pid_is_not_reported(self):
+-        report = ts_probe.TSReport(pmt_pcr_pid=0x1011, pcr_count=2, pcr_pids={0x1011: 2})
+-        self.assertNotIn("PCR also on PIDs", ts_probe.format_report(report))
+-
+-    def test_null_packets_do_not_count_as_continuity_errors(self):
+-        # cc is deliberately frozen; nulls must not be flagged.
+-        null = bytes([0x47, 0x1F, 0xFF, 0x10]) + b"\xff" * 184
+-        path = os.path.join(os.path.dirname(__file__), "_ts_probe_null.ts")
+-        with open(path, "wb") as handle:
+-            handle.write(null * 40)
+-        try:
+-            report = ts_probe.analyze(path)
+-            self.assertEqual(report.continuity_errors, {})
+-            self.assertEqual(report.packets, 40)
+-        finally:
+-            os.unlink(path)
+-
+-
+-class StartBackendDiagnosticsTest(unittest.TestCase):
+-    def test_network_backend_and_no_firewall_flag_are_forwarded_to_diagnostics(self):
+-        args = SimpleNamespace(wfd_no_firewall=True, wfd_p2p_backend="supplicant")
+-        report = SimpleNamespace(wfd_candidate=False)
+-
+-        with (
+-            patch_all("run_diagnostics", return_value=report) as run,
+-            patch_all("print_report"),
+-            self.assertRaises(wfd.WFDNotReady),
+-        ):
+-            wfd.start_experimental_backend(args)
+-
+-        run.assert_called_once_with(skip_firewall=True, p2p_backend="supplicant")
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
+diff --git a/tests/test_wfd_cooperative_shutdown.py b/tests/test_wfd_cooperative_shutdown.py
+index d425a48..bfb054c 100644
+--- a/tests/test_wfd_cooperative_shutdown.py
++++ b/tests/test_wfd_cooperative_shutdown.py
+@@ -28,6 +28,8 @@ class WFDSignalTest(unittest.TestCase):
+         )
+         previous = signal.getsignal(signal.SIGTERM)
+         with mock.patch.object(fluxcast_main, "parse_args", return_value=args), mock.patch(
++            "main._validate_omacast_session"
++        ), mock.patch(
+             "wfd.start_experimental_backend",
+             side_effect=lambda _args: fluxcast_main._wfd_sigterm(signal.SIGTERM, None),
+         ) as start:
+@@ -105,37 +107,45 @@ class WFDSessionShutdownTest(unittest.TestCase):
+     def test_keyboard_interrupt_stops_probe_media_server_and_broker(self):
+         args = SimpleNamespace(
+             wfd_no_firewall=True,
+-            wfd_test_pattern=True,
+-            wfd_dry_run=False,
+             wfd_interface="wlan0",
+             wfd_timeout=1,
+             wfd_p2p_backend="supplicant",
+             wfd_supplicant_broker="/run/omarchy-cast/" + "a" * 32 + "/supplicant.sock",
+             fps=60,
+-            bitrate="4M",
++            bitrate="7M",
+             output_res="1280x720",
++            monitor_name="eDP-1",
++            wfd_audio_device="sink.monitor",
++            wfd_video_encoder="vaapi",
++            wfd_supplicant_network_trigger="/run/omarchy-cast/" + "a" * 32 + "/user/trigger",
+         )
+         report = SimpleNamespace(wfd_candidate=True)
+         peer = WFDPeer(address="00:11:22:33:44:55", name="TV")
+         rtsp = mock.Mock()
+         probe = mock.Mock()
+ 
++        monitor = SimpleNamespace(name="eDP-1")
+         with mock.patch("wfd.session.run_diagnostics", return_value=report), mock.patch(
+             "wfd.session.print_report"
++        ), mock.patch("capture.gather_monitors", return_value=[monitor]), mock.patch(
++            "wfd.session.os.open", return_value=42
++        ), mock.patch("wfd.session.os.close"
+         ), mock.patch("wfd.session._scan_and_select", return_value=peer), mock.patch(
+             "wfd.session.WFDRTSPServer", return_value=rtsp
+-        ), mock.patch("wfd.session.connect_supplicant_group"), mock.patch(
+-            "wfd.session.ActiveRTSPProbe", return_value=probe
++        ), mock.patch("wfd.session.ActiveRTSPProbe", return_value=probe
+         ), mock.patch("wfd.session.time.sleep", side_effect=KeyboardInterrupt), mock.patch(
+-            "wfd.session.broker_request", return_value={"cleaned": True}
+-        ) as broker, mock.patch("wfd.session.report_ts_dump"):
++            "wfd.session.broker_request",
++            side_effect=[{"group": {"interface": "p2p-wlan0-0", "role": "client"}}, {"cleaned": True}],
++        ) as broker:
+             start_experimental_backend(args)
+ 
+         probe.start.assert_called_once_with()
+         probe.stop.assert_called_once_with()
+         rtsp.stop_all_media.assert_called_once_with()
+         rtsp.stop.assert_called_once_with()
+-        broker.assert_called_once_with(args.wfd_supplicant_broker, "cleanup", timeout=10.0)
++        self.assertEqual(broker.call_args_list[-1], mock.call(
++            args.wfd_supplicant_broker, "cleanup", timeout=10.0
++        ))
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/tests/test_wfd_p2p_nm.py b/tests/test_wfd_p2p_nm.py
+deleted file mode 100644
+index 3a09bd4..0000000
+--- a/tests/test_wfd_p2p_nm.py
++++ /dev/null
+@@ -1,16 +0,0 @@
+-import unittest
+-
+-from wfd.ie import WFDPeer
+-from wfd.p2p.nm import _connection_settings
+-
+-
+-class NetworkManagerP2PSettingsTest(unittest.TestCase):
+-    def test_connection_settings_pin_fire_tv_compatible_p2p_subnet(self):
+-        settings = _connection_settings(
+-            WFDPeer(address="02:00:00:00:00:01", name="Fire TV", path="/peer"),
+-            7236,
+-        )
+-
+-        self.assertIn("'method': <'shared'>", settings)
+-        self.assertIn("'address': <'192.168.49.1'>", settings)
+-        self.assertIn("'prefix': <uint32 24>", settings)
+diff --git a/tests/test_wfd_p2p_ownership.py b/tests/test_wfd_p2p_ownership.py
+deleted file mode 100644
+index 9db33f1..0000000
+--- a/tests/test_wfd_p2p_ownership.py
++++ /dev/null
+@@ -1,176 +0,0 @@
+-import subprocess
+-import unittest
+-from types import SimpleNamespace
+-from unittest import mock
+-
+-from wfd.config import WFDNotReady
+-from wfd.ie import WFDPeer
+-from wfd.p2p.device import _p2p_device_iface_paths
+-from wfd.p2p.supplicant import (
+-    SupplicantGroup,
+-    _selected_peer_groups,
+-    _supplicant_cancel_and_disconnect,
+-    _wait_for_supplicant_group,
+-)
+-
+-
+-def _result(stdout="", returncode=0):
+-    return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr="")
+-
+-
+-class SelectedSupplicantInterfaceTest(unittest.TestCase):
+-    def test_only_exact_selected_adapter_paths_are_returned(self):
+-        ifnames = {
+-            "/wlan0": "wlan0",
+-            "/p2p0": "p2p-dev-wlan0",
+-            "/wlan1": "wlan1",
+-            "/p2p1": "p2p-dev-wlan1",
+-            "/group0": "p2p-wlan0-0",
+-        }
+-
+-        def call(args, timeout=3.0):
+-            path = args[args.index("--object-path") + 1]
+-            if path == "/fi/w1/wpa_supplicant1":
+-                return _result("(" + ", ".join(f"objectpath '{item}'" for item in ifnames) + ",)")
+-            return _result(f"(<'{ifnames[path]}'>,)")
+-
+-        with mock.patch("wfd.p2p.device._gdbus_call", side_effect=call):
+-            self.assertEqual(_p2p_device_iface_paths("wlan0"), ["/p2p0", "/wlan0"])
+-            self.assertEqual(
+-                _p2p_device_iface_paths("p2p-dev-wlan0"), ["/p2p0", "/wlan0"]
+-            )
+-
+-    def test_missing_selected_adapter_does_not_fall_back_to_another_radio(self):
+-        def call(args, timeout=3.0):
+-            path = args[args.index("--object-path") + 1]
+-            if path == "/fi/w1/wpa_supplicant1":
+-                return _result("([objectpath '/wlan1'],)")
+-            return _result("(<'wlan1'>,)")
+-
+-        with mock.patch("wfd.p2p.device._gdbus_call", side_effect=call):
+-            self.assertEqual(_p2p_device_iface_paths("wlan0"), [])
+-
+-
+-class SupplicantGroupOwnershipTest(unittest.TestCase):
+-    def test_group_baseline_fails_closed_when_peer_property_is_unavailable(self):
+-        with mock.patch("wfd.p2p.supplicant._wpa_property", return_value=""):
+-            with self.assertRaisesRegex(WFDNotReady, "group baseline"):
+-                _selected_peer_groups("/peer", required=True)
+-
+-        with mock.patch(
+-            "wfd.p2p.supplicant._wpa_property", return_value="(@ao [],)"
+-        ):
+-            self.assertEqual(
+-                _selected_peer_groups("/peer", required=True), frozenset()
+-            )
+-
+-    def test_wait_ignores_preexisting_and_foreign_adapter_groups(self):
+-        groups = {
+-            "/old-iface": SupplicantGroup("/old", "/old-iface", "p2p-wlan0-0", "client"),
+-            "/foreign-iface": SupplicantGroup(
+-                "/foreign", "/foreign-iface", "p2p-wlan1-0", "client"
+-            ),
+-            "/owned-iface": SupplicantGroup(
+-                "/owned", "/owned-iface", "p2p-wlan0-1", "client"
+-            ),
+-            "/unrelated-iface": SupplicantGroup(
+-                "/unrelated", "/unrelated-iface", "p2p-wlan0-2", "client"
+-            ),
+-        }
+-
+-        def prop(path, interface, name):
+-            if path == "/peer" and name == "Groups":
+-                return "([objectpath '/old', '/foreign', '/owned'],)"
+-            if name == "Interfaces":
+-                return "(" + ", ".join(f"objectpath '{item}'" for item in groups) + ",)"
+-            return ""
+-
+-        with mock.patch("wfd.p2p.supplicant._wpa_property", side_effect=prop), mock.patch(
+-            "wfd.p2p.supplicant._group_from_interface",
+-            side_effect=lambda path: groups[path],
+-        ), mock.patch("wfd.p2p.supplicant.time.monotonic", side_effect=[0.0, 0.0]):
+-            group = _wait_for_supplicant_group(
+-                "wlan0", "/peer", frozenset({"/old"}), timeout=1.0
+-            )
+-
+-        self.assertEqual(group.group_path, "/owned")
+-
+-    def test_wait_fails_closed_when_two_new_owned_groups_are_attributable(self):
+-        groups = {
+-            "/one-iface": SupplicantGroup("/one", "/one-iface", "p2p-wlan0-0", "client"),
+-            "/two-iface": SupplicantGroup("/two", "/two-iface", "p2p-wlan0-1", "client"),
+-        }
+-
+-        def prop(path, interface, name):
+-            if path == "/peer" and name == "Groups":
+-                return "([objectpath '/one', '/two'],)"
+-            if name == "Interfaces":
+-                return "([objectpath '/one-iface', '/two-iface'],)"
+-            return ""
+-
+-        with mock.patch("wfd.p2p.supplicant._wpa_property", side_effect=prop), mock.patch(
+-            "wfd.p2p.supplicant._group_from_interface",
+-            side_effect=lambda path: groups[path],
+-        ), mock.patch("wfd.p2p.supplicant.time.monotonic", side_effect=[0.0, 0.0]):
+-            with self.assertRaisesRegex(WFDNotReady, "ambiguous ownership"):
+-                _wait_for_supplicant_group(
+-                    "wlan0", "/peer", frozenset(), timeout=1.0
+-                )
+-
+-    def test_cleanup_calls_only_the_recorded_control_path(self):
+-        with mock.patch("wfd.p2p.supplicant._gdbus_call", return_value=_result()) as call:
+-            _supplicant_cancel_and_disconnect("/owned-control")
+-
+-        control_calls = [
+-            entry.args[0]
+-            for entry in call.call_args_list
+-            if "--object-path" in entry.args[0]
+-            and entry.args[0][entry.args[0].index("--object-path") + 1]
+-            != "/fi/w1/wpa_supplicant1"
+-        ]
+-        self.assertEqual(len(control_calls), 2)
+-        self.assertTrue(all("/owned-control" in args for args in control_calls))
+-
+-
+-class SupplicantSessionCleanupTest(unittest.TestCase):
+-    def test_failed_connection_cleans_only_the_preselected_control_path(self):
+-        args = SimpleNamespace(
+-            wfd_no_firewall=True,
+-            wfd_test_pattern=True,
+-            wfd_dry_run=False,
+-            wfd_interface="wlan0",
+-            wfd_timeout=1,
+-            wfd_p2p_backend="supplicant",
+-            fps=60,
+-            bitrate="4M",
+-            output_res="1280x720",
+-        )
+-        report = SimpleNamespace(wfd_candidate=True)
+-        peer = WFDPeer(address="00:11:22:33:44:55", name="TV")
+-        rtsp = mock.Mock()
+-
+-        with mock.patch("wfd.session.run_diagnostics", return_value=report), mock.patch(
+-            "wfd.session.print_report"
+-        ), mock.patch("wfd.session._set_p2p_device_name"), mock.patch(
+-            "wfd.session._scan_and_select", return_value=peer
+-        ), mock.patch(
+-            "wfd.session._supplicant_interface_path", return_value="/owned-control"
+-        ), mock.patch(
+-            "wfd.session.WFDRTSPServer", return_value=rtsp
+-        ), mock.patch(
+-            "wfd.session.connect_supplicant_group",
+-            side_effect=WFDNotReady("connect failed"),
+-        ) as connect, mock.patch(
+-            "wfd.session._supplicant_cancel_and_disconnect"
+-        ) as cleanup, mock.patch("wfd.session.report_ts_dump"):
+-            with self.assertRaisesRegex(WFDNotReady, "connect failed"):
+-                from wfd.session import start_experimental_backend
+-
+-                start_experimental_backend(args)
+-
+-        connect.assert_called_once_with(args, peer, "/owned-control")
+-        cleanup.assert_called_once_with("/owned-control")
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
+diff --git a/tests/test_wfd_p2p_supplicant.py b/tests/test_wfd_p2p_supplicant.py
+deleted file mode 100644
+index 14ebd0e..0000000
+--- a/tests/test_wfd_p2p_supplicant.py
++++ /dev/null
+@@ -1,89 +0,0 @@
+-import os
+-import tempfile
+-import unittest
+-from types import SimpleNamespace
+-from unittest import mock
+-
+-from wfd.ie import WFDPeer
+-from wfd.p2p.supplicant import (
+-    SupplicantGroup,
+-    _supplicant_connect_options,
+-    connect_supplicant_group,
+-)
+-
+-
+-class SupplicantP2POptionsTest(unittest.TestCase):
+-    def test_authorize_mode_lets_sink_initiate_with_low_go_intent(self):
+-        options = _supplicant_connect_options(
+-            "/fi/w1/wpa_supplicant1/Interfaces/0/Peers/f22f9e8b714d",
+-            mode="authorize",
+-            go_intent=0,
+-        )
+-
+-        self.assertIn("'authorize_only': <true>", options)
+-        self.assertIn("'join': <false>", options)
+-        self.assertIn("'go_intent': <int32 0>", options)
+-        self.assertIn("'persistent': <false>", options)
+-
+-    def test_join_mode_requests_existing_sink_group(self):
+-        options = _supplicant_connect_options(
+-            "/fi/w1/wpa_supplicant1/Interfaces/0/Peers/f22f9e8b714d",
+-            mode="join",
+-            go_intent=0,
+-        )
+-
+-        self.assertIn("'authorize_only': <false>", options)
+-        self.assertIn("'join': <true>", options)
+-
+-    def test_connect_can_prefer_the_existing_wifi_frequency(self):
+-        options = _supplicant_connect_options(
+-            "/fi/w1/wpa_supplicant1/Interfaces/0/Peers/f22f9e8b714d",
+-            mode="connect",
+-            go_intent=0,
+-            frequency=5745,
+-        )
+-
+-        self.assertIn("'frequency': <int32 5745>", options)
+-
+-    def test_guard_trigger_is_created_before_direct_connect(self):
+-        with tempfile.TemporaryDirectory() as directory:
+-            trigger = os.path.join(directory, "guard.trigger")
+-            args = SimpleNamespace(
+-                wfd_interface="wlan0",
+-                wfd_supplicant_mode="connect",
+-                wfd_rtsp_port=7236,
+-                wfd_go_intent=0,
+-                wfd_dry_run=False,
+-                wfd_supplicant_preconnect_delay=0,
+-                wfd_supplicant_network_trigger=trigger,
+-                wfd_supplicant_frequency=5745,
+-                wfd_supplicant_hold=45,
+-            )
+-            group = SupplicantGroup("/group", "/interface", "p2p-wlan0-0", "client")
+-
+-            with mock.patch(
+-                "wfd.p2p.supplicant._supplicant_interface_path",
+-                return_value="/interface",
+-            ), mock.patch(
+-                "wfd.p2p.supplicant._supplicant_peer_path",
+-                return_value="/peer",
+-            ), mock.patch(
+-                "wfd.p2p.supplicant._selected_peer_groups",
+-                return_value=frozenset({"/old-group"}),
+-            ), mock.patch(
+-                "wfd.p2p.supplicant._supplicant_connect"
+-            ) as connect, mock.patch(
+-                "wfd.p2p.supplicant._wait_for_supplicant_group",
+-                return_value=group,
+-            ) as wait:
+-                self.assertEqual(
+-                    connect_supplicant_group(args, WFDPeer(address="00:11:22:33:44:55")),
+-                    group,
+-                )
+-
+-            self.assertTrue(os.path.isfile(trigger))
+-            connect.assert_called_once()
+-            self.assertEqual(connect.call_args.kwargs["peer_path"], "/peer")
+-            wait.assert_called_once_with(
+-                "wlan0", "/peer", frozenset({"/old-group"}), timeout=45.0
+-            )
+-- 
+2.55.0
+

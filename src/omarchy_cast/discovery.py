@@ -159,7 +159,7 @@ def _result_error(result: CommandResult) -> str:
 
 def _engine_capabilities(runner: Runner) -> dict[str, object]:
     result = runner(("fluxcast", "--help"))
-    required = ("--wfd-p2p-backend", "--wfd-supplicant-mode", "--wfd-video-encoder", "--wfd-supplicant-network-trigger", "--wfd-supplicant-broker", "--wfd-progress-log", "gpu-screen-recorder")
+    required = ("--omacast-session", "--wfd-p2p-backend", "--wfd-supplicant-mode", "--wfd-video-encoder", "--wfd-supplicant-network-trigger", "--wfd-supplicant-broker", "--wfd-progress-log", "gpu-screen-recorder")
     forbidden = ("portal", "wf-recorder", "x11grab", "gst-x11")
     available = result.returncode == 0 and all(token in result.stdout for token in required) and not any(token in result.stdout for token in forbidden)
     return {"schemaVersion": 1, "installed": result.returncode == 0, "compatible": available, "requiredTokens": list(required), "forbiddenTokens": list(forbidden)}

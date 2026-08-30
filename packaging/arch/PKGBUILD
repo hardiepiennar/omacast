@@ -6,15 +6,13 @@
 
 pkgname=fluxcast-omarchy-cast
 pkgver=0.1.5.r3.omarchy
-pkgrel=67
+pkgrel=68
 pkgdesc='Pinned FluxCast WFD engine with Omacast compatibility patches'
 arch=('any')
-url='https://github.com/IlyaP358/fluxcast'
+url='https://github.com/hardiepiennar/omacast'
 license=('GPL-3.0-or-later')
 depends=(
   'python'
-  'python-dbus-next'
-  'python-gobject'
   'glib2'
   'gpu-screen-recorder'
   'ffmpeg'

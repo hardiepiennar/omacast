@@ -100,7 +100,9 @@ class CliTest(unittest.TestCase):
             "monitors": [{"name": "eDP-1", "focused": True}],
             "defaultSink": "alsa_output.example", "renderNodes": [],
         }
-        with tempfile.TemporaryDirectory() as temp, patch.dict("os.environ", {"XDG_RUNTIME_DIR": temp}, clear=False), patch("omarchy_cast.cli.discover_host", return_value=host):
+        with tempfile.TemporaryDirectory() as temp, patch.dict("os.environ", {
+            "XDG_RUNTIME_DIR": temp, "XDG_STATE_HOME": temp,
+        }, clear=False), patch("omarchy_cast.cli.discover_host", return_value=host):
             code, payload = self.invoke(["dry-run", "--peer", "tv-01"])
         self.assertEqual(code, 0)
         self.assertTrue(payload["dryRun"])
@@ -123,7 +125,9 @@ class CliTest(unittest.TestCase):
 
     def test_transport_test_uses_only_the_fake_adapter(self) -> None:
         host = {"schemaVersion": 1, "checks": [{"name": name, "status": "ok"} for name in ("fluxcast", "nmcli", "gpu-screen-recorder", "ffmpeg")], "wifiLinks": [{"interface": "wlan42", "connected": True, "frequency_mhz": 2412}], "monitors": [{"name": "eDP-1", "focused": True}], "defaultSink": "alsa_output.example", "renderNodes": []}
-        with tempfile.TemporaryDirectory() as temp, patch.dict("os.environ", {"XDG_CONFIG_HOME": temp, "XDG_RUNTIME_DIR": temp}, clear=False), patch("omarchy_cast.cli.discover_host", return_value=host):
+        with tempfile.TemporaryDirectory() as temp, patch.dict("os.environ", {
+            "XDG_CONFIG_HOME": temp, "XDG_RUNTIME_DIR": temp, "XDG_STATE_HOME": temp,
+        }, clear=False), patch("omarchy_cast.cli.discover_host", return_value=host):
             code, payload = self.invoke(["transport-test", "--peer", "tv-01", "--scenario", "success"])
         self.assertEqual(code, 0)
         self.assertTrue(payload["transportTest"])

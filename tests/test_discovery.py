@@ -13,7 +13,7 @@ class DiscoveryTest(unittest.TestCase):
     @staticmethod
     def ready_runner(args, *, timeout=5.0):
         if args[0] == "fluxcast":
-            return CommandResult(tuple(args), 0, "--wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-supplicant-broker --wfd-progress-log gpu-screen-recorder", "")
+            return CommandResult(tuple(args), 0, "--omacast-session --wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-supplicant-broker --wfd-progress-log gpu-screen-recorder", "")
         if Path(args[0]).name == "omarchy-cast-guard":
             return CommandResult(tuple(args), 0, json.dumps({"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 14}), "")
         if args[0] == "nmcli":

@@ -245,6 +245,13 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   Companion revision 63 / guard API 12 removes the obsolete `wf-recorder`
   package hint, rejects that misleading WFD selector, and makes readiness
   require the corrected engine capability before casting is enabled.
+- Production patch 47 closes the remaining companion bypasses. Streaming now
+  requires a controller-issued session ID, matching broker and trigger paths,
+  controller-owned telemetry descriptors, an exact receiver MAC, and the
+  single Safe profile. The built wheel omits portal, X11, test-pattern,
+  NetworkManager-connect, direct-supplicant, firewall-mutation, and transport-
+  dump modules. Companion revision 68 carries this unprivileged engine
+  contract; guard API 14 is unchanged.
 - Direct-supplicant readiness no longer depends on dnsmasq. The supported
   laptop-as-P2P-client topology receives DHCP from the receiver; dnsmasq stays
   a requirement only for FluxCast's separate NetworkManager group-owner path.
@@ -982,7 +989,9 @@ reports in issues 2 and 3. Its scope is the companion diagnostic import fix,
 honest GPU Screen Recorder naming, backend-specific dnsmasq readiness, legal
 automatic P2P channel selection outside 2.4 GHz, specification-valid WFD source
 advertisement, a GPU Screen Recorder-only public capture selector, and explicit
-fail-closed recovery of inactive orphaned P2P clients. Because the release
+fail-closed recovery of inactive orphaned P2P clients. It also removes dormant
+alternate engine routes and binds every streaming launch to its guarded
+controller session. Because the release
 changes the advertised WFD bytes and privileged recovery boundary, its exact
 installed candidate requires a normal Fire TV connect/stream/Stop cleanup run
 in addition to the offline release gates.

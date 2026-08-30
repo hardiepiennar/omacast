@@ -361,6 +361,7 @@ class GuardedTransportAdapter:
     def _engine_command(self, plan: Mapping[str, Any], paths: Mapping[str, Path], trigger: str, broker: str) -> list[str]:
         """Attach session-owned instrumentation without coupling it to cast lifetime."""
         command = [str(value) for value in plan["command"]]
+        command.extend(("--omacast-session", self.request.session_id))
         command.extend(("--wfd-progress-log", str(paths["progress"]), "--wfd-latency-log", str(paths["latency"])))
         command.extend((
             "--wfd-supplicant-network-trigger", trigger,

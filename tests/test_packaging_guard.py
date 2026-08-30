@@ -550,7 +550,10 @@ network_manager_marker_valid
         depends = recipe.split("depends=(", 1)[1].split(")", 1)[0]
         for dependency in ("ffmpeg", "networkmanager", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2", "util-linux", "glib2"):
             self.assertIn(f"'{dependency}'", depends)
-        for removed in ("gstreamer", "gst-plugin-pipewire", "gst-plugins-base-libs"):
+        for removed in (
+            "gstreamer", "gst-plugin-pipewire", "gst-plugins-base-libs",
+            "python-dbus-next", "python-gobject",
+        ):
             self.assertNotIn(f"'{removed}'", depends)
 
     def test_meta_network_file_is_clearly_non_production_and_parameterized(self) -> None:
@@ -842,11 +845,11 @@ reclaim_orphan_interfaces
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(series), 40)
+        self.assertEqual(len(series), 41)
         expected_numbers = (
             [f"{number:04d}" for number in range(1, 7)]
             + [f"{number:04d}" for number in range(9, 23)]
-            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041", "0042", "0043", "0044", "0045", "0046"]
+            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041", "0042", "0043", "0044", "0045", "0046", "0047"]
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:

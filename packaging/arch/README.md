@@ -18,7 +18,7 @@ build directory, and emits the package, checksum, package metadata, and source
 commit under `dist/`. The tagged GitHub release workflow runs that builder in a
 fresh Arch Linux container and attests the package provenance.
 
-Arch dependencies include `python-dbus-next` and `python-gobject`, plus FFmpeg,
+Arch dependencies include FFmpeg,
 GPU Screen Recorder, NetworkManager, wpa_supplicant, iw, PipeWire's PulseAudio
 client, polkit, systemd, iproute2, and util-linux. The packaged command exposes only the
 Miracast/WFD engine. Unused tray, Chromecast, DLNA, and LAN streaming modules

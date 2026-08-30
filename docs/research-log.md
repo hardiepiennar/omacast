@@ -2404,3 +2404,30 @@ an engine that still advertises any removed selector. Package revision 67
 carries the narrowed public contract while retaining guard API 14 because the
 privileged request and cleanup protocol are unchanged. The exact 40-patch
 reconstruction applies cleanly and passes all 154 FluxCast tests.
+
+### Guarded companion execution surface (2026-08-31)
+
+The full artifact audit found that patch 46 narrowed only the public capture
+selector. The installed wheel still carried portal, X11, test-pattern,
+NetworkManager connection, direct supplicant, firewall mutation, TS dump, and
+legacy metadata paths. A direct `fluxcast` invocation could therefore bypass
+the controller and privileged guard contract. The same trace exposed a latent
+parser mismatch: the controller can name `libx264`, while the engine rejected
+that spelling even though it did not use the selector.
+
+Production patch 47 removes those alternate modules from the wheel and makes
+streaming fail closed unless all controller-owned invariants agree: session
+ID, broker, trigger, parent-process telemetry descriptors, receiver MAC,
+monitor, interface, audio source, Safe 1280x720p60 profile, capture backend,
+and guarded supplicant mode. Receiver discovery retains a separate read-only
+NetworkManager scanner with bounded peer data; no NetworkManager connection
+mutation API ships. Portal-only Python dependencies and stale upstream package
+metadata are removed. The controller now supplies the session ID and requires
+the new capability marker. Companion revision 68 retains guard API 14 because
+the privileged protocol did not change.
+
+The exact 41-patch reconstruction passed 108 companion tests, built a wheel,
+and imported every shipped CLI/diagnostic entry point in a fresh interpreter.
+The controller suite passed 198 tests. Hardware acceptance remains pending
+until the remaining audit findings are resolved and the exact release
+candidate is installed.
