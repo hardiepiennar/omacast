@@ -1,0 +1,418 @@
+From e1f3a16bf51244ae574f3a65af34c661f1066e82 Mon Sep 17 00:00:00 2001
+From: Omacast Maintainers <4540086+hardiepienaar@users.noreply.github.com>
+Date: Mon, 31 Aug 2026 07:58:04 +1200
+Subject: [PATCH] Bound engine JSON contracts
+
+---
+ src/capture/capture.py         | 33 ++++++++++++++++------
+ src/diagnostics.py             | 26 +++++++++++++++--
+ src/json_bounds.py             | 46 ++++++++++++++++++++++++++++++
+ src/wfd/p2p/broker.py          | 30 +++++++++++++++++---
+ tests/test_capture_hyprland.py | 39 ++++++++++++++++++++++++++
+ tests/test_diagnostics.py      | 25 +++++++++++++++++
+ tests/test_wfd_p2p_broker.py   | 51 ++++++++++++++++++++++++++++++++++
+ 7 files changed, 234 insertions(+), 16 deletions(-)
+ create mode 100644 src/json_bounds.py
+
+diff --git a/src/capture/capture.py b/src/capture/capture.py
+index 3eae030..7272675 100644
+--- a/src/capture/capture.py
++++ b/src/capture/capture.py
+@@ -4,8 +4,10 @@ import json
+ import os
+ import shutil
+ import subprocess
++import math
+ from typing import NamedTuple
+ 
++from json_bounds import json_shape_is_bounded
+ from wfd.proc import _run
+ 
+ 
+@@ -29,24 +31,37 @@ def gather_monitors() -> list[Monitor]:
+         if result.returncode != 0 or len(result.stdout.encode("utf-8")) > 1_048_576:
+             return []
+         payload = json.loads(result.stdout)
+-    except (subprocess.TimeoutExpired, OSError, UnicodeError, json.JSONDecodeError):
++    except (subprocess.TimeoutExpired, OSError, UnicodeError, json.JSONDecodeError, RecursionError):
+         return []
+-    if not isinstance(payload, list) or len(payload) > 64:
++    if (
++        not isinstance(payload, list)
++        or len(payload) > 64
++        or not json_shape_is_bounded(
++            payload, max_depth=8, max_nodes=4096,
++            max_collection=128, max_string=4096,
++        )
++    ):
+         return []
+ 
+     monitors: list[Monitor] = []
+     for entry in payload:
+-        if not isinstance(entry, dict) or entry.get("disabled", False):
++        if not isinstance(entry, dict) or entry.get("disabled") is True:
+             continue
+         try:
+             name = entry["name"]
+             if not isinstance(name, str) or not 1 <= len(name) <= 128:
+                 continue
+-            width = int(entry["width"])
+-            height = int(entry["height"])
+-            x = int(entry.get("x", 0))
+-            y = int(entry.get("y", 0))
+-            refresh = float(entry.get("refreshRate", 0.0))
++            width = entry["width"]
++            height = entry["height"]
++            x = entry.get("x", 0)
++            y = entry.get("y", 0)
++            refresh = entry.get("refreshRate", 0.0)
++            if type(width) is not int or type(height) is not int:
++                continue
++            if type(x) is not int or type(y) is not int:
++                continue
++            if type(refresh) not in {int, float} or not math.isfinite(refresh):
++                continue
+             if not 1 <= width <= 16384 or not 1 <= height <= 16384:
+                 continue
+             if not -131072 <= x <= 131072 or not -131072 <= y <= 131072:
+@@ -56,7 +71,7 @@ def gather_monitors() -> list[Monitor]:
+             monitors.append(Monitor(
+                 display=os.environ.get("WAYLAND_DISPLAY", "wayland"),
+                 name=name, width=width, height=height, x=x, y=y,
+-                refresh=refresh, primary=bool(entry.get("focused", False)),
++                refresh=float(refresh), primary=entry.get("focused") is True,
+             ))
+         except (KeyError, TypeError, ValueError, OverflowError):
+             continue
+diff --git a/src/diagnostics.py b/src/diagnostics.py
+index ae9bf8f..475640c 100644
+--- a/src/diagnostics.py
++++ b/src/diagnostics.py
+@@ -8,6 +8,8 @@ import subprocess
+ from dataclasses import asdict, dataclass
+ from typing import Optional
+ 
++from json_bounds import json_shape_is_bounded
++
+ STATUS_OK = "ok"
+ STATUS_WARN = "warn"
+ STATUS_FAIL = "fail"
+@@ -284,22 +286,40 @@ def _subnet_conflict_check() -> Check:
+ 
+     try:
+         interfaces = json.loads(result.stdout or "[]")
+-    except json.JSONDecodeError as exc:
++    except (json.JSONDecodeError, RecursionError) as exc:
+         return Check(name, STATUS_WARN, "could not parse ip addr output", str(exc))
+ 
++    if (
++        not json_shape_is_bounded(
++            interfaces, max_depth=8, max_nodes=4096,
++            max_collection=256, max_string=4096,
++        )
++        or not isinstance(interfaces, list)
++    ):
++        return Check(name, STATUS_WARN, "could not parse ip addr output", "output shape exceeded its budget")
++
+     p2p_net = ipaddress.ip_network(WFD_P2P_SUBNET)
+     conflicts = []
+     for iface in interfaces:
++        if not isinstance(iface, dict):
++            continue
+         dev = iface.get("ifname", "?")
++        if not isinstance(dev, str):
++            continue
+         # Wi-Fi Direct interfaces are expected to live on this subnet; a clash is
+         # only meaningful when some *other* interface already occupies the range.
+         if "p2p" in dev.lower():
+             continue
+-        for addr in iface.get("addr_info", []):
++        addresses = iface.get("addr_info", [])
++        if not isinstance(addresses, list):
++            continue
++        for addr in addresses:
++            if not isinstance(addr, dict):
++                continue
+             if addr.get("family") != "inet":
+                 continue
+             local, prefixlen = addr.get("local"), addr.get("prefixlen")
+-            if local is None or prefixlen is None:
++            if not isinstance(local, str) or type(prefixlen) is not int:
+                 continue
+             try:
+                 net = ipaddress.ip_network(f"{local}/{prefixlen}", strict=False)
+diff --git a/src/json_bounds.py b/src/json_bounds.py
+new file mode 100644
+index 0000000..5f31d49
+--- /dev/null
++++ b/src/json_bounds.py
+@@ -0,0 +1,46 @@
++"""Small iterative JSON shape budgets for shipped command boundaries."""
++
++import math
++
++
++def json_shape_is_bounded(
++    value,
++    *,
++    max_depth: int = 16,
++    max_nodes: int = 4096,
++    max_collection: int = 256,
++    max_string: int = 4096,
++) -> bool:
++    """Return whether a decoded JSON value fits the closed resource budget."""
++    stack = [(value, 0)]
++    nodes = 0
++    while stack:
++        current, depth = stack.pop()
++        nodes += 1
++        if nodes > max_nodes or depth > max_depth:
++            return False
++        if current is None or type(current) is bool or type(current) is int:
++            continue
++        if type(current) is float:
++            if not math.isfinite(current):
++                return False
++            continue
++        if type(current) is str:
++            if len(current) > max_string:
++                return False
++            continue
++        if type(current) is list:
++            if len(current) > max_collection:
++                return False
++            stack.extend((item, depth + 1) for item in current)
++            continue
++        if type(current) is dict:
++            if len(current) > max_collection:
++                return False
++            for key, item in current.items():
++                if type(key) is not str or len(key) > max_string:
++                    return False
++                stack.append((item, depth + 1))
++            continue
++        return False
++    return True
+diff --git a/src/wfd/p2p/broker.py b/src/wfd/p2p/broker.py
+index 627e75a..0fdfbe6 100644
+--- a/src/wfd/p2p/broker.py
++++ b/src/wfd/p2p/broker.py
+@@ -4,13 +4,17 @@ import re
+ import socket
+ import stat
+ 
++from json_bounds import json_shape_is_bounded
+ from ..config import WFDNotReady
+ 
+ 
+ _BROKER_PATH = re.compile(r"^/run/omarchy-cast/[a-f0-9]{32}/supplicant\.sock$")
++_INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+ 
+ 
+ def broker_request(path: str, operation: str, *, timeout: float) -> dict:
++    if operation not in {"connect", "cleanup"}:
++        raise WFDNotReady("The supplicant broker operation is unsupported.")
+     if not _BROKER_PATH.fullmatch(path):
+         raise WFDNotReady("The supplicant broker path is outside the guarded session.")
+     try:
+@@ -45,20 +49,38 @@ def broker_request(path: str, operation: str, *, timeout: float) -> dict:
+         raise WFDNotReady("The supplicant broker returned an incomplete response.")
+     try:
+         payload = json.loads(response)
+-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
++    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+         raise WFDNotReady("The supplicant broker returned invalid JSON.") from exc
+     if (
+         not isinstance(payload, dict)
++        or not json_shape_is_bounded(payload, max_depth=8, max_nodes=64, max_collection=8, max_string=256)
+         or set(payload) != {"schemaVersion", "kind", "ok", "result", "error"}
++        or type(payload.get("schemaVersion")) is not int
+         or payload.get("schemaVersion") != 1
+         or payload.get("kind") != "omarchy-cast-supplicant-response"
+-        or not isinstance(payload.get("ok"), bool)
++        or type(payload.get("ok")) is not bool
+     ):
+         raise WFDNotReady("The supplicant broker returned an invalid response.")
+     if payload["ok"] is not True:
+         detail = payload.get("error")
++        if payload.get("result") is not None or not isinstance(detail, str):
++            raise WFDNotReady("The supplicant broker returned an invalid response.")
+         raise WFDNotReady(detail if isinstance(detail, str) and detail else "The supplicant broker refused the request.")
+     result = payload.get("result")
+-    if not isinstance(result, dict):
+-        raise WFDNotReady("The supplicant broker omitted its result.")
++    if payload.get("error") is not None or not isinstance(result, dict):
++        raise WFDNotReady("The supplicant broker returned an invalid response.")
++    if operation == "cleanup":
++        if set(result) != {"cleaned"} or result.get("cleaned") is not True:
++            raise WFDNotReady("The supplicant broker returned invalid cleanup status.")
++    else:
++        if set(result) != {"group"} or not isinstance(result.get("group"), dict):
++            raise WFDNotReady("The supplicant broker returned invalid group status.")
++        group = result["group"]
++        if (
++            set(group) != {"interface", "role"}
++            or not isinstance(group.get("interface"), str)
++            or not _INTERFACE.fullmatch(group["interface"])
++            or group.get("role") not in {"client", "GO"}
++        ):
++            raise WFDNotReady("The supplicant broker returned invalid group status.")
+     return result
+diff --git a/tests/test_capture_hyprland.py b/tests/test_capture_hyprland.py
+index 100c637..bbb2953 100644
+--- a/tests/test_capture_hyprland.py
++++ b/tests/test_capture_hyprland.py
+@@ -8,6 +8,18 @@ from capture.capture import gather_monitors
+ 
+ 
+ class HyprlandMonitorDiscoveryTest(unittest.TestCase):
++    def gather(self, payload):
++        result = SimpleNamespace(returncode=0, stdout=json.dumps(payload))
++        environment = {
++            **os.environ,
++            "WAYLAND_DISPLAY": "wayland-1",
++            "HYPRLAND_INSTANCE_SIGNATURE": "test",
++        }
++        with mock.patch.dict(os.environ, environment, clear=True), \
++             mock.patch("capture.capture.shutil.which", return_value="/usr/bin/hyprctl"), \
++             mock.patch("capture.capture._run", return_value=result):
++            return gather_monitors()
++
+     def test_gather_monitors_uses_hyprctl_json_on_hyprland(self):
+         payload = [{
+             "name": "eDP-1",
+@@ -39,6 +51,33 @@ class HyprlandMonitorDiscoveryTest(unittest.TestCase):
+         self.assertEqual(monitors[0].display, "wayland-1")
+         self.assertTrue(monitors[0].primary)
+ 
++    def test_boolean_and_nonfinite_numeric_fields_are_rejected(self):
++        base = {
++            "name": "eDP-1", "width": 1920, "height": 1080,
++            "x": 0, "y": 0, "refreshRate": 60.0,
++        }
++        for replacement in (
++            {"width": True}, {"height": False}, {"x": True}, {"y": False},
++            {"refreshRate": True}, {"refreshRate": float("inf")},
++        ):
++            with self.subTest(replacement=replacement):
++                self.assertEqual(self.gather([{**base, **replacement}]), [])
++
++    def test_deep_or_flooded_monitor_json_is_rejected(self):
++        deep = None
++        for _ in range(20):
++            deep = [deep]
++        self.assertEqual(self.gather(deep), [])
++        self.assertEqual(self.gather([{} for _ in range(65)]), [])
++
++    def test_only_exact_true_marks_focused_or_disabled(self):
++        base = {
++            "name": "eDP-1", "width": 1920, "height": 1080,
++            "x": 0, "y": 0, "refreshRate": 60.0,
++        }
++        monitor = self.gather([{**base, "focused": 1, "disabled": 1}])[0]
++        self.assertFalse(monitor.primary)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/tests/test_diagnostics.py b/tests/test_diagnostics.py
+index ec62246..f79c6f3 100644
+--- a/tests/test_diagnostics.py
++++ b/tests/test_diagnostics.py
+@@ -223,6 +223,31 @@ class SubnetConflictCheckTest(unittest.TestCase):
+             check = diagnostics._subnet_conflict_check()
+         self.assertEqual(check.status, diagnostics.STATUS_WARN)
+ 
++    def test_deep_or_flooded_json_is_bounded(self):
++        deep = None
++        for _ in range(20):
++            deep = [deep]
++        for payload in (deep, [{} for _ in range(257)]):
++            with self.subTest(size=len(payload)), \
++                    mock.patch("diagnostics.shutil.which", return_value="/usr/sbin/ip"), \
++                    mock.patch("diagnostics._run", return_value=_completed(json.dumps(payload))):
++                check = diagnostics._subnet_conflict_check()
++            self.assertEqual(check.status, diagnostics.STATUS_WARN)
++
++    def test_unexpected_shapes_and_boolean_prefix_are_ignored(self):
++        payload = json.dumps([
++            None,
++            {"ifname": 7, "addr_info": []},
++            {"ifname": "eth0", "addr_info": "wrong"},
++            {"ifname": "eth1", "addr_info": [None, {
++                "family": "inet", "local": "192.168.49.1", "prefixlen": True,
++            }]},
++        ])
++        with mock.patch("diagnostics.shutil.which", return_value="/usr/sbin/ip"), \
++                mock.patch("diagnostics._run", return_value=_completed(payload)):
++            check = diagnostics._subnet_conflict_check()
++        self.assertEqual(check.status, diagnostics.STATUS_OK)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/tests/test_wfd_p2p_broker.py b/tests/test_wfd_p2p_broker.py
+index ac1b30b..f6b5315 100644
+--- a/tests/test_wfd_p2p_broker.py
++++ b/tests/test_wfd_p2p_broker.py
+@@ -66,6 +66,57 @@ class SupplicantBrokerClientTest(unittest.TestCase):
+             with self.assertRaisesRegex(WFDNotReady, "unsafe"):
+                 broker_request(BROKER, "connect", timeout=1)
+ 
++    def request_with(self, payload, operation="cleanup"):
++        client = _Socket(json.dumps(payload).encode() + b"\n")
++        with mock.patch("wfd.p2p.broker.os.stat", return_value=self.metadata()), mock.patch(
++            "wfd.p2p.broker.os.getuid", return_value=1000
++        ), mock.patch("wfd.p2p.broker.socket.socket", return_value=client):
++            return broker_request(BROKER, operation, timeout=1)
++
++    def test_client_rejects_boolean_schema_and_inconsistent_success(self):
++        base = {
++            "schemaVersion": 1,
++            "kind": "omarchy-cast-supplicant-response",
++            "ok": True,
++            "result": {"cleaned": True},
++            "error": None,
++        }
++        for replacement in (
++            {"schemaVersion": True},
++            {"error": "surprise"},
++            {"result": {"cleaned": 1}},
++        ):
++            with self.subTest(replacement=replacement), self.assertRaises(WFDNotReady):
++                self.request_with({**base, **replacement})
++
++    def test_client_rejects_operation_mismatches_and_deep_json(self):
++        connect = {
++            "schemaVersion": 1,
++            "kind": "omarchy-cast-supplicant-response",
++            "ok": True,
++            "result": {"group": {"interface": "p2p-wlan0-0", "role": "client"}},
++            "error": None,
++        }
++        self.assertEqual(
++            self.request_with(connect, "connect")["group"]["role"], "client"
++        )
++        for result in (
++            {"group": {"interface": "../../bad", "role": "client"}},
++            {"group": {"interface": "p2p-wlan0-0", "role": "owner"}},
++            {"cleaned": True},
++        ):
++            with self.subTest(result=result), self.assertRaises(WFDNotReady):
++                self.request_with({**connect, "result": result}, "connect")
++
++        nested = None
++        for _ in range(20):
++            nested = [nested]
++        with self.assertRaises(WFDNotReady):
++            self.request_with({**connect, "result": {"group": nested}}, "connect")
++
++        with self.assertRaisesRegex(WFDNotReady, "unsupported"):
++            broker_request(BROKER, "arbitrary", timeout=1)
++
+     def test_group_connection_uses_broker_without_direct_supplicant_calls(self):
+         args = SimpleNamespace(
+             wfd_supplicant_broker=BROKER,
+-- 
+2.55.0
+

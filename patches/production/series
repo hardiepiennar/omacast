@@ -40,3 +40,4 @@
 0046-Limit-Omacast-WFD-capture-to-GPU-Screen-Recorder.patch
 0047-Restrict-engine-to-guarded-Omacast-sessions.patch
 0048-Expose-exact-Omacast-engine-contract.patch
+0049-Bound-engine-JSON-contracts.patch
