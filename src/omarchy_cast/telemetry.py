@@ -164,6 +164,8 @@ class TelemetryWorkspace:
             self.live_descriptor = -1
 
     def prepare_engine_outputs(self) -> dict[str, Path]:
+        if self._outputs:
+            raise ValueError("telemetry engine outputs are already prepared")
         try:
             for key in ("progress", "latency", "packets", "engineLog"):
                 name = _PATH_KEYS[key]
@@ -405,16 +407,25 @@ def cleanup_live_telemetry(session_id: str, environ: Mapping[str, str] | None = 
     try:
         parent_descriptor = _open_live_parent(environ, create=False)
         directory_descriptor = _open_private_child(parent_descriptor, session_id, create=False)
+        cleanup_complete = True
         for name in _LIVE_FILENAMES:
             try:
                 os.unlink(name, dir_fd=directory_descriptor)
             except FileNotFoundError:
                 pass
+            except OSError:
+                # One replaced or special entry must not shield the remaining
+                # controller-owned files from best-effort cleanup.
+                cleanup_complete = False
         pinned = os.fstat(directory_descriptor)
         current = os.stat(session_id, dir_fd=parent_descriptor, follow_symlinks=False)
         if (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino):
             return False
-        os.rmdir(session_id, dir_fd=parent_descriptor)
+        try:
+            os.rmdir(session_id, dir_fd=parent_descriptor)
+        except OSError:
+            cleanup_complete = False
+        return cleanup_complete
     except FileNotFoundError:
         return True
     except (OSError, ValueError):

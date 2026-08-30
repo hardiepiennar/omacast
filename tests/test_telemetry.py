@@ -197,6 +197,17 @@ class TelemetryTest(unittest.TestCase):
 
             self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
 
+    def test_engine_outputs_can_only_be_prepared_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            workspace = TelemetryWorkspace("a" * 32, environment)
+            try:
+                workspace.prepare_engine_outputs()
+                with self.assertRaisesRegex(ValueError, "already prepared"):
+                    workspace.prepare_engine_outputs()
+            finally:
+                workspace.close()
+
     def test_archive_append_rejects_a_symlink_without_changing_its_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
@@ -441,3 +452,14 @@ class TelemetryTest(unittest.TestCase):
             unexpected.write_text("preserve")
             self.assertFalse(cleanup_live_telemetry(session_id, environment))
             self.assertEqual(unexpected.read_text(), "preserve")
+
+    def test_one_unsafe_live_entry_does_not_shield_other_known_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            session_id = "c" * 32
+            paths = telemetry_paths(session_id, environment)
+            paths["current"].mkdir()
+            paths["engineLog"].write_text("remove", encoding="utf-8")
+            self.assertFalse(cleanup_live_telemetry(session_id, environment))
+            self.assertTrue(paths["current"].is_dir())
+            self.assertFalse(paths["engineLog"].exists())
