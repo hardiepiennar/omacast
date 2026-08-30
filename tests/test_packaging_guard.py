@@ -989,6 +989,7 @@ reclaim_orphan_interfaces
         self.assertIn("packaged engine retains excluded module", audit)
         self.assertIn("packaged engine retains UIBC input surface", audit)
         self.assertIn("package retains legacy integration payload", audit)
+        self.assertIn("for dependency in python gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw libpulse", audit)
         self.assertIn("packaged engine retains unbounded subprocess capture", audit)
         self.assertIn("packaged engine lacks bounded subprocess capture", audit)
         self.assertIn("--omacast-contract-json", audit)

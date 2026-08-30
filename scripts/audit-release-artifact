@@ -69,7 +69,7 @@ done
 package_info="$(bsdtar -xOf "$package" .PKGINFO)"
 grep -Fxq 'pkgname = fluxcast-omarchy-cast' <<<"$package_info" || die "unexpected package name"
 grep -Fxq "pkgver = $expected_version" <<<"$package_info" || die "package metadata does not match its filename"
-for dependency in python gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw polkit systemd iproute2 util-linux glib2; do
+for dependency in python gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw libpulse polkit systemd iproute2 util-linux glib2; do
   grep -Fxq "depend = $dependency" <<<"$package_info" || die "missing runtime dependency: $dependency"
 done
 for dependency in python-pillow python-pystray python-pychromecast python-upnpclient; do

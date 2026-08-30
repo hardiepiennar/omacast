@@ -2506,3 +2506,12 @@ events, before retaining or parsing the next record. The ordinary 50-session
 retention policy is unchanged. Adversarial regressions cover both floods and
 prove that best-effort pruning failure does not prevent the active session from
 recording its first event.
+
+### Complete companion dependency audit (2026-08-31)
+
+The Arch recipe correctly required `libpulse`, which supplies the `pactl`
+command used for desktop-audio discovery, but the built-artifact dependency
+allowlist did not verify it. The release audit now requires that dependency
+alongside every other shipped command provider. A candidate whose recipe looks
+correct but whose `.PKGINFO` omits desktop-audio support therefore fails before
+installation. Runtime behavior and package revision are unchanged.
