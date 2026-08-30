@@ -553,6 +553,16 @@ network_manager_marker_valid
         for removed in ("gstreamer", "gst-plugin-pipewire", "gst-plugins-base-libs"):
             self.assertNotIn(f"'{removed}'", depends)
 
+    def test_meta_network_file_is_clearly_non_production_and_parameterized(self) -> None:
+        example = (ROOT / "meta" / "80-omarchy-cast-p2p-client.network.example").read_text(encoding="utf-8")
+        readme = (ROOT / "meta" / "README.md").read_text(encoding="utf-8")
+        recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
+        self.assertIn("Research-only", example)
+        self.assertIn("<managed-interface>", example)
+        self.assertNotIn("wlp58s0", example)
+        self.assertIn("not package input", readme)
+        self.assertNotIn("meta/", recipe)
+
     def test_guard_pins_the_verified_heartbeat_descriptor(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
         harness = r'''

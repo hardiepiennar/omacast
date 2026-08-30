@@ -1,0 +1,16 @@
+# Research-only shape retained from phase 1. This file is not installed.
+# Production writes a session-scoped unit using the discovered interface.
+
+[Match]
+Name=p2p-<managed-interface>-*
+
+[Network]
+DHCP=ipv4
+IPv6AcceptRA=no
+LinkLocalAddressing=ipv6
+
+[DHCPv4]
+UseDNS=no
+UseDomains=no
+UseRoutes=yes
+RouteMetric=2048

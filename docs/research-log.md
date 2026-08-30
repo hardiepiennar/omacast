@@ -2377,3 +2377,12 @@ mixed safe/connected test proves that one unsafe candidate prevents all
 deletion. Prepare and reclaim also hold the same validated root-owned runtime
 directory lock, closing the check/delete race with a newly starting cast.
 Companion revision 66 carries this new privileged contract.
+
+### Phase-1 network example scope (2026-08-30)
+
+Issue 2 correctly noted that the retained `meta` network file still named the
+development workstation's Wi-Fi interface. The file has never been installed;
+the production guard already generates a session-scoped unit from the
+discovered adapter. The artifact is now explicitly named as an example, uses a
+non-operative interface placeholder, and sits beside a short scope README so
+it cannot be mistaken for package input while its research value is preserved.
