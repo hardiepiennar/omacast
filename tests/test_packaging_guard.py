@@ -875,11 +875,11 @@ reclaim_orphan_interfaces
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(series), 42)
+        self.assertEqual(len(series), 43)
         expected_numbers = (
             [f"{number:04d}" for number in range(1, 7)]
             + [f"{number:04d}" for number in range(9, 23)]
-            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041", "0042", "0043", "0044", "0045", "0046", "0047", "0048"]
+            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041", "0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049"]
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:
@@ -1000,6 +1000,9 @@ reclaim_orphan_interfaces
         audit = (ROOT / "scripts" / "audit-release-artifact").read_text(encoding="utf-8")
         self.assertIn("omacast-artifact-audit.", audit)
         self.assertIn("omarchy-cast-guard-version", audit)
+        self.assertIn('type(value["schemaVersion"]) is int', audit)
+        self.assertIn('type(value["apiRevision"]) is int', audit)
+        self.assertNotIn('value == {"schemaVersion":1', audit)
         self.assertIn("apiRevision", audit)
         self.assertIn("omarchy-cast-supplicant-broker", audit)
         self.assertIn("fixed wall-clock lifetime", audit)
