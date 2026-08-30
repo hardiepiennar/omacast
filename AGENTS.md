@@ -92,6 +92,10 @@ Security review checklist:
 
 - Treat wireless metadata, subprocess output, controller JSON, runtime files,
   and every predictable same-UID path as untrusted input.
+- Privileged subprocesses must drain stdout and stderr concurrently, retain a
+  fixed maximum per stream, and kill on overflow or deadline. Never use
+  unbounded `capture_output`/`communicate` at a privileged boundary; test both
+  simultaneous-stream pressure and a child that never exits.
 - Bound bytes before parsing or retaining them. Also cap JSON depth, nodes,
   collection counts, and strings; project only allowlisted fields into QML and
   render non-constant text with `Text.PlainText`.

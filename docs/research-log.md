@@ -2431,3 +2431,16 @@ and imported every shipped CLI/diagnostic entry point in a fresh interpreter.
 The controller suite passed 198 tests. Hardware acceptance remains pending
 until the remaining audit findings are resolved and the exact release
 candidate is installed.
+
+### Bounded privileged broker command output (2026-08-31)
+
+The root supplicant broker previously invoked `gdbus` with Python's
+`capture_output=True`. The request timeout limited duration but not retained
+stdout or stderr, so a malfunctioning D-Bus endpoint could force the
+privileged process to allocate unbounded memory before parsing the response.
+
+The broker now drains both pipes concurrently, retains at most 64 KiB from
+each, kills the child on either overflow or deadline, and exposes only bounded
+decoded text to the property parsers and error response. Regressions cover
+simultaneous 60 KiB stdout/stderr pressure, a stream one byte over quota, and a
+child that outlives its deadline. This changes no package or helper API.

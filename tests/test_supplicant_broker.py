@@ -5,6 +5,8 @@ from importlib.util import module_from_spec, spec_from_loader
 import json
 from pathlib import Path
 import socket
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -32,6 +34,28 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
         self.assertEqual(
             broker_module.source_wfd_ies(), bytes.fromhex("00000600101c4400c8")
         )
+
+    def test_privileged_command_output_is_bounded_before_retention(self) -> None:
+        command = [
+            sys.executable, "-c",
+            f"import os; os.write(1, b'x' * ({broker_module.MAX_COMMAND_OUTPUT} + 1))",
+        ]
+        with self.assertRaisesRegex(broker_module.BrokerError, "exceeded its limit"):
+            broker_module.run_bounded(command, timeout=2.0)
+
+    def test_privileged_command_drains_stdout_and_stderr_concurrently(self) -> None:
+        command = [
+            sys.executable, "-c",
+            "import os; os.write(1, b'o' * 60000); os.write(2, b'e' * 60000)",
+        ]
+        returncode, stdout, stderr = broker_module.run_bounded(command, timeout=2.0)
+        self.assertEqual(returncode, 0)
+        self.assertEqual((len(stdout), len(stderr)), (60_000, 60_000))
+
+    def test_privileged_command_timeout_kills_the_child(self) -> None:
+        command = [sys.executable, "-c", "import time; time.sleep(10)"]
+        with self.assertRaises(subprocess.TimeoutExpired):
+            broker_module.run_bounded(command, timeout=0.05)
 
     @staticmethod
     def exchange(broker, payload: object) -> dict[str, object]:
