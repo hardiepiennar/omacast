@@ -57,6 +57,20 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
         with self.assertRaises(subprocess.TimeoutExpired):
             broker_module.run_bounded(command, timeout=0.05)
 
+    def test_privileged_command_timeout_kills_descendants_holding_pipes(self) -> None:
+        command = [
+            sys.executable, "-c",
+            "import subprocess,sys; subprocess.Popen((sys.executable,'-c','import time; time.sleep(30)'))",
+        ]
+        with self.assertRaises(subprocess.TimeoutExpired):
+            broker_module.run_bounded(command, timeout=0.05)
+
+    def test_supplicant_collections_have_independent_count_limits(self) -> None:
+        with self.assertRaisesRegex(broker_module.BrokerError, "too many object paths"):
+            broker_module.object_paths(" ".join(f"objectpath '/{index}'" for index in range(broker_module.MAX_OBJECT_PATHS + 1)))
+        with self.assertRaisesRegex(broker_module.BrokerError, "too many byte values"):
+            broker_module.byte_values(" ".join("0xff" for _ in range(broker_module.MAX_VARIANT_BYTES + 1)))
+
     @staticmethod
     def exchange(broker, payload: object) -> dict[str, object]:
         server, client = socket.socketpair()
@@ -80,6 +94,7 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
             {"schemaVersion": True, "op": "connect"},
             {"schemaVersion": 2, "op": "connect"},
             ["connect"],
+            {"schemaVersion": 1, "op": [True]},
         ):
             with self.subTest(payload=payload):
                 server, client = socket.socketpair()
@@ -90,6 +105,19 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
                 finally:
                     server.close()
                     client.close()
+
+    def test_protocol_rejects_recursively_deep_json(self) -> None:
+        payload: object = "connect"
+        for _ in range(20):
+            payload = [payload]
+        server, client = socket.socketpair()
+        try:
+            client.sendall(json.dumps({"schemaVersion": 1, "op": payload}).encode("utf-8") + b"\n")
+            with self.assertRaisesRegex(broker_module.BrokerError, "shape limit"):
+                self.broker().handle(server)
+        finally:
+            server.close()
+            client.close()
 
     def test_protocol_rejects_oversized_and_incomplete_input(self) -> None:
         for request in (b"x" * (broker_module.MAX_REQUEST + 1), b'{"schemaVersion":1,"op":"connect"}'):
