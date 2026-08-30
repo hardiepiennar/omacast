@@ -1170,6 +1170,15 @@ rows to a two-column metric grid and omits unavailable deep packet/A/V cards.
 The detached stream remained healthy across a real shell restart that loaded
 the new QML component.
 
+That Fire-TV-only discovery conclusion was superseded on 2026-08-30 after
+contributors reported successful Samsung and TCL casts. Pull request 1 removed
+the brand-name gate, but adversarial review showed that accepting any WFD marker
+also admitted source-only, port-only, and malformed peers. The follow-up parser
+therefore requires a complete WFD Device Information value whose role is
+sink-capable. Fire TV remains the locally validated receiver class; the broader
+reports are preserved as external hardware evidence rather than a universal
+compatibility claim.
+
 The final exact-clean artifact was rebuilt from UI/controller commit
 `ce79b3e92b82ea6d7a05a8387e1a253d14eb4fb9`. All 104 controller/plugin tests,
 staged Omarchy validation, 94 reconstructed engine tests, artifact audit, and

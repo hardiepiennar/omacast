@@ -339,10 +339,13 @@
       count rather than expanding raw issue strings.
       Final polish uses a two-column card grid and hides unavailable deep-probe
       cards instead of spending space on dead measurements.
-- [x] Release discovery exposes only the receiver class that passed the 0.1.0
+- [x] Superseded 2026-08-30: release discovery exposes only the receiver class that passed the 0.1.0
       hardware gate. Generic WFD advertisements are not presented as usable;
       panel start snapshots its selected receiver and exposes launcher failure
       text rather than silently returning to idle.
+- [x] Generic discovery requires a parsed WFD sink role and rejects source-only,
+      port-only, empty, truncated, and malformed advertisements. Generic sinks
+      remain visibly distinct from the locally validated Fire TV class.
 - [ ] Optional smooth-playback buffering remains research-only. Compare the
       current no-extra-buffer baseline with a bounded adaptive candidate; ship
       no toggle until receiver tests prove a repeatable benefit and report its

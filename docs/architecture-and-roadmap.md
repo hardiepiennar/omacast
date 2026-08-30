@@ -125,6 +125,11 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   panel snapshots the selected receiver for its child process and reports a
   bounded launcher error instead of silently returning to idle. Nerd Mode uses
   a two-column card grid and omits unavailable packet/A/V cards.
+- The Fire-TV-only discovery conclusion above was superseded on 2026-08-30
+  after contributors demonstrated successful Samsung and TCL receiver use.
+  Generic peers are now exposed only when their WFD Device Information proves
+  a sink-capable role; source-only, port-only, empty, and malformed peers stay
+  hidden. Fire TV remains the locally hardware-validated receiver class.
 - The native Omarchy panel exposes live negotiated mode, capture/mux load,
   packet timing, RTP queueing, radio counters, and a derived health verdict.
 - The panel launches production work in `omacast-session.service`; a simulated
