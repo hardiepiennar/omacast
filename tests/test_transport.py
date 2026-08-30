@@ -17,6 +17,21 @@ from omarchy_cast.telemetry import MAX_PROCESS_DESCRIPTORS, MAX_SYSFS_INTERFACE_
 from omarchy_cast.transport import CAPTURE_START_TIMEOUT_SECONDS, CONNECT_TIMEOUT_SECONDS, GUARD_LEASE_SECONDS, MAX_GUARD_DIAGNOSTIC_BYTES, RECEIVER_DISCONNECT_GRACE_SECONDS, SUPPLICANT_GROUP_TIMEOUT_SECONDS, DisabledTransportAdapter, FakeTransportAdapter, GuardedTransportAdapter, SessionLease, TransportDisabled, TransportError, _BoundedPipeDrain, validate_transport_plan
 
 
+class StatusDrainFixture:
+    def __init__(self, text: str = "", *, overflowed: bool = False) -> None:
+        self._lines = text.splitlines()
+        self.overflowed = overflowed
+
+    def next_line(self, _timeout: float) -> str | None:
+        return self._lines.pop(0) if self._lines else None
+
+    def lines(self) -> tuple[str, ...]:
+        return tuple(self._lines)
+
+    def text(self) -> str:
+        return "\n".join(self._lines)
+
+
 def plan() -> dict[str, object]:
     return {
         "schemaVersion": 1, "kind": "launch-plan", "readOnly": True,
@@ -355,9 +370,11 @@ class TransportTest(unittest.TestCase):
     def test_authorization_wait_observes_stop_without_touching_the_guard(self) -> None:
         from omarchy_cast.guard import GuardRequest
         request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
-        process = Mock(stdout=Mock())
-        self.assertIsNone(GuardedTransportAdapter._read_ready(process, request, lambda: True))
-        process.stdout.readline.assert_not_called()
+        process = Mock()
+        self.assertIsNone(GuardedTransportAdapter._read_ready(
+            process, request, lambda: True,
+            stdout_drain=StatusDrainFixture(), stderr_drain=StatusDrainFixture(),
+        ))
 
     def test_authorization_ready_binds_trigger_and_broker_to_one_session(self) -> None:
         from omarchy_cast.guard import GuardRequest
@@ -373,19 +390,23 @@ class TransportTest(unittest.TestCase):
             "triggerPath": f"/run/omarchy-cast/{session}/user/trigger",
             "brokerPath": f"/run/omarchy-cast/{session}/supplicant.sock",
         }) + "\n"
-        process = Mock(stdout=io.StringIO(payload), stderr=io.StringIO(""))
+        process = Mock()
         process.poll.return_value = None
-        with patch("omarchy_cast.transport.select.select", return_value=((process.stdout,), (), ())):
-            self.assertEqual(
-                GuardedTransportAdapter._read_ready(process, request, lambda: False),
-                (f"/run/omarchy-cast/{session}/user/trigger", f"/run/omarchy-cast/{session}/supplicant.sock"),
+        self.assertEqual(
+            GuardedTransportAdapter._read_ready(
+                process, request, lambda: False,
+                stdout_drain=StatusDrainFixture(payload), stderr_drain=StatusDrainFixture(),
+            ),
+            (f"/run/omarchy-cast/{session}/user/trigger", f"/run/omarchy-cast/{session}/supplicant.sock"),
+        )
+        process = Mock()
+        process.poll.return_value = None
+        with self.assertRaisesRegex(TransportError, "invalid readiness"):
+            GuardedTransportAdapter._read_ready(
+                process, request, lambda: False,
+                stdout_drain=StatusDrainFixture("[" * 2_000 + "0" + "]" * 2_000 + "\n"),
+                stderr_drain=StatusDrainFixture(),
             )
-        deep = io.StringIO("[" * 2_000 + "0" + "]" * 2_000 + "\n")
-        process = Mock(stdout=deep, stderr=io.StringIO(""))
-        process.poll.return_value = None
-        with patch("omarchy_cast.transport.select.select", return_value=((deep,), (), ())):
-            with self.assertRaisesRegex(TransportError, "invalid readiness"):
-                GuardedTransportAdapter._read_ready(process, request, lambda: False)
 
     def test_authorization_ready_cannot_deadlock_on_stderr_pressure(self) -> None:
         from omarchy_cast.guard import GuardRequest
@@ -407,12 +428,17 @@ class TransportTest(unittest.TestCase):
             (sys.executable, "-c", script), stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
-        assert process.stderr is not None
-        drain = _BoundedPipeDrain(process.stderr)
-        drain.start()
+        assert process.stdout is not None and process.stderr is not None
+        stdout_drain = _BoundedPipeDrain(process.stdout)
+        stderr_drain = _BoundedPipeDrain(process.stderr)
+        stdout_drain.start()
+        stderr_drain.start()
         try:
             self.assertEqual(
-                GuardedTransportAdapter._read_ready(process, request, lambda: False, timeout=2, stderr_drain=drain),
+                GuardedTransportAdapter._read_ready(
+                    process, request, lambda: False, timeout=2,
+                    stdout_drain=stdout_drain, stderr_drain=stderr_drain,
+                ),
                 (f"/run/omarchy-cast/{session}/user/trigger", f"/run/omarchy-cast/{session}/supplicant.sock"),
             )
             process.wait(timeout=2)
@@ -420,23 +446,21 @@ class TransportTest(unittest.TestCase):
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=2)
-            drain.stop()
-            if process.stdout is not None:
-                process.stdout.close()
-        self.assertTrue(drain.overflowed)
+            stdout_drain.stop()
+            stderr_drain.stop()
+        self.assertTrue(stderr_drain.overflowed)
 
     def test_dismissed_authorization_is_an_actionable_no_change_failure(self) -> None:
         from omarchy_cast.guard import GuardRequest
         request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
-        process = Mock(
-            stdout=io.StringIO(""),
-            stderr=io.StringIO("Error executing command as another user: Request dismissed"),
-            returncode=126,
-        )
+        process = Mock(returncode=126)
         process.poll.return_value = 126
-        with patch("omarchy_cast.transport.select.select", return_value=((process.stdout,), (), ())):
-            with self.assertRaises(TransportError) as caught:
-                GuardedTransportAdapter._read_ready(process, request, lambda: False)
+        with self.assertRaises(TransportError) as caught:
+            GuardedTransportAdapter._read_ready(
+                process, request, lambda: False,
+                stdout_drain=StatusDrainFixture(),
+                stderr_drain=StatusDrainFixture("Error executing command as another user: Request dismissed"),
+            )
         self.assertEqual(caught.exception.code, "authorization-cancelled")
         self.assertIn("Nothing was changed", str(caught.exception))
 
@@ -444,8 +468,8 @@ class TransportTest(unittest.TestCase):
         from omarchy_cast.guard import GuardRequest
         request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
 
-        def process(final: str, *, exited: bool = True) -> Mock:
-            helper = Mock(stdout=io.StringIO(final))
+        def process(*, exited: bool = True) -> Mock:
+            helper = Mock()
             helper.poll.return_value = 0 if exited else None
             return helper
 
@@ -453,15 +477,12 @@ class TransportTest(unittest.TestCase):
         cleaned = '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":true,"phase":"cleaned","sessionId":"' + "a" * 32 + '","error":null}\n'
         failed = '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":false,"phase":"error","sessionId":"' + "a" * 32 + '","error":"cleanup incomplete"}\n'
         wrong = cleaned.replace("a" * 32, "b" * 32)
-        self.assertTrue(GuardedTransportAdapter._cleanup_confirmed(process(active + cleaned), request))
-        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(active + failed), request))
-        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(wrong), request))
-        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(cleaned, exited=False), request))
-        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process("x" * 65_537), request))
-        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process("[" * 2_000 + "0" + "]" * 2_000), request))
-        closed = process(cleaned)
-        closed.stdout.close()
-        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(closed, request))
+        self.assertTrue(GuardedTransportAdapter._cleanup_confirmed(process(), request, StatusDrainFixture(active + cleaned)))
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(), request, StatusDrainFixture(active + failed)))
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(), request, StatusDrainFixture(wrong)))
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(exited=False), request, StatusDrainFixture(cleaned)))
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(), request, StatusDrainFixture("x" * 65_537, overflowed=True)))
+        self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(), request, StatusDrainFixture("[" * 2_000 + "0" + "]" * 2_000)))
 
     def test_root_owned_helper_cleanup_does_not_mask_setup_failure(self) -> None:
         from omarchy_cast.guard import GuardRequest

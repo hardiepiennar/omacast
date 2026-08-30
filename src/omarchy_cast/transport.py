@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from collections import deque
 import errno
 import json
 import os
 from pathlib import Path
 import re
-import select
 import selectors
 import stat
 import subprocess
@@ -51,9 +51,13 @@ class _BoundedPipeDrain:
         self._stream = stream
         self._limit = limit
         self._buffer = bytearray()
+        self._pending = bytearray()
+        self._lines: deque[str] = deque(maxlen=8)
         self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
         self._overflow = threading.Event()
         self._stop = threading.Event()
+        self._eof = False
         self._thread = threading.Thread(target=self._run, name="omarchy-cast-guard-stderr", daemon=True)
 
     @property
@@ -87,10 +91,24 @@ class _BoundedPipeDrain:
                         if len(self._buffer) > self._limit:
                             self._overflow.set()
                             del self._buffer[:len(self._buffer) - self._limit]
-        except (OSError, ValueError):
+                        self._pending.extend(encoded)
+                        if len(self._pending) > self._limit:
+                            self._overflow.set()
+                            del self._pending[:len(self._pending) - self._limit]
+                        while b"\n" in self._pending:
+                            raw_line, _separator, remainder = self._pending.partition(b"\n")
+                            self._pending = bytearray(remainder)
+                            if len(self._lines) == self._lines.maxlen:
+                                self._overflow.set()
+                            self._lines.append(raw_line.decode("utf-8", errors="replace"))
+                        self._condition.notify_all()
+        except (OSError, TypeError, ValueError):
             return
         finally:
             selector.close()
+            with self._condition:
+                self._eof = True
+                self._condition.notify_all()
             try:
                 self._stream.close()
             except (OSError, ValueError):
@@ -100,6 +118,20 @@ class _BoundedPipeDrain:
         with self._lock:
             encoded = bytes(self._buffer)
         return encoded.decode("utf-8", errors="replace")
+
+    def next_line(self, timeout: float) -> str | None:
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while not self._lines and not self._eof:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._condition.wait(remaining)
+            return self._lines.popleft() if self._lines else None
+
+    def lines(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(self._lines)
 
     def stop(self) -> None:
         self._stop.set()
@@ -346,24 +378,15 @@ class GuardedTransportAdapter:
         self.env = dict(os.environ if env is None else env)
 
     @staticmethod
-    def _read_ready(process: subprocess.Popen[str], request: GuardRequest, cancelled: CancelCheck, timeout: float = 90, stderr_drain: _BoundedPipeDrain | None = None) -> tuple[str, str] | None:
-        if process.stdout is None:
-            raise TransportError("The networking helper did not provide a status stream.", code="guard-setup-failed")
+    def _read_ready(process: subprocess.Popen[str], request: GuardRequest, cancelled: CancelCheck, *, stdout_drain: _BoundedPipeDrain, stderr_drain: _BoundedPipeDrain, timeout: float = 90) -> tuple[str, str] | None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if cancelled():
                 return None
-            readable, _, _ = select.select((process.stdout,), (), (), min(0.2, deadline - time.monotonic()))
-            if readable:
-                line = process.stdout.readline(65_537)
-                if len(line) > 65_536:
+            line = stdout_drain.next_line(min(0.2, deadline - time.monotonic()))
+            if line is not None:
+                if stdout_drain.overflowed or len(line.encode("utf-8")) > 65_536:
                     raise TransportError("The networking helper returned an oversized readiness status.", code="guard-setup-failed")
-                if not line:
-                    error = stderr_drain.text().strip() if stderr_drain is not None else process.stderr.read(65_537).strip()[:65_536] if process.stderr is not None else ""
-                    returncode = process.poll()
-                    if returncode in {126, 127}:
-                        raise TransportError("Administrator approval was cancelled. Nothing was changed.", code="authorization-cancelled")
-                    raise TransportError(error or "The networking helper exited before it was ready.", code="guard-setup-failed")
                 try:
                     payload = validate_helper_result(json.loads(line))
                 except (json.JSONDecodeError, ValueError, RecursionError) as exc:
@@ -380,24 +403,18 @@ class GuardedTransportAdapter:
                     return expected, expected_broker
                 raise TransportError(str(payload.get("error") or "The networking helper refused session preparation."), code="guard-setup-failed")
             if process.poll() is not None:
-                error = stderr_drain.text().strip() if stderr_drain is not None else process.stderr.read(65_537).strip()[:65_536] if process.stderr is not None else ""
+                error = stderr_drain.text().strip()
                 if process.returncode in {126, 127}:
                     raise TransportError("Administrator approval was cancelled. Nothing was changed.", code="authorization-cancelled")
                 raise TransportError(error or "The networking helper exited before it was ready.", code="guard-setup-failed")
         raise TransportError("Administrator approval or guarded setup took too long. Try again and answer the approval prompt.", code="authorization-timeout")
 
     @staticmethod
-    def _cleanup_confirmed(process: subprocess.Popen[str], request: GuardRequest) -> bool:
+    def _cleanup_confirmed(process: subprocess.Popen[str], request: GuardRequest, stdout_drain: _BoundedPipeDrain) -> bool:
         """Require the exited helper's final bounded status to confirm cleanup."""
-        if process.stdout is None or process.poll() is None:
+        if process.poll() is None or stdout_drain.overflowed:
             return False
-        try:
-            remainder = process.stdout.read(65_537)
-        except (OSError, ValueError):
-            return False
-        if len(remainder) > 65_536:
-            return False
-        lines = [line for line in remainder.splitlines() if line.strip()]
+        lines = [line for line in stdout_drain.lines() if line.strip()]
         if not lines:
             return False
         try:
@@ -546,6 +563,7 @@ class GuardedTransportAdapter:
         lease: SessionLease | None = None
         engine_output_collector: BoundedOutputCollector | None = None
         helper_stderr_drain: _BoundedPipeDrain | None = None
+        helper_stdout_drain: _BoundedPipeDrain | None = None
         guard_ready = False
         guard_cleanup_confirmed = False
         startup_started_at = time.monotonic()
@@ -553,9 +571,13 @@ class GuardedTransportAdapter:
             helper = subprocess.Popen((*self.authorization_command, *prepare_command(self.request)), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
             if helper.stderr is None:
                 raise TransportError("The networking helper did not expose its diagnostic stream.", code="guard-setup-failed")
+            if helper.stdout is None:
+                raise TransportError("The networking helper did not provide a status stream.", code="guard-setup-failed")
+            helper_stdout_drain = _BoundedPipeDrain(helper.stdout)
             helper_stderr_drain = _BoundedPipeDrain(helper.stderr)
+            helper_stdout_drain.start()
             helper_stderr_drain.start()
-            ready = self._read_ready(helper, self.request, cancelled, stderr_drain=helper_stderr_drain)
+            ready = self._read_ready(helper, self.request, cancelled, stdout_drain=helper_stdout_drain, stderr_drain=helper_stderr_drain)
             if ready is None:
                 return TransportResult("cancelled", "stop requested during authorization", True)
             trigger, broker = ready
@@ -677,8 +699,10 @@ class GuardedTransportAdapter:
                         helper.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         pass
-                if guard_ready:
-                    guard_cleanup_confirmed = self._cleanup_confirmed(helper, self.request)
+            if helper_stdout_drain is not None:
+                helper_stdout_drain.stop()
+            if helper is not None and guard_ready and helper_stdout_drain is not None:
+                guard_cleanup_confirmed = self._cleanup_confirmed(helper, self.request, helper_stdout_drain)
             if helper_stderr_drain is not None:
                 helper_stderr_drain.stop()
             if engine_output_collector is not None:
