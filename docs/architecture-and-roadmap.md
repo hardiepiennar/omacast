@@ -244,6 +244,9 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   Companion revision 63 / guard API 12 removes the obsolete `wf-recorder`
   package hint, rejects that misleading WFD selector, and makes readiness
   require the corrected engine capability before casting is enabled.
+- Direct-supplicant readiness no longer depends on dnsmasq. The supported
+  laptop-as-P2P-client topology receives DHCP from the receiver; dnsmasq stays
+  a requirement only for FluxCast's separate NetworkManager group-owner path.
 
 ### Not yet proven
 

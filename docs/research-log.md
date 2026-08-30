@@ -2308,3 +2308,19 @@ plugin tests, staged Omarchy validation, production shell lint, and whitespace
 checks pass. This changes only the selector contract around the already
 accepted capture process; it does not change media arguments, networking, or
 privileged behavior and therefore does not require a receiver test by itself.
+
+### Backend-specific dnsmasq readiness (2026-08-30)
+
+Issue 2 found that FluxCast made dnsmasq an unconditional WFD readiness gate
+even though Omacast always selects the direct-supplicant client role. That
+role receives its DHCP lease from the receiver and never starts dnsmasq. Adding
+the package as an unused hard dependency would have hidden the faulty boundary
+rather than correcting it.
+
+Production patch 44 passes the selected P2P backend into diagnostics and
+requires dnsmasq only for the NetworkManager group-owner path that actually
+runs a DHCP server. The direct-supplicant path still reports the missing
+optional command but is no longer rejected by it. Focused tests prove that the
+same diagnostic rows pass for supplicant and fail for NetworkManager when
+dnsmasq is absent. Companion revision 64 carries the change without altering
+the API-12 privileged helper contract.

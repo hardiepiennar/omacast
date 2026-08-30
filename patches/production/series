@@ -35,3 +35,4 @@
 0041-Bound-long-session-WFD-state.patch
 0042-Allow-diagnostics-to-import-before-WFD-package.patch
 0043-Name-the-GPU-Screen-Recorder-backend-honestly.patch
+0044-Gate-dnsmasq-only-for-NetworkManager-P2P.patch

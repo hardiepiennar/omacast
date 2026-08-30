@@ -7,6 +7,8 @@
 - Rename the production WFD capture selector from the misleading
   `wf-recorder` value to `gpu-screen-recorder`, remove the obsolete optional
   dependency, and require companion revision 63 / guard API 12.
+- Make FluxCast readiness respect the selected P2P backend, so the supported
+  direct-supplicant client path no longer fails on an unused `dnsmasq` check.
 
 ## 0.1.3 — 2026-08-27
 

@@ -1,0 +1,148 @@
+From bc279cb082ba3b309723c14264d892345d386b07 Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Sun, 30 Aug 2026 22:03:59 +1200
+Subject: [PATCH] Gate dnsmasq only for NetworkManager P2P
+
+---
+ src/diagnostics.py        | 38 +++++++++++++++++++++++---------------
+ src/wfd/session.py        |  7 +++++--
+ tests/test_diagnostics.py | 13 +++++++++++++
+ tests/test_wfd.py         |  6 +++---
+ 4 files changed, 44 insertions(+), 20 deletions(-)
+
+diff --git a/src/diagnostics.py b/src/diagnostics.py
+index afdf4ed..223cf9b 100644
+--- a/src/diagnostics.py
++++ b/src/diagnostics.py
+@@ -654,7 +654,24 @@ def _python_check() -> Check:
+     )
+ 
+ 
+-def run_diagnostics(skip_firewall: bool = False) -> DiagnosticReport:
++def _wfd_candidate(checks: list[Check], *, p2p_backend: str) -> bool:
++    by_name = {check.name: check for check in checks}
++    network_hw_ok = (
++        by_name.get("NetworkManager", Check("", STATUS_SKIP, "")).status == STATUS_OK
++        or by_name.get("iw P2P", Check("", STATUS_SKIP, "")).status == STATUS_OK
++    )
++    media_ok = (
++        by_name.get("ffmpeg encoders", Check("", STATUS_SKIP, "")).status == STATUS_OK
++        and by_name.get("screen capture", Check("", STATUS_SKIP, "")).status == STATUS_OK
++    )
++    dnsmasq_ok = (
++        p2p_backend != "networkmanager"
++        or by_name.get("dnsmasq", Check("", STATUS_WARN, "")).status == STATUS_OK
++    )
++    return network_hw_ok and media_ok and dnsmasq_ok
++
++
++def run_diagnostics(skip_firewall: bool = False, *, p2p_backend: str = "networkmanager") -> DiagnosticReport:
+     firewall_check = (
+         Check("firewall", STATUS_SKIP, "disabled by --wfd-no-firewall")
+         if skip_firewall
+@@ -702,24 +719,15 @@ def run_diagnostics(skip_firewall: bool = False) -> DiagnosticReport:
+         firewall_check,
+     ]
+ 
+-    by_name = {check.name: check for check in checks}
+-    network_hw_ok = (
+-        by_name.get("NetworkManager", Check("", STATUS_SKIP, "")).status == STATUS_OK
+-        or by_name.get("iw P2P", Check("", STATUS_SKIP, "")).status == STATUS_OK
+-    )
+-    media_ok = (
+-        by_name.get("ffmpeg encoders", Check("", STATUS_SKIP, "")).status == STATUS_OK
+-        and by_name.get("screen capture", Check("", STATUS_SKIP, "")).status == STATUS_OK
+-    )
+-    dnsmasq_ok = by_name.get("dnsmasq", Check("", STATUS_WARN, "")).status == STATUS_OK
+-    wfd_candidate = network_hw_ok and media_ok and dnsmasq_ok
++    wfd_candidate = _wfd_candidate(checks, p2p_backend=p2p_backend)
+ 
+     if wfd_candidate:
+         summary = (
+-            "Miracast/WFD looks possible via NetworkManager; raw supplicant "
+-            "access is optional for this backend."
++            "Miracast/WFD looks possible via NetworkManager."
++            if p2p_backend == "networkmanager"
++            else "Miracast/WFD looks possible via the direct supplicant backend."
+         )
+-    elif network_hw_ok:
++    elif any(check.name in {"NetworkManager", "iw P2P"} and check.status == STATUS_OK for check in checks):
+         summary = "Wi-Fi Direct hardware is visible, but media/capture readiness is incomplete."
+     else:
+         summary = "Miracast/WFD is not confirmed yet; check warn/fail rows above."
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 69e9013..4093400 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -39,7 +39,11 @@ def _cleanup_step(label: str, action) -> None:
+         print(f"[FluxCast WFD] Cleanup step '{label}' failed: {exc}")
+ 
+ def start_experimental_backend(args) -> None:
+-    report = run_diagnostics(skip_firewall=getattr(args, "wfd_no_firewall", False))
++    p2p_backend = getattr(args, "wfd_p2p_backend", "networkmanager")
++    report = run_diagnostics(
++        skip_firewall=getattr(args, "wfd_no_firewall", False),
++        p2p_backend=p2p_backend,
++    )
+     print_report(report)
+     print()
+ 
+@@ -81,7 +85,6 @@ def start_experimental_backend(args) -> None:
+     peer = _scan_and_select(
+         args.wfd_interface, getattr(args, "wfd_peer", None), args.wfd_timeout
+     )
+-    p2p_backend = getattr(args, "wfd_p2p_backend", "networkmanager")
+     if p2p_backend == "supplicant" and getattr(args, "wfd_dry_run", False):
+         run_supplicant_role_test(args, peer)
+         return
+diff --git a/tests/test_diagnostics.py b/tests/test_diagnostics.py
+index cc4b8c6..3f8db80 100644
+--- a/tests/test_diagnostics.py
++++ b/tests/test_diagnostics.py
+@@ -148,6 +148,19 @@ class DisplayCaptureCheckTest(unittest.TestCase):
+         self.assertNotIn("wf-recorder", check.detail)
+ 
+ 
++class BackendReadinessTest(unittest.TestCase):
++    def test_dnsmasq_gates_only_the_networkmanager_backend(self):
++        checks = [
++            diagnostics.Check("iw P2P", diagnostics.STATUS_OK, "available"),
++            diagnostics.Check("ffmpeg encoders", diagnostics.STATUS_OK, "available"),
++            diagnostics.Check("screen capture", diagnostics.STATUS_OK, "available"),
++            diagnostics.Check("dnsmasq", diagnostics.STATUS_WARN, "missing"),
++        ]
++
++        self.assertTrue(diagnostics._wfd_candidate(checks, p2p_backend="supplicant"))
++        self.assertFalse(diagnostics._wfd_candidate(checks, p2p_backend="networkmanager"))
++
++
+ class SubnetConflictCheckTest(unittest.TestCase):
+     def test_skips_when_ip_missing(self):
+         with mock.patch("diagnostics.shutil.which", return_value=None):
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index abc19b6..7abf17d 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -623,8 +623,8 @@ class TsProbeTest(unittest.TestCase):
+ 
+ 
+ class StartBackendDiagnosticsTest(unittest.TestCase):
+-    def test_no_firewall_flag_is_forwarded_to_diagnostics(self):
+-        args = SimpleNamespace(wfd_no_firewall=True)
++    def test_network_backend_and_no_firewall_flag_are_forwarded_to_diagnostics(self):
++        args = SimpleNamespace(wfd_no_firewall=True, wfd_p2p_backend="supplicant")
+         report = SimpleNamespace(wfd_candidate=False)
+ 
+         with (
+@@ -634,7 +634,7 @@ class StartBackendDiagnosticsTest(unittest.TestCase):
+         ):
+             wfd.start_experimental_backend(args)
+ 
+-        run.assert_called_once_with(skip_firewall=True)
++        run.assert_called_once_with(skip_firewall=True, p2p_backend="supplicant")
+ 
+ 
+ if __name__ == "__main__":
+-- 
+2.55.0
+
