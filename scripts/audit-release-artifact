@@ -75,6 +75,8 @@ done
 for dependency in python-pillow python-pystray python-pychromecast python-upnpclient; do
   ! grep -Eq "^(depend|optdepend) = ${dependency}([: ]|$)" <<<"$package_info" || die "package retains an unused protocol dependency: $dependency"
 done
+! grep -Eq '^optdepend = wf-recorder([: ]|$)' <<<"$package_info" \
+  || die "package retains the obsolete wf-recorder hint"
 
 bsdtar -xpf "$package" -C "$audit_root"
 engine="$audit_root/usr/bin/fluxcast"
@@ -108,8 +110,8 @@ bash -n "$recovery"
 python3 -m py_compile "$broker"
 
 guard_version="$($guard --version)"
-python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":11}' "$guard_version" \
-  || die "guard API contract does not match revision 11"
+python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":12}' "$guard_version" \
+  || die "guard API contract does not match revision 12"
 ! grep -Fq '/etc/dbus-1/system.d' "$guard" || die "guard still writes a temporary system-bus policy"
 grep -Fq 'omarchy-cast-supplicant-broker' "$guard" || die "guard does not start the session-scoped supplicant broker"
 ! grep -Fq 'RuntimeMaxSec' "$guard" || die "guard imposes a fixed wall-clock lifetime on a healthy broker"
@@ -175,6 +177,10 @@ PY
 for flag in --wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-supplicant-broker --wfd-progress-log; do
   grep -Fq -- "$flag" "$audit_root/fluxcast-help.txt" || die "packaged engine is missing $flag"
 done
+grep -Fq -- 'gpu-screen-recorder' "$audit_root/fluxcast-help.txt" \
+  || die "packaged engine lacks the GPU Screen Recorder backend contract"
+! grep -Fq -- 'portal|wf-recorder|x11grab' "$audit_root/fluxcast-help.txt" \
+  || die "packaged engine retains the misleading WFD capture backend name"
 grep -Fq -- '--protocol {wfd}' "$audit_root/fluxcast-help.txt" || die "packaged engine does not expose the WFD-only protocol contract"
 for surface in '--tray' '{dlna,cast,wfd}' 'DLNA / Cast Options' '--wfd-uibc'; do
   ! grep -Fq -- "$surface" "$audit_root/fluxcast-help.txt" || die "packaged engine exposes a non-WFD protocol: $surface"

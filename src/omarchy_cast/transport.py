@@ -203,7 +203,7 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
     backend_value = command[backend_index + 1]
     selection = plan.get("selection")
     requested_source = selection.get("source") if isinstance(selection, Mapping) else None
-    if requested_source != "display" or backend_value != "wf-recorder":
+    if requested_source != "display" or backend_value != "gpu-screen-recorder":
         raise TransportError("transport plan capture source does not match its selection")
 
 

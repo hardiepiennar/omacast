@@ -38,7 +38,7 @@ class EngineTest(unittest.TestCase):
         plan = build_launch_plan(snapshot(), peer="tv-01", mode="mirror", profile="safe")
         self.assertEqual(plan["selection"]["source"], "display")
         backend_flag = plan["command"].index("--wfd-capture-backend")
-        self.assertEqual(plan["command"][backend_flag + 1], "wf-recorder")
+        self.assertEqual(plan["command"][backend_flag + 1], "gpu-screen-recorder")
         self.assertNotIn("--wfd-portal-source", plan["command"])
         self.assertEqual(plan["profile"]["fps"], 60)
 

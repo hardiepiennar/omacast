@@ -124,7 +124,7 @@ REQUIRED_COMMANDS = (
 )
 COMPANION_COMMANDS = frozenset(name for name in REQUIRED_COMMANDS if name != "hyprctl")
 HELPER_NAMES = ("omarchy-cast-guard", "omarchy-cast-guard-recover", "omarchy-cast-supplicant-broker")
-GUARD_API_REVISION = 11
+GUARD_API_REVISION = 12
 
 
 def _check_command(name: str, finder: Callable[[str], str | None]) -> dict[str, object]:
@@ -159,9 +159,9 @@ def _result_error(result: CommandResult) -> str:
 
 def _engine_capabilities(runner: Runner) -> dict[str, object]:
     result = runner(("fluxcast", "--help"))
-    required = ("--wfd-p2p-backend", "--wfd-supplicant-mode", "--wfd-video-encoder", "--wfd-supplicant-network-trigger", "--wfd-supplicant-broker", "--wfd-progress-log")
-    available = result.returncode == 0 and all(flag in result.stdout for flag in required)
-    return {"schemaVersion": 1, "installed": result.returncode == 0, "compatible": available, "requiredFlags": list(required)}
+    required = ("--wfd-p2p-backend", "--wfd-supplicant-mode", "--wfd-video-encoder", "--wfd-supplicant-network-trigger", "--wfd-supplicant-broker", "--wfd-progress-log", "gpu-screen-recorder")
+    available = result.returncode == 0 and all(token in result.stdout for token in required)
+    return {"schemaVersion": 1, "installed": result.returncode == 0, "compatible": available, "requiredTokens": list(required)}
 
 
 def _readiness(

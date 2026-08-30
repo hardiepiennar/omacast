@@ -47,11 +47,13 @@ installed. The package-owned Polkit action is declarative and is removed with
 the package.
 
 The primary helper exposes an unprivileged JSON `--version` probe. Omacast
-requires guard API revision 11 and the matching FluxCast capability set before
+requires guard API revision 12 and the matching FluxCast capability set before
 enabling discovery or Cast, so independently updated marketplace UI cannot
 cross an older privileged-helper contract.
 
-API revision 11 creates only the protected session identity first. Independent
+API revision 12 retains API revision 11's protected-session and recovery
+contract while requiring the honestly named GPU Screen Recorder engine
+surface. Independent
 recovery validates that identity and publishes a root-owned readiness marker;
 the primary helper refuses to create temporary network state or start the
 supplicant broker until that acknowledgement arrives within its bounded

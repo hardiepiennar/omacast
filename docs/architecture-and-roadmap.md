@@ -240,6 +240,10 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   GPU Screen Recorder rejects the shared-memory frames produced when the
   Hyprland portal's window DMA-BUF negotiation falls back. Cleanup restored the
   exact recorded host network and inhibitor baseline.
+- The production capture selector now names GPU Screen Recorder directly.
+  Companion revision 63 / guard API 12 removes the obsolete `wf-recorder`
+  package hint, rejects that misleading WFD selector, and makes readiness
+  require the corrected engine capability before casting is enabled.
 
 ### Not yet proven
 
@@ -404,7 +408,7 @@ Omarchy bar widget/panel (QML)
       -> narrowly scoped privileged network helper, when required
       -> compatible FluxCast build
         -> wpa_supplicant P2P + DHCP + RTSP
-        -> wf-recorder -> FFmpeg VAAPI/libx264 -> RTP
+        -> GPU Screen Recorder -> FFmpeg -> RTP
     -> atomic state + structured logs under XDG runtime/state directories
 ```
 
@@ -808,7 +812,7 @@ root `manifest.json`, a thin `ui/Panel.qml` bar widget, and a package-owned
 session helper. The controller issues a fixed, versioned `pkexec` request for a
 validated UID/interface/session/duration; the helper generates only
 session-named network state and a closed-operation supplicant broker, and an
-independent recovery process bounds cleanup. Guard API revision 11 binds the
+  independent recovery process bounds cleanup. Guard API revision 12 binds the
 requested UID to
 Polkit's authenticated caller, while the installed declarative action permits
 only the exact guard executable with `prepare` as its first argument for an

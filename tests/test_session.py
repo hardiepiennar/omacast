@@ -250,7 +250,7 @@ class SessionTest(unittest.TestCase):
             self.assertFalse(live.parent.exists())
 
     def test_transport_test_supervisor_owns_fake_cleanup_for_all_outcomes(self) -> None:
-        plan = {"schemaVersion": 1, "kind": "launch-plan", "readOnly": True, "execution": {"allowed": False}, "selection": {"peer": "simulator", "mode": "mirror", "source": "display"}, "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "4M", "--wfd-p2p-backend", "supplicant", "--wfd-interface", "wlan42", "--wfd-peer", "simulator", "--wfd-capture-backend", "wf-recorder", "--monitor", "eDP-1", "--wfd-audio-device", "sink.monitor", "--wfd-video-encoder", "vaapi", "--wfd-no-firewall"]}
+        plan = {"schemaVersion": 1, "kind": "launch-plan", "readOnly": True, "execution": {"allowed": False}, "selection": {"peer": "simulator", "mode": "mirror", "source": "display"}, "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "4M", "--wfd-p2p-backend", "supplicant", "--wfd-interface", "wlan42", "--wfd-peer", "simulator", "--wfd-capture-backend", "gpu-screen-recorder", "--monitor", "eDP-1", "--wfd-audio-device", "sink.monitor", "--wfd-video-encoder", "vaapi", "--wfd-no-firewall"]}
         with tempfile.TemporaryDirectory() as temp:
             environment = self.environment(temp)
             success = TransportTestSupervisor(FakeTransportAdapter(), environment).run(peer="simulator", mode="mirror", profile="safe", plan=plan)
@@ -274,7 +274,7 @@ class SessionTest(unittest.TestCase):
             "schemaVersion": 1, "kind": "launch-plan", "readOnly": True,
             "execution": {"allowed": False},
             "selection": {"peer": "simulator", "mode": "mirror", "source": "display"},
-            "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "4M", "--wfd-p2p-backend", "supplicant", "--wfd-interface", "wlan42", "--wfd-peer", "simulator", "--wfd-capture-backend", "wf-recorder", "--monitor", "eDP-1", "--wfd-audio-device", "sink.monitor", "--wfd-video-encoder", "vaapi", "--wfd-no-firewall"],
+            "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "4M", "--wfd-p2p-backend", "supplicant", "--wfd-interface", "wlan42", "--wfd-peer", "simulator", "--wfd-capture-backend", "gpu-screen-recorder", "--monitor", "eDP-1", "--wfd-audio-device", "sink.monitor", "--wfd-video-encoder", "vaapi", "--wfd-no-firewall"],
         }
         with tempfile.TemporaryDirectory() as temp:
             environment = self.environment(temp)
@@ -294,7 +294,7 @@ class SessionTest(unittest.TestCase):
             "schemaVersion": 1, "kind": "launch-plan", "readOnly": True,
             "execution": {"allowed": False},
             "selection": {"peer": "simulator", "mode": "mirror", "source": "display"},
-            "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "4M", "--wfd-p2p-backend", "supplicant", "--wfd-interface", "wlan42", "--wfd-peer", "simulator", "--wfd-capture-backend", "wf-recorder", "--monitor", "eDP-1", "--wfd-audio-device", "sink.monitor", "--wfd-video-encoder", "vaapi", "--wfd-no-firewall"],
+            "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "4M", "--wfd-p2p-backend", "supplicant", "--wfd-interface", "wlan42", "--wfd-peer", "simulator", "--wfd-capture-backend", "gpu-screen-recorder", "--monitor", "eDP-1", "--wfd-audio-device", "sink.monitor", "--wfd-video-encoder", "vaapi", "--wfd-no-firewall"],
         }
         with tempfile.TemporaryDirectory() as temp:
             environment = self.environment(temp)

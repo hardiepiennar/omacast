@@ -85,7 +85,7 @@ def build_launch_plan(
         "--wfd-supplicant-frequency", str(frequency) if isinstance(frequency, int) else "0",
         "--wfd-no-firewall",
         "--monitor", str(output["name"]),
-        "--wfd-capture-backend", "wf-recorder",
+        "--wfd-capture-backend", "gpu-screen-recorder",
         "--wfd-audio-device", sink + ".monitor",
     ]
     return {

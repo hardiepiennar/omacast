@@ -1,0 +1,284 @@
+From 8d69b072c16e49726486241994f53429157ed213 Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Sun, 30 Aug 2026 21:55:57 +1200
+Subject: [PATCH] Name the GPU Screen Recorder backend honestly
+
+---
+ src/diagnostics.py                      | 12 ++++++------
+ src/main.py                             |  6 +++---
+ src/wfd/env.py                          | 10 +++++-----
+ src/wfd/media/pipeline.py               |  3 +--
+ src/wfd/media/portal.py                 |  2 +-
+ src/wfd/media/wlroots.py                |  4 ++--
+ tests/test_diagnostics.py               | 16 ++++++++++++++++
+ tests/test_wfd.py                       |  4 ++--
+ tests/test_wfd_media_startup_cleanup.py |  4 ++--
+ tests/test_wfd_media_vaapi.py           |  4 ++--
+ tests/test_wfd_only_cli.py              |  7 +++++++
+ 11 files changed, 47 insertions(+), 25 deletions(-)
+
+diff --git a/src/diagnostics.py b/src/diagnostics.py
+index 7adce5c..afdf4ed 100644
+--- a/src/diagnostics.py
++++ b/src/diagnostics.py
+@@ -222,14 +222,14 @@ def _portal_process_check() -> Check:
+         "xdg-desktop-portal",
+         STATUS_WARN,
+         "portal daemon not running",
+-        "not needed for wf-recorder (Hyprland/Sway); required for GNOME/KDE capture",
++        "not needed for GPU Screen Recorder (Hyprland/Sway); required for GNOME/KDE capture",
+     )
+ 
+ 
+ def _display_capture_check() -> Check:
+     wayland = os.environ.get("WAYLAND_DISPLAY")
+     x11 = os.environ.get("DISPLAY")
+-    wf_recorder = _find_binary("wf-recorder")
++    gpu_screen_recorder = _find_binary("gpu-screen-recorder")
+     xrandr = shutil.which("xrandr")
+     portal = _find_binary(
+         "xdg-desktop-portal",
+@@ -252,12 +252,12 @@ def _display_capture_check() -> Check:
+         extra_paths=["/usr/libexec/xdg-desktop-portal-hyprland", "/usr/lib/xdg-desktop-portal-hyprland"],
+     )
+ 
+-    if wayland and wf_recorder:
++    if wayland and gpu_screen_recorder:
+         return Check(
+             "screen capture",
+             STATUS_OK,
+             "Wayland capture path is available",
+-            f"WAYLAND_DISPLAY={wayland}; wf-recorder={wf_recorder}",
++            f"WAYLAND_DISPLAY={wayland}; gpu-screen-recorder={gpu_screen_recorder}",
+         )
+     if wayland and portal and (portal_kde or portal_gnome or portal_wlr or portal_hyprland):
+         backend = portal_kde or portal_gnome or portal_wlr or portal_hyprland
+@@ -275,7 +275,7 @@ def _display_capture_check() -> Check:
+             f"DISPLAY={x11}; xrandr={xrandr}",
+         )
+     if wayland:
+-        detail = "Install wf-recorder or xdg-desktop-portal + desktop-specific backend."
++        detail = "Install gpu-screen-recorder or xdg-desktop-portal + desktop-specific backend."
+         if not portal:
+             detail = "xdg-desktop-portal not found; install portal stack for KDE/GNOME capture."
+         return Check(
+@@ -663,7 +663,7 @@ def run_diagnostics(skip_firewall: bool = False) -> DiagnosticReport:
+     checks = [
+         _python_check(),
+         _command_check("ffmpeg", "video/audio transcoding", required=True),
+-        _command_check("wf-recorder", "Wayland/wlroots screen capture"),
++        _command_check("gpu-screen-recorder", "Wayland/wlroots screen capture"),
+         _portal_process_check(),
+         _command_check("pactl", "PulseAudio/PipeWire-Pulse audio monitor detection"),
+         _command_check("xrandr", "X11 monitor detection fallback"),
+diff --git a/src/main.py b/src/main.py
+index 365d493..a69b47c 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -22,7 +22,7 @@ Wi-Fi Display (Miracast) Options:
+     --wfd-ffmpeg-stats       Show ffmpeg progress statistics for WFD streams
+     --wfd-media-pipeline auto|ffmpeg|gst
+                              RTP media sender (default: auto)
+-    --wfd-capture-backend auto|portal|wf-recorder|x11grab
++    --wfd-capture-backend auto|portal|gpu-screen-recorder|x11grab
+                              Desktop capture backend for wfd (default: auto)
+     --wfd-latency-log PATH   Write latency/session events to JSONL log file
+     --wfd-no-audio           Stream video only
+@@ -94,9 +94,9 @@ def parse_args() -> argparse.Namespace:
+                      dest="wfd_media_pipeline",
+                      help="For --protocol wfd, RTP media sender: auto (gst for test-pattern, ffmpeg for desktop), ffmpeg, or gst")
+     wfd.add_argument("--wfd-capture-backend", default="auto", dest="wfd_capture_backend",
+-                     choices=["auto", "portal", "wf-recorder", "x11grab", "gst-x11"],
++                     choices=["auto", "portal", "gpu-screen-recorder", "x11grab", "gst-x11"],
+                      help="Desktop capture backend for --protocol wfd: auto (default), portal, "
+-                          "wf-recorder, x11grab, or gst-x11 (X11 capture through the GStreamer "
++                          "gpu-screen-recorder, x11grab, or gst-x11 (X11 capture through the GStreamer "
+                           "MPEG-TS pipeline, for sinks that black-screen on the ffmpeg path)")
+     wfd.add_argument("--wfd-video-encoder", default="auto",
+                      choices=["auto", "software", "vaapi"],
+diff --git a/src/wfd/env.py b/src/wfd/env.py
+index 7882663..79898ca 100644
+--- a/src/wfd/env.py
++++ b/src/wfd/env.py
+@@ -46,12 +46,12 @@ def _wfd_capture_backend_order(config: WFDMediaConfig) -> list[str]:
+     if config.capture_backend != "auto":
+         return [config.capture_backend]
+     if _is_hyprland_session():
+-        return ["wf-recorder", "x11grab"]
++        return ["gpu-screen-recorder", "x11grab"]
+     if _is_x11_session():
+-        return ["x11grab", "wf-recorder"]
++        return ["x11grab", "gpu-screen-recorder"]
+     if _is_wayland_session():
+         if _is_hyprland_session():
+-            return ["wf-recorder", "x11grab"]
++            return ["gpu-screen-recorder", "x11grab"]
+         # Prefer portal capture on KDE/GNOME Wayland.
+-        return ["portal", "wf-recorder"]
+-    return ["x11grab", "wf-recorder"]
++        return ["portal", "gpu-screen-recorder"]
++    return ["x11grab", "gpu-screen-recorder"]
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+index d8a1eb4..7af989f 100644
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -207,7 +207,7 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+                     else:
+                         self._start_desktop_portal()
+                 else:
+-                    self._start_desktop_wf_recorder()
++                    self._start_desktop_gpu_screen_recorder()
+                 return
+             except WFDNotReady as exc:
+                 errors.append(f"{backend}: {exc}")
+@@ -223,4 +223,3 @@ class WFDMediaPipeline(TestPatternMixin, PortalMixin, X11Mixin, WlrootsMixin):
+         raise WFDNotReady(detail)
+ 
+ 
+-
+diff --git a/src/wfd/media/portal.py b/src/wfd/media/portal.py
+index d526b42..845a379 100644
+--- a/src/wfd/media/portal.py
++++ b/src/wfd/media/portal.py
+@@ -50,7 +50,7 @@ class PortalMixin:
+         mpegtsmux cannot stamp the PAT/PMT version_number, so sinks that need
+         AOSP's value are unreachable through the all-GStreamer portal path
+         (#84). Here gst only captures and scales, then hands raw I420 to
+-        ffmpeg over a pipe, the same shape the wf-recorder backend uses.
++        ffmpeg over a pipe, the same shape the gpu-screen-recorder backend uses.
+         """
+         if not shutil.which("gst-launch-1.0"):
+             raise WFDNotReady("Portal backend requires gst-launch-1.0 (pipewiresrc pipeline).")
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 8ad014a..70d281a 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -28,13 +28,13 @@ def _stop_startup_process(proc: subprocess.Popen[bytes]) -> None:
+ 
+ 
+ class WlrootsMixin:
+-    def _start_desktop_wf_recorder(self) -> None:
++    def _start_desktop_gpu_screen_recorder(self) -> None:
+         if not shutil.which("gpu-screen-recorder"):
+             raise WFDNotReady("gpu-screen-recorder is required for WFD desktop streaming.")
+ 
+         monitor = self.config.monitor
+         if monitor is None:
+-            raise WFDNotReady("wf-recorder backend requires a selected monitor.")
++            raise WFDNotReady("gpu-screen-recorder backend requires a selected monitor.")
+         src_res = f"{monitor.width}x{monitor.height}"
+         out_res = self.config.output_resolution or src_res
+         audio_monitor = self.config.audio_device or _detect_audio_monitor()
+diff --git a/tests/test_diagnostics.py b/tests/test_diagnostics.py
+index e2fe095..cc4b8c6 100644
+--- a/tests/test_diagnostics.py
++++ b/tests/test_diagnostics.py
+@@ -132,6 +132,22 @@ class FirewallCheckTest(unittest.TestCase):
+         self.assertEqual(check.status, diagnostics.STATUS_WARN)
+ 
+ 
++class DisplayCaptureCheckTest(unittest.TestCase):
++    def test_wayland_capture_checks_gpu_screen_recorder(self):
++        def find_binary(name, extra_paths=None):
++            del extra_paths
++            return "/usr/bin/gpu-screen-recorder" if name == "gpu-screen-recorder" else None
++
++        with mock.patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-1"}, clear=True), mock.patch(
++            "diagnostics._find_binary", side_effect=find_binary
++        ), mock.patch("diagnostics.shutil.which", return_value=None):
++            check = diagnostics._display_capture_check()
++
++        self.assertEqual(check.status, diagnostics.STATUS_OK)
++        self.assertIn("gpu-screen-recorder", check.detail)
++        self.assertNotIn("wf-recorder", check.detail)
++
++
+ class SubnetConflictCheckTest(unittest.TestCase):
+     def test_skips_when_ip_missing(self):
+         with mock.patch("diagnostics.shutil.which", return_value=None):
+diff --git a/tests/test_wfd.py b/tests/test_wfd.py
+index f1b1eb3..abc19b6 100644
+--- a/tests/test_wfd.py
++++ b/tests/test_wfd.py
+@@ -107,7 +107,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+     def test_ffmpeg_paths_do_not_force_periodic_audio_resampling(self):
+         starters = (
+             wfd.WFDMediaPipeline._start_test_pattern,
+-            wfd.WFDMediaPipeline._start_desktop_wf_recorder,
++            wfd.WFDMediaPipeline._start_desktop_gpu_screen_recorder,
+             wfd.WFDMediaPipeline._start_desktop_x11grab,
+             wfd.WFDMediaPipeline._start_desktop_portal_ffmpeg,
+         )
+@@ -162,7 +162,7 @@ class FfmpegProgressArgsTest(unittest.TestCase):
+             mock.patch("wfd.media.wlroots.time.sleep"),
+             contextlib.redirect_stdout(io.StringIO()),
+         ):
+-            pipeline._start_desktop_wf_recorder()
++            pipeline._start_desktop_gpu_screen_recorder()
+ 
+         capture_cmd, ffmpeg_cmd = commands
+         self.assertEqual(capture_cmd[0], "gpu-screen-recorder")
+diff --git a/tests/test_wfd_media_startup_cleanup.py b/tests/test_wfd_media_startup_cleanup.py
+index 6ba29d1..021e92f 100644
+--- a/tests/test_wfd_media_startup_cleanup.py
++++ b/tests/test_wfd_media_startup_cleanup.py
+@@ -44,7 +44,7 @@ def _pipeline():
+         fps=60,
+         bitrate="5M",
+         no_audio=True,
+-        capture_backend="wf-recorder",
++        capture_backend="gpu-screen-recorder",
+     )
+     return WFDMediaPipeline(
+         config,
+@@ -71,7 +71,7 @@ class WlrootsStartupCleanupTest(unittest.TestCase):
+         ), mock.patch("wfd.media.wlroots.subprocess.Popen", side_effect=next_process), mock.patch(
+             "wfd.media.wlroots.time.sleep"
+         ):
+-            pipeline._start_desktop_wf_recorder()
++            pipeline._start_desktop_gpu_screen_recorder()
+ 
+     def test_ffmpeg_spawn_failure_reaps_capture_and_preserves_error(self):
+         pipeline = _pipeline()
+diff --git a/tests/test_wfd_media_vaapi.py b/tests/test_wfd_media_vaapi.py
+index 9695cda..957bf1e 100644
+--- a/tests/test_wfd_media_vaapi.py
++++ b/tests/test_wfd_media_vaapi.py
+@@ -29,7 +29,7 @@ class WlrootsVAAPITest(unittest.TestCase):
+             fps=30,
+             bitrate="5M",
+             no_audio=True,
+-            capture_backend="wf-recorder",
++            capture_backend="gpu-screen-recorder",
+             video_encoder="vaapi",
+         )
+         pipeline = WFDMediaPipeline(
+@@ -48,7 +48,7 @@ class WlrootsVAAPITest(unittest.TestCase):
+              mock.patch("wfd.media.wlroots._detect_audio_monitor", return_value="monitor"), \
+              mock.patch("wfd.media.wlroots.subprocess.Popen", side_effect=popen), \
+              mock.patch("wfd.media.wlroots.time.sleep"):
+-            pipeline._start_desktop_wf_recorder()
++            pipeline._start_desktop_gpu_screen_recorder()
+ 
+         capture, ffmpeg = commands
+         self.assertEqual(capture[0], "gpu-screen-recorder")
+diff --git a/tests/test_wfd_only_cli.py b/tests/test_wfd_only_cli.py
+index f1e63db..a0ced17 100644
+--- a/tests/test_wfd_only_cli.py
++++ b/tests/test_wfd_only_cli.py
+@@ -19,6 +19,13 @@ class WFDOnlyCLITest(unittest.TestCase):
+         self.assertEqual(self.parse().protocol, "wfd")
+         self.assertEqual(self.parse("--protocol", "wfd").protocol, "wfd")
+ 
++    def test_gpu_screen_recorder_has_an_honest_backend_name(self):
++        parsed = self.parse("--wfd-capture-backend", "gpu-screen-recorder")
++        self.assertEqual(parsed.wfd_capture_backend, "gpu-screen-recorder")
++        with contextlib.redirect_stderr(io.StringIO()):
++            with self.assertRaisesRegex(SystemExit, "2"):
++                self.parse("--wfd-capture-backend", "wf-recorder")
++
+     def test_diagnostics_imports_first_in_a_fresh_interpreter(self):
+         source = pathlib.Path(__file__).resolve().parents[1] / "src"
+         environment = os.environ.copy()
+-- 
+2.55.0

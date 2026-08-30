@@ -2284,3 +2284,27 @@ plugin fast-forwarded to the same commit and the Omarchy shell restarted, the
 installed controller reported `Casting support ready` with no readiness
 issues. No receiver or temporary network test was required for this
 diagnostic-only regression.
+
+### Honest GPU Screen Recorder selector (2026-08-30)
+
+Issue 2 correctly observed that Omacast selected a WFD backend named
+`wf-recorder` while the package treated wf-recorder as optional. Reconstructing
+the exact revision-62 engine showed that this was misleading naming rather
+than a hidden runtime dependency: production patch 13 had replaced that
+backend's implementation with GPU Screen Recorder, and the executed capture
+command already began with `gpu-screen-recorder`.
+
+Production patch 43 removes the ambiguity. The WFD CLI value, automatic
+backend order, internal starter, diagnostics, and tests now use
+`gpu-screen-recorder`; the old WFD value is rejected. Omacast emits and
+validates the new selector, readiness requires its help token, and the Arch
+recipe removes the obsolete wf-recorder optional dependency. Companion
+revision 63 / guard API 12 prevents the updated controller from crossing the
+older argument contract.
+
+The complete 37-patch stack reconstructed from the pinned upstream commit and
+passed all 151 FluxCast tests. The repository's 186 controller, packaging, and
+plugin tests, staged Omarchy validation, production shell lint, and whitespace
+checks pass. This changes only the selector contract around the already
+accepted capture process; it does not change media arguments, networking, or
+privileged behavior and therefore does not require a receiver test by itself.

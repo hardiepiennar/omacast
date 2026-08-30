@@ -4,7 +4,7 @@
 set -euo pipefail
 
 readonly schema_version=1 status_kind='omarchy-cast-guard-status'
-readonly api_revision=11 version_kind='omarchy-cast-guard-version'
+readonly api_revision=12 version_kind='omarchy-cast-guard-version'
 readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network'
 readonly wait_for_trigger_seconds=300
 readonly recovery_ready_timeout_seconds=5

@@ -7,7 +7,7 @@ reviewable without hiding the changes in a private fork.
 
 ## Production
 
-`production/series` is the sole build authority. Its 36 ordered patches cover
+`production/series` is the sole build authority. Its 37 ordered patches cover
 eight parts of the receiver-tested path:
 
 - Wi-Fi Direct and WFD negotiation: patches 1–2 and 5.
@@ -30,6 +30,8 @@ eight parts of the receiver-tested path:
 - Strict receiver-advertised RTP/client port validation: patch 40.
 - Bounded long-session latency journaling and keepalive state: patch 41.
 - Import-order-safe companion diagnostics: patch 42.
+- An honest GPU Screen Recorder capture selector and internal method name:
+  patch 43.
 
 The patches are intentionally atomic. Package builds apply them with `git am`,
 run FluxCast's tests, and fail if the pinned base or series no longer applies

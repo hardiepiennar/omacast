@@ -4,6 +4,9 @@
 
 - Fix the companion `fluxcast --doctor` import cycle and cover the shipped
   diagnostic import order in a fresh Python interpreter.
+- Rename the production WFD capture selector from the misleading
+  `wf-recorder` value to `gpu-screen-recorder`, remove the obsolete optional
+  dependency, and require companion revision 63 / guard API 12.
 
 ## 0.1.3 — 2026-08-27
 
