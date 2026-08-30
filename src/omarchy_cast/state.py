@@ -201,7 +201,7 @@ def validate_state(state: Mapping[str, Any]) -> dict[str, object]:
         validate_json_budget(state)
     except BoundError as exc:
         raise StateError(str(exc)) from exc
-    if state.get("schemaVersion") != SCHEMA_VERSION:
+    if type(state.get("schemaVersion")) is not int or state.get("schemaVersion") != SCHEMA_VERSION:
         raise StateError("unsupported state schema")
     phase = state.get("phase")
     if phase not in PHASES:

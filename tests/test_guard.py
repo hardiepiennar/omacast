@@ -21,7 +21,7 @@ class GuardContractTest(unittest.TestCase):
         self.assertNotIn(";", " ".join(command))
 
     def test_rejects_untrusted_arguments_or_helper_path(self) -> None:
-        for request in (self.request(session_id="receiver-name"), self.request(interface="wlan0;id"), self.request(peer="receiver"), self.request(frequency_mhz=9999), self.request(duration_seconds=30), self.request(uid=0)):
+        for request in (self.request(schema_version=True), self.request(session_id="receiver-name"), self.request(interface="wlan0;id"), self.request(peer="receiver"), self.request(frequency_mhz=9999), self.request(duration_seconds=30), self.request(uid=0)):
             with self.assertRaises(GuardError):
                 prepare_command(request)
         with self.assertRaises(GuardError):
@@ -67,14 +67,14 @@ class GuardContractTest(unittest.TestCase):
             }), "")
 
         self.assertEqual(reclaim_orphan_interfaces("wlan42", uid=1000, runner=reclaim_runner)["reclaimed"], 1)
-        for payload in ({}, {"schemaVersion": 1, "kind": "omarchy-cast-guard-reclaim-status", "ok": True, "reclaimed": 33}):
+        for payload in ({}, {"schemaVersion": True, "kind": "omarchy-cast-guard-reclaim-status", "ok": True, "reclaimed": 1}, {"schemaVersion": 1, "kind": "omarchy-cast-guard-reclaim-status", "ok": True, "reclaimed": 33}):
             with self.assertRaises(GuardError):
                 validate_reclaim_result(payload)
 
     def test_status_contract_rejects_unexpected_shapes(self) -> None:
         result = validate_helper_result({"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready", "sessionId": "b" * 32})
         self.assertTrue(result["ok"])
-        for payload in ({}, {"schemaVersion": 1, "kind": "other", "ok": True, "phase": "ready"}, {"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": "yes", "phase": "ready"}):
+        for payload in ({}, {"schemaVersion": True, "kind": "omarchy-cast-guard-status", "ok": True, "phase": "ready"}, {"schemaVersion": 1, "kind": "other", "ok": True, "phase": "ready"}, {"schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": "yes", "phase": "ready"}):
             with self.assertRaises(GuardError):
                 validate_helper_result(payload)
 

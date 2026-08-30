@@ -346,7 +346,7 @@ class SupplicantBroker:
             raise BrokerError("broker request is not valid JSON") from exc
         if not isinstance(payload, dict) or set(payload) != {"schemaVersion", "op"}:
             raise BrokerError("broker request has an unexpected shape")
-        if payload.get("schemaVersion") != SCHEMA_VERSION:
+        if type(payload.get("schemaVersion")) is not int or payload.get("schemaVersion") != SCHEMA_VERSION:
             raise BrokerError("broker request schema is unsupported")
         operation = payload.get("op")
         if operation == "connect":

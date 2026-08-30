@@ -253,7 +253,7 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   dump modules. Companion revision 68 carries this unprivileged engine
   contract; guard API 14 is unchanged. Patch 48 adds a closed JSON engine
   contract so readiness proves this behavior structurally instead of inferring
-  it from help text. Companion revision 70 requires engine contract API 1 and
+  it from help text. Companion revision 71 requires engine contract API 1 and
   pins the downloadable package to Python 3.14's minor-versioned installation
   path; guard API 14 is unchanged.
 - Direct-supplicant readiness no longer depends on dnsmasq. The supported

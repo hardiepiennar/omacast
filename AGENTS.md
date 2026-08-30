@@ -137,6 +137,9 @@ Security review checklist:
 - Prove companion compatibility with a side-effect-free, versioned, closed
   machine-readable contract and exact value comparison. Help-text substring
   searches are presentation checks only and must never authorize execution.
+- Require exact JSON scalar types at every versioned boundary. In Python,
+  ordinary equality is insufficient because booleans compare equal to zero
+  and one; `true` must never satisfy numeric schema or API revision 1.
 - Add adversarial regressions with deadlines. Prove oversized/deep/flooded
   input is bounded, special files cannot block, replacement races cannot
   redirect descriptors, and unrelated targets retain their content and mode.

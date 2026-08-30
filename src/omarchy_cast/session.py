@@ -209,7 +209,7 @@ def _read_events(path: Path, *, directory_fd: int | None = None) -> list[dict[st
             validate_json_budget(event)
         except (json.JSONDecodeError, BoundError, RecursionError) as exc:
             raise SessionError("session event log contains invalid JSON") from exc
-        if not isinstance(event, dict) or event.get("schemaVersion") != 1 or not isinstance(event.get("event"), str):
+        if not isinstance(event, dict) or type(event.get("schemaVersion")) is not int or event.get("schemaVersion") != 1 or not isinstance(event.get("event"), str):
             raise SessionError("session event log has an unsupported event")
         events.append(event)
     return events
@@ -350,7 +350,7 @@ def _stop_requested(session_id: str, environ: Mapping[str, str] | None = None) -
         validate_json_budget(payload, max_nodes=16, max_collection_items=8, max_string_chars=64)
     except (UnicodeDecodeError, json.JSONDecodeError, BoundError, RecursionError):
         return False
-    return isinstance(payload, dict) and payload.get("schemaVersion") == 1 and payload.get("sessionId") == session_id
+    return isinstance(payload, dict) and type(payload.get("schemaVersion")) is int and payload.get("schemaVersion") == 1 and payload.get("sessionId") == session_id
 
 
 def recover_stale_session(environ: Mapping[str, str] | None = None) -> dict[str, object]:
@@ -455,7 +455,7 @@ class DryRunSupervisor:
         selection = plan.get("selection")
         command = plan.get("command")
         execution = plan.get("execution")
-        if plan.get("schemaVersion") != 1 or plan.get("kind") != "launch-plan" or plan.get("readOnly") is not True:
+        if type(plan.get("schemaVersion")) is not int or plan.get("schemaVersion") != 1 or plan.get("kind") != "launch-plan" or plan.get("readOnly") is not True:
             raise SessionError("dry-run requires a versioned read-only launch plan")
         if not isinstance(selection, Mapping) or selection.get("peer") != request["peer"]:
             raise SessionError("launch plan receiver does not match the requested receiver")

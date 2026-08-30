@@ -31,7 +31,7 @@ def build_probe_command(*, profile: str, render_node: str | None) -> tuple[str, 
 
 def probe_media(snapshot: dict[str, Any], *, profile: str, runner: Runner = run_command) -> dict[str, object]:
     """Encode exactly one synthetic second to FFmpeg's null muxer."""
-    if snapshot.get("schemaVersion") != 1:
+    if type(snapshot.get("schemaVersion")) is not int or snapshot.get("schemaVersion") != 1:
         raise MediaProbeError("unsupported discovery schema")
     checks = {str(item.get("name")): item.get("status") for item in snapshot.get("checks", []) if isinstance(item, dict)}
     if checks.get("ffmpeg") != "ok":

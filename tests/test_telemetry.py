@@ -54,6 +54,8 @@ class TelemetryTest(unittest.TestCase):
             paths["current"].write_text(json.dumps(payload))
             paths["current"].chmod(0o600)
             self.assertEqual(read_telemetry(session_id, environment), payload)
+            paths["current"].write_text(json.dumps({**payload, "schemaVersion": True}))
+            self.assertIsNone(read_telemetry(session_id, environment))
             with self.assertRaisesRegex(ValueError, "controller-issued"):
                 telemetry_paths("unsafe", environment)
 

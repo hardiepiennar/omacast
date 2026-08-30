@@ -51,7 +51,7 @@ def build_launch_plan(
     monitor: str | None = None, source: str = "display",
 ) -> dict[str, object]:
     """Create a JSON-safe command preview, without touching hardware or a peer."""
-    if snapshot.get("schemaVersion") != 1:
+    if type(snapshot.get("schemaVersion")) is not int or snapshot.get("schemaVersion") != 1:
         raise LaunchPlanError("unsupported discovery schema")
     try:
         peer = receiver_address(peer)

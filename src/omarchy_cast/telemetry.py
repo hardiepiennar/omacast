@@ -381,7 +381,7 @@ def read_telemetry(session_id: str, environ: Mapping[str, str] | None = None) ->
             os.close(directory_descriptor)
         if parent_descriptor >= 0:
             os.close(parent_descriptor)
-    if not isinstance(payload, dict) or payload.get("schemaVersion") != 1 or payload.get("sessionId") != session_id:
+    if not isinstance(payload, dict) or type(payload.get("schemaVersion")) is not int or payload.get("schemaVersion") != 1 or payload.get("sessionId") != session_id:
         return None
     return payload
 

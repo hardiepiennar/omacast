@@ -38,7 +38,7 @@ class GuardRequest:
     duration_seconds: int
 
     def validate(self) -> "GuardRequest":
-        if self.schema_version != 1:
+        if type(self.schema_version) is not int or self.schema_version != 1:
             raise GuardError("unsupported guard request schema")
         if not _SESSION_ID.fullmatch(self.session_id):
             raise GuardError("guard session id must be controller-issued")
@@ -136,7 +136,7 @@ def reclaim_orphan_interfaces(
 def validate_reclaim_result(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict) or set(payload) != {"schemaVersion", "kind", "ok", "reclaimed"}:
         raise GuardError("guard returned an unexpected P2P recovery status")
-    if payload.get("schemaVersion") != 1 or payload.get("kind") != "omarchy-cast-guard-reclaim-status" or payload.get("ok") is not True:
+    if type(payload.get("schemaVersion")) is not int or payload.get("schemaVersion") != 1 or payload.get("kind") != "omarchy-cast-guard-reclaim-status" or payload.get("ok") is not True:
         raise GuardError("guard returned an incompatible P2P recovery status")
     reclaimed = payload.get("reclaimed")
     if not isinstance(reclaimed, int) or isinstance(reclaimed, bool) or not 0 <= reclaimed <= 32:
@@ -146,7 +146,7 @@ def validate_reclaim_result(payload: object) -> dict[str, object]:
 
 def validate_helper_result(payload: object) -> dict[str, object]:
     """Accept only the narrow status document returned by the helper."""
-    if not isinstance(payload, dict) or payload.get("schemaVersion") != 1:
+    if not isinstance(payload, dict) or type(payload.get("schemaVersion")) is not int or payload.get("schemaVersion") != 1:
         raise GuardError("guard returned an unsupported status document")
     if payload.get("kind") != "omarchy-cast-guard-status":
         raise GuardError("guard returned an unexpected status document")

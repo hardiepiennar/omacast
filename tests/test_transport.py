@@ -40,6 +40,10 @@ class TransportTest(unittest.TestCase):
         unsafe["command"] = list(unsafe["command"]) + ["; touch nope"]
         with self.assertRaisesRegex(TransportError, "shell-like"):
             validate_transport_plan(unsafe)
+        boolean_schema = plan()
+        boolean_schema["schemaVersion"] = True
+        with self.assertRaisesRegex(TransportError, "versioned"):
+            validate_transport_plan(boolean_schema)
 
     def test_capture_backend_must_match_the_display_selection(self) -> None:
         mismatched_source = plan()

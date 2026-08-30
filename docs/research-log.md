@@ -2473,7 +2473,7 @@ profile, guarded supplicant mode, and controller-owned telemetry. The
 controller bounds JSON depth, nodes, collections, and strings, then requires
 exact structural equality; extra fields, wrong values, deeply nested input,
 old help text, and malformed JSON are incompatible. The built-package audit
-executes and compares the same contract. Companion revision 70 requires engine
+executes and compares the same contract. Companion revision 69 requires engine
 contract API 1 while retaining guard API 14.
 
 ### Canonical receiver identity through launch (2026-08-31)
@@ -2530,3 +2530,17 @@ fails package resolution visibly until the companion is rebuilt and its
 revision and range are updated; it cannot silently pass readiness with modules
 installed for a different interpreter path. Guard API 14 and engine contract
 API 1 are unchanged.
+
+### Exact numeric revision types (2026-08-31)
+
+Several adjacent versioned JSON readers compared schema revision values with
+ordinary Python equality. Because `True == 1`, a JSON boolean could masquerade
+as numeric schema revision 1 at the privileged broker socket and in controller
+state, plans, telemetry, events, helper status, and offline media inputs.
+
+Every sibling boundary now requires the revision value's exact integer type
+before comparing its value. Guard readiness also requires a closed, exactly
+typed version document rather than accepting extra fields. Regressions inject
+boolean revisions at each affected layer. Companion revision 71 carries the
+broker change; valid schema-1 clients, guard API 14, and engine contract API 1
+are unchanged.

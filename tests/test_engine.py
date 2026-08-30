@@ -80,3 +80,9 @@ class EngineTest(unittest.TestCase):
         host["checks"] = []
         with self.assertRaisesRegex(LaunchPlanError, "required tools unavailable"):
             build_launch_plan(host, peer="AA:BB:CC:DD:EE:FF", mode="mirror", profile="safe")
+
+    def test_plan_rejects_boolean_schema_revision(self) -> None:
+        host = snapshot()
+        host["schemaVersion"] = True
+        with self.assertRaisesRegex(LaunchPlanError, "schema"):
+            build_launch_plan(host, peer="AA:BB:CC:DD:EE:FF", mode="mirror", profile="safe")

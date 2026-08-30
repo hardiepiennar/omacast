@@ -32,6 +32,12 @@ class StateTest(unittest.TestCase):
         with self.assertRaises(StateError):
             transition(idle_state(), "streaming", sessionId=SESSION_ID)
 
+    def test_rejects_boolean_schema_revision(self) -> None:
+        state = idle_state()
+        state["schemaVersion"] = True
+        with self.assertRaisesRegex(StateError, "schema"):
+            transition(state, "checking", sessionId=SESSION_ID)
+
     def test_checking_can_stop_before_discovery(self) -> None:
         checking = transition(idle_state(), "checking", sessionId=SESSION_ID)
         self.assertEqual(transition(checking, "stopping")["phase"], "stopping")

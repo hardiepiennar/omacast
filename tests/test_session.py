@@ -169,6 +169,9 @@ class SessionTest(unittest.TestCase):
             path.chmod(0o600)
             with self.assertRaisesRegex(SessionError, "safe boundary"):
                 read_session_events(session_id, environ=environment)
+            path.write_text('{"schemaVersion":true,"event":"test"}\n', encoding="utf-8")
+            with self.assertRaisesRegex(SessionError, "unsupported event"):
+                read_session_events(session_id, environ=environment)
 
     def test_history_includes_only_safe_controller_issued_event_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -259,6 +262,8 @@ class SessionTest(unittest.TestCase):
             self.assertFalse(_stop_requested(session_id, environment))
             path.write_text("[]", encoding="utf-8")
             path.chmod(0o600)
+            self.assertFalse(_stop_requested(session_id, environment))
+            path.write_text(json.dumps({"schemaVersion": True, "sessionId": session_id}), encoding="utf-8")
             self.assertFalse(_stop_requested(session_id, environment))
 
     def test_recovery_clears_stale_active_state_under_lock(self) -> None:

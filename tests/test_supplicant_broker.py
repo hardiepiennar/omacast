@@ -77,6 +77,7 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
         for payload in (
             {"schemaVersion": 1, "op": "disconnect-other"},
             {"schemaVersion": 1, "op": "connect", "path": "/foreign"},
+            {"schemaVersion": True, "op": "connect"},
             {"schemaVersion": 2, "op": "connect"},
             ["connect"],
         ):

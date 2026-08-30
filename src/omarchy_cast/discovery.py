@@ -125,6 +125,11 @@ REQUIRED_COMMANDS = (
 COMPANION_COMMANDS = frozenset(name for name in REQUIRED_COMMANDS if name != "hyprctl")
 HELPER_NAMES = ("omarchy-cast-guard", "omarchy-cast-guard-recover", "omarchy-cast-supplicant-broker")
 GUARD_API_REVISION = 14
+GUARD_VERSION_CONTRACT = {
+    "schemaVersion": 1,
+    "kind": "omarchy-cast-guard-version",
+    "apiRevision": GUARD_API_REVISION,
+}
 ENGINE_CONTRACT = {
     "schemaVersion": 1,
     "kind": "omacast-engine-contract",
@@ -172,10 +177,10 @@ def _check_helpers(guard_root: Path, runner: Runner) -> list[dict[str, object]]:
                 payload = json.loads(result.stdout) if result.returncode == 0 else None
             except json.JSONDecodeError:
                 payload = None
-            if not isinstance(payload, dict) or payload.get("schemaVersion") != 1 or payload.get("kind") != "omarchy-cast-guard-version" or payload.get("apiRevision") != GUARD_API_REVISION:
+            if not _exact_json_value(payload, GUARD_VERSION_CONTRACT):
                 status = "incompatible"
-            elif isinstance(payload.get("apiRevision"), int):
-                api_revision = payload["apiRevision"]
+            else:
+                api_revision = GUARD_API_REVISION
         helpers.append({"name": name, "status": status, "path": str(path), "apiRevision": api_revision})
     return helpers
 

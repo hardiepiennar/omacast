@@ -184,7 +184,7 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
     """Reject anything except our own non-executable FluxCast preview shape."""
     command = plan.get("command")
     execution = plan.get("execution")
-    if plan.get("schemaVersion") != 1 or plan.get("kind") != "launch-plan" or plan.get("readOnly") is not True:
+    if type(plan.get("schemaVersion")) is not int or plan.get("schemaVersion") != 1 or plan.get("kind") != "launch-plan" or plan.get("readOnly") is not True:
         raise TransportError("transport requires a versioned read-only launch plan")
     expected_execution = True if executable else False
     if not isinstance(execution, Mapping) or execution.get("allowed") is not expected_execution:

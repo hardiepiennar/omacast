@@ -29,3 +29,7 @@ class MediaProbeTest(unittest.TestCase):
     def test_missing_ffmpeg_is_rejected(self) -> None:
         with self.assertRaisesRegex(MediaProbeError, "FFmpeg"):
             probe_media({"schemaVersion": 1, "checks": [], "renderNodes": []}, profile="safe")
+
+    def test_probe_rejects_boolean_schema_revision(self) -> None:
+        with self.assertRaisesRegex(MediaProbeError, "schema"):
+            probe_media({"schemaVersion": True}, profile="safe")
