@@ -21,7 +21,13 @@ class GuardContractTest(unittest.TestCase):
         self.assertNotIn(";", " ".join(command))
 
     def test_rejects_untrusted_arguments_or_helper_path(self) -> None:
-        for request in (self.request(schema_version=True), self.request(session_id="receiver-name"), self.request(interface="wlan0;id"), self.request(peer="receiver"), self.request(frequency_mhz=9999), self.request(duration_seconds=30), self.request(uid=0)):
+        for request in (
+            self.request(schema_version=True), self.request(session_id="receiver-name"),
+            self.request(interface="wlan0;id"), self.request(peer="receiver"),
+            self.request(frequency_mhz=9999), self.request(frequency_mhz=False),
+            self.request(duration_seconds=30), self.request(duration_seconds=True),
+            self.request(uid=0), self.request(uid=True),
+        ):
             with self.assertRaises(GuardError):
                 prepare_command(request)
         with self.assertRaises(GuardError):
@@ -32,7 +38,7 @@ class GuardContractTest(unittest.TestCase):
             HELPER_PATH, "reclaim", "--schema-version", "1",
             "--uid", "1000", "--interface", "wlan42",
         ))
-        for values in ({"uid": 0, "interface": "wlan42"}, {"uid": 1000, "interface": "wlan0;id"}):
+        for values in ({"uid": 0, "interface": "wlan42"}, {"uid": True, "interface": "wlan42"}, {"uid": 1000, "interface": "wlan0;id"}):
             with self.assertRaises(GuardError):
                 reclaim_command(**values)  # type: ignore[arg-type]
 

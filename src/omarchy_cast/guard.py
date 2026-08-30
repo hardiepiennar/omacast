@@ -42,7 +42,7 @@ class GuardRequest:
             raise GuardError("unsupported guard request schema")
         if not _SESSION_ID.fullmatch(self.session_id):
             raise GuardError("guard session id must be controller-issued")
-        if not isinstance(self.uid, int) or self.uid < 1000 or self.uid > 2_147_483_647:
+        if type(self.uid) is not int or self.uid < 1000 or self.uid > 2_147_483_647:
             raise GuardError("guard uid is outside the permitted user range")
         if not _INTERFACE.fullmatch(self.interface):
             raise GuardError("guard interface name is invalid")
@@ -50,11 +50,11 @@ class GuardRequest:
             receiver_address(self.peer)
         except ValueError as exc:
             raise GuardError("guard receiver address is invalid") from exc
-        if not isinstance(self.frequency_mhz, int) or (
+        if type(self.frequency_mhz) is not int or (
             self.frequency_mhz != 0 and not 2300 <= self.frequency_mhz <= 7125
         ):
             raise GuardError("guard P2P frequency is invalid")
-        if not isinstance(self.duration_seconds, int) or not 60 <= self.duration_seconds <= 1800:
+        if type(self.duration_seconds) is not int or not 60 <= self.duration_seconds <= 1800:
             raise GuardError("guard duration must be between 60 and 1800 seconds")
         return self
 
@@ -80,7 +80,7 @@ def prepare_command(request: GuardRequest, *, helper_path: str = HELPER_PATH) ->
 def reclaim_command(*, uid: int, interface: str, helper_path: str = HELPER_PATH) -> tuple[str, ...]:
     if helper_path != HELPER_PATH:
         raise GuardError("production guard path is fixed by the installed package")
-    if not isinstance(uid, int) or uid < 1000 or uid > 2_147_483_647:
+    if type(uid) is not int or uid < 1000 or uid > 2_147_483_647:
         raise GuardError("guard uid is outside the permitted user range")
     if not _INTERFACE.fullmatch(interface):
         raise GuardError("guard interface name is invalid")

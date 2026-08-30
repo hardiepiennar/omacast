@@ -247,7 +247,10 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
     if type(plan.get("schemaVersion")) is not int or plan.get("schemaVersion") != 1 or plan.get("kind") != "launch-plan" or plan.get("readOnly") is not True:
         raise TransportError("transport requires a versioned read-only launch plan")
     expected_execution = {"allowed": True, "reason": "guarded-session-supervisor"} if executable else {"allowed": False, "reason": "read-only launch preview"}
-    if execution != expected_execution:
+    if not isinstance(execution, Mapping) or set(execution) != set(expected_execution) or any(
+        type(execution.get(key)) is not type(value) or execution.get(key) != value
+        for key, value in expected_execution.items()
+    ):
         raise TransportError("transport plan has an unexpected execution permission")
     profile = plan.get("profile")
     selection = plan.get("selection")

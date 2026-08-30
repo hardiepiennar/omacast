@@ -79,6 +79,14 @@ class TransportTest(unittest.TestCase):
         boolean_schema["schemaVersion"] = True
         with self.assertRaisesRegex(TransportError, "versioned"):
             validate_transport_plan(boolean_schema)
+        boolean_execution = plan()
+        boolean_execution["execution"] = {"allowed": 0, "reason": "read-only launch preview"}
+        with self.assertRaisesRegex(TransportError, "execution permission"):
+            validate_transport_plan(boolean_execution)
+        numeric_execution = executable_plan_fixture()
+        numeric_execution["execution"] = {"allowed": 1, "reason": "guarded-session-supervisor"}
+        with self.assertRaisesRegex(TransportError, "execution permission"):
+            validate_transport_plan(numeric_execution, executable=True)
 
     def test_capture_backend_must_match_the_display_selection(self) -> None:
         mismatched_source = plan()
