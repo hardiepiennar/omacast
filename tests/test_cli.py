@@ -196,7 +196,7 @@ class CliTest(unittest.TestCase):
 
     def test_recover_reclaims_detected_p2p_orphans_through_the_fixed_helper(self) -> None:
         local = {"schemaVersion": 1, "ok": True, "recovered": True}
-        host = {"wifiLinks": [
+        host = {"wifiDevicesComplete": True, "wifiLinks": [
             {"interface": "wlan42", "connected": True},
             {"interface": "wlan43", "connected": False},
             {"interface": "wlan44", "connected": True},
@@ -215,7 +215,7 @@ class CliTest(unittest.TestCase):
 
     def test_recover_does_not_prompt_when_no_orphan_is_present(self) -> None:
         local = {"schemaVersion": 1, "ok": True, "recovered": False}
-        host = {"wifiLinks": [{"interface": "wlan42", "connected": True}]}
+        host = {"wifiDevicesComplete": True, "wifiLinks": [{"interface": "wlan42", "connected": True}]}
         with patch("omarchy_cast.cli.recover_stale_session", return_value=local), patch(
             "omarchy_cast.cli.discover_host", return_value=host
         ), patch("omarchy_cast.cli.orphan_parent_interfaces", return_value=()), patch(
@@ -226,8 +226,21 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["reclaimedP2pInterfaces"], 0)
         reclaim.assert_not_called()
 
+    def test_recover_refuses_an_incomplete_wifi_inventory(self) -> None:
+        with patch(
+            "omarchy_cast.cli.discover_host",
+            return_value={"wifiDevicesComplete": False, "wifiLinks": []},
+        ), patch("omarchy_cast.cli.orphan_parent_interfaces") as probe, patch(
+            "omarchy_cast.cli.recover_stale_session"
+        ) as local_recover:
+            code, payload = self.invoke(["recover"])
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["error"]["code"], "recovery-unavailable")
+        probe.assert_not_called()
+        local_recover.assert_not_called()
+
     def test_failed_orphan_reclaim_preserves_recoverable_user_state(self) -> None:
-        host = {"wifiLinks": [{"interface": "wlan42", "connected": True}]}
+        host = {"wifiDevicesComplete": True, "wifiLinks": [{"interface": "wlan42", "connected": True}]}
         with patch("omarchy_cast.cli.discover_host", return_value=host), patch(
             "omarchy_cast.cli.orphan_parent_interfaces", return_value=("wlan42",)
         ), patch(

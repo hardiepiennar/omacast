@@ -64,6 +64,12 @@ class GuardContractTest(unittest.TestCase):
             with self.subTest(interfaces=interfaces):
                 with self.assertRaises(GuardError):
                     orphan_parent_interfaces(interfaces, runner=iw_runner)
+        flooded = "".join(f"  Interface p2p-wlan42-{index}\n" for index in range(65))
+        with self.assertRaisesRegex(GuardError, "discovery was incomplete"):
+            orphan_parent_interfaces(
+                ("wlan42",),
+                runner=lambda args, timeout=5.0: CommandResult(tuple(args), 0, flooded, ""),
+            )
 
         def reclaim_runner(args, *, timeout=5.0):
             self.assertEqual(args[:3], ("pkexec", HELPER_PATH, "reclaim"))

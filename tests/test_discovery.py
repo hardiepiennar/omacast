@@ -47,6 +47,21 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(len(monitors), 16)
         self.assertEqual(len(monitors[0].description), 240)
 
+    def test_discovery_marks_a_truncated_wifi_inventory_incomplete(self) -> None:
+        def runner(args, *, timeout=5.0):
+            if args[0] == "nmcli":
+                return CommandResult(tuple(args), 0, "".join(
+                    f"wlan{index}:wifi:connected\n" for index in range(100)
+                ), "")
+            return self.ready_runner(args, timeout=timeout)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.install_fake_helpers(root)
+            snapshot = discover_host(runner=runner, guard_root=root)
+        self.assertEqual(len(snapshot["wifiDevices"]), 32)
+        self.assertIs(snapshot["wifiDevicesComplete"], False)
+
     def test_parses_valid_hyprland_outputs(self) -> None:
         monitors = parse_hyprland_monitors('[{"name":"DP-2","description":"TV","width":1920,"height":1080,"refreshRate":60,"focused":true}]')
         self.assertEqual(monitors[0].name, "DP-2")

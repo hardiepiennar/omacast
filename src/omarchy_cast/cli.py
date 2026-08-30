@@ -218,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "recover":
         try:
             snapshot = discover_host()
+            if not isinstance(snapshot, dict) or snapshot.get("wifiDevicesComplete") is not True:
+                raise GuardError("Wi-Fi recovery discovery was incomplete")
             links = snapshot.get("wifiLinks", []) if isinstance(snapshot, dict) else []
             interfaces = [
                 link.get("interface") for link in links

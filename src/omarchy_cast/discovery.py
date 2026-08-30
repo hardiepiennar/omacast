@@ -47,9 +47,10 @@ class Monitor:
     focused: bool
 
 
-def parse_nmcli_devices(text: str) -> list[WifiDevice]:
-    """Parse nmcli's terse DEVICE:TYPE:STATE output without naming an adapter."""
+def _parse_nmcli_devices(text: str) -> tuple[list[WifiDevice], bool]:
+    """Parse a bounded nmcli projection and report whether it was complete."""
     devices: list[WifiDevice] = []
+    complete = True
     for line in text.splitlines():
         fields = line.split(":", 2)
         if len(fields) != 3 or not fields[0]:
@@ -57,11 +58,20 @@ def parse_nmcli_devices(text: str) -> list[WifiDevice]:
         name, device_type, state = fields
         if device_type in {"wifi", "wifi-p2p"}:
             if len(devices) >= MAX_WIFI_DEVICES:
-                break
-            if len(name) > 64 or any(ord(character) < 32 or ord(character) == 127 for character in name):
+                complete = False
+                continue
+            if (
+                len(name) > 64 or len(state) > 64
+                or any(ord(character) < 32 or ord(character) == 127 for character in name + state)
+            ):
                 continue
             devices.append(WifiDevice(name=name, type=device_type, state=state))
-    return devices
+    return devices, complete
+
+
+def parse_nmcli_devices(text: str) -> list[WifiDevice]:
+    """Parse nmcli's terse DEVICE:TYPE:STATE output without naming an adapter."""
+    return _parse_nmcli_devices(text)[0]
 
 
 def parse_hyprland_monitors(text: str) -> list[Monitor]:
@@ -327,7 +337,10 @@ def discover_host(
     engine = _engine_capabilities(runner)
 
     nm_result = runner(("nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"))
-    wifi_devices = parse_nmcli_devices(nm_result.stdout) if nm_result.returncode == 0 else []
+    if nm_result.returncode == 0:
+        wifi_devices, wifi_devices_complete = _parse_nmcli_devices(nm_result.stdout)
+    else:
+        wifi_devices, wifi_devices_complete = [], False
 
     wifi_links: list[WifiLink] = []
     link_diagnostics: list[dict[str, str]] = []
@@ -370,6 +383,7 @@ def discover_host(
         "helpers": helpers,
         "engine": engine,
         "wifiDevices": [asdict(device) for device in wifi_devices],
+        "wifiDevicesComplete": wifi_devices_complete,
         "wifiLinks": [asdict(link) for link in wifi_links],
         "monitors": [asdict(monitor) for monitor in monitors],
         "defaultSink": default_sink or None,

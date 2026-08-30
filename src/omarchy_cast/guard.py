@@ -21,6 +21,7 @@ HELPER_PATH = "/usr/lib/omarchy-cast/omarchy-cast-guard"
 _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 MAX_RECOVERY_INTERFACES = 32
+MAX_RECOVERY_CHILD_INTERFACES = 64
 
 
 class GuardError(ValueError):
@@ -107,11 +108,14 @@ def orphan_parent_interfaces(
     result = runner(("iw", "dev"), timeout=5)
     if result.returncode != 0:
         raise GuardError("could not inspect Wi-Fi Direct interfaces")
-    child_names = {
-        fields[1]
-        for fields in (line.strip().split() for line in result.stdout.splitlines())
-        if len(fields) == 2 and fields[0] == "Interface"
-    }
+    child_names: set[str] = set()
+    for line in result.stdout.splitlines():
+        fields = line.strip().split()
+        if len(fields) != 2 or fields[0] != "Interface":
+            continue
+        if len(child_names) >= MAX_RECOVERY_CHILD_INTERFACES:
+            raise GuardError("Wi-Fi Direct interface discovery was incomplete")
+        child_names.add(fields[1])
     return tuple(
         interface for interface in candidates
         if any(name.startswith(f"p2p-{interface}-") for name in child_names)
