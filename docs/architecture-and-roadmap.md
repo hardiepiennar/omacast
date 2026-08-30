@@ -85,14 +85,15 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   minutes and sent more than 212 MB without interface drops or TX failures.
 - Hyprland output discovery via `hyprctl monitors -j` works in the patched
   FluxCast checkout.
-- Real `eDP-1` capture through wf-recorder, Intel VAAPI H.264, and AAC reached
-  the Fire TV and was visually confirmed.
+- An early real `eDP-1` capture through wf-recorder, Intel VAAPI H.264, and AAC
+  reached the Fire TV and was visually confirmed; the production capture path
+  now uses GPU Screen Recorder.
 - The guarded scripts restore NetworkManager, the temporary DHCP client,
   session-scoped supplicant broker, and firewall rule after success,
   cancellation, and several failure paths.
 - The package-owned controller/helper path has now completed repeated live
   mirror runs and clean teardown. After instrumenting each media stage and
-  testing multiple pacing strategies, the user accepted the current 720p30,
+  testing multiple pacing strategies, the user accepted the current 720p60,
   7 Mbps GPU Screen Recorder profile as the release candidate.
 - One later package-owned real-desktop session ran for 20.5 minutes and cleaned
   up normally with no radio retry, failure, beacon-loss, or reported mux-drop
@@ -410,7 +411,7 @@ compatible-channel tests pass.
   not by itself prove that nftables permits the P2P RTSP port
 
 The harmless doctor warnings about xrandr, GStreamer x264, and `dbus_next` do
-not block the chosen Hyprland + wf-recorder + FFmpeg path.
+not block the chosen Hyprland + GPU Screen Recorder + FFmpeg path.
 
 ## 3. Product architecture
 
