@@ -86,3 +86,19 @@ class EngineTest(unittest.TestCase):
         host["schemaVersion"] = True
         with self.assertRaisesRegex(LaunchPlanError, "schema"):
             build_launch_plan(host, peer="AA:BB:CC:DD:EE:FF", mode="mirror", profile="safe")
+
+    def test_plan_does_not_coerce_discovery_flags_or_numbers(self) -> None:
+        host = snapshot()
+        host["wifiLinks"] = [{"interface": "wlan42", "connected": 1, "frequency_mhz": 2412}]
+        with self.assertRaisesRegex(LaunchPlanError, "connected managed Wi-Fi"):
+            build_launch_plan(host, peer="AA:BB:CC:DD:EE:FF", mode="mirror", profile="safe")
+
+        host = snapshot()
+        host["monitors"] = [{"name": "DP-2", "focused": "yes"}, {"name": "eDP-1", "focused": True}]
+        host["renderNodes"] = "/dev/dri/renderD128"
+        host["wifiLinks"] = [{"interface": "wlan42", "connected": True, "frequency_mhz": True}]
+        plan = build_launch_plan(host, peer="AA:BB:CC:DD:EE:FF", mode="mirror", profile="safe")
+        self.assertEqual(plan["selection"]["monitor"], "eDP-1")
+        self.assertEqual(plan["selection"]["videoEncoder"], "libx264")
+        frequency_flag = plan["command"].index("--wfd-supplicant-frequency")
+        self.assertEqual(plan["command"][frequency_flag + 1], "0")

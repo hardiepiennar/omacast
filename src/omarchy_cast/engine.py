@@ -29,7 +29,7 @@ def _select_wifi(snapshot: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(links, list):
         raise LaunchPlanError("Wi-Fi discovery is invalid")
     for link in links:
-        if isinstance(link, dict) and link.get("connected") and isinstance(link.get("interface"), str):
+        if isinstance(link, dict) and link.get("connected") is True and isinstance(link.get("interface"), str):
             return link
     raise LaunchPlanError("no connected managed Wi-Fi interface found")
 
@@ -43,7 +43,7 @@ def _select_monitor(snapshot: dict[str, Any], requested: str | None) -> dict[str
         candidates = [monitor for monitor in candidates if monitor["name"] == requested]
     if not candidates:
         raise LaunchPlanError("requested monitor is not available" if requested else "no Hyprland monitor found")
-    return next((monitor for monitor in candidates if monitor.get("focused")), candidates[0])
+    return next((monitor for monitor in candidates if monitor.get("focused") is True), candidates[0])
 
 
 def build_launch_plan(
@@ -71,13 +71,14 @@ def build_launch_plan(
         raise LaunchPlanError("no default PipeWire sink found")
 
     selected_profile = dict(PROFILES[profile])
-    vaapi = bool(snapshot.get("renderNodes"))
+    render_nodes = snapshot.get("renderNodes")
+    vaapi = type(render_nodes) is list and any(type(node) is str and node for node in render_nodes)
     encoder = "vaapi" if vaapi else "libx264"
     warnings: list[str] = []
     frequency = wifi.get("frequency_mhz")
-    if isinstance(frequency, int) and frequency >= 5000:
+    if type(frequency) is int and frequency >= 5000:
         warnings.append("Current Wi-Fi is on 5/6 GHz; P2P channel selection will remain automatic.")
-    supplicant_frequency = frequency if isinstance(frequency, int) and 2400 <= frequency <= 2500 else 0
+    supplicant_frequency = frequency if type(frequency) is int and 2400 <= frequency <= 2500 else 0
     if not vaapi:
         warnings.append("No render node detected; this session would use software H.264 encoding.")
 
