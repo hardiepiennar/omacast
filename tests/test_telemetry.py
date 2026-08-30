@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import unittest.mock
@@ -20,6 +22,7 @@ from omarchy_cast.telemetry import (
     TelemetrySampler,
     TelemetryWorkspace,
     _bounded_read,
+    _bounded_stream_read,
     cleanup_live_telemetry,
     parse_ffmpeg_progress,
     parse_iw_station,
@@ -222,6 +225,57 @@ class TelemetryTest(unittest.TestCase):
             finally:
                 workspace.close()
             self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+
+    def test_archive_append_rejects_public_mode_without_repairing_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            workspace = TelemetryWorkspace("a" * 32, environment)
+            workspace.paths["samples"].write_text("preserve\n", encoding="utf-8")
+            workspace.paths["samples"].chmod(0o644)
+            try:
+                with self.assertRaisesRegex(ValueError, "archive is unsafe"):
+                    workspace.append_sample({"schemaVersion": 1})
+            finally:
+                workspace.close()
+            self.assertEqual(workspace.paths["samples"].read_text(encoding="utf-8"), "preserve\n")
+            self.assertEqual(workspace.paths["samples"].stat().st_mode & 0o777, 0o644)
+
+    def test_archive_append_has_a_bounded_lock_and_shape_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            workspace = TelemetryWorkspace("a" * 32, environment)
+            workspace.paths["samples"].write_text("", encoding="utf-8")
+            workspace.paths["samples"].chmod(0o600)
+            try:
+                with workspace.paths["samples"].open("rb") as locked:
+                    fcntl.flock(locked.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    started = time.monotonic()
+                    with self.assertRaisesRegex(ValueError, "archive is busy"):
+                        workspace.append_sample({"schemaVersion": 1})
+                    self.assertLess(time.monotonic() - started, 0.75)
+                with self.assertRaisesRegex(ValueError, "non-finite"):
+                    workspace.append_sample({"schemaVersion": 1, "value": float("inf")})
+            finally:
+                workspace.close()
+
+    def test_proc_stream_read_reports_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "records"
+            path.write_text("abcdef", encoding="ascii")
+            self.assertEqual(_bounded_stream_read(path, 6), ("abcdef", True))
+            self.assertEqual(_bounded_stream_read(path, 5), ("abcde", False))
+
+    def test_sampler_stop_does_not_close_a_workspace_while_its_thread_is_live(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = {"XDG_RUNTIME_DIR": str(Path(temp) / "run"), "XDG_STATE_HOME": str(Path(temp) / "state")}
+            sampler = TelemetrySampler(session_id="a" * 32, engine_pid=999999, wifi_interface="wlan42", environ=environment)
+            gate = threading.Event()
+            sampler._run = lambda: gate.wait(1.0)  # type: ignore[method-assign]
+            sampler.start()
+            self.assertFalse(sampler.stop(timeout=0.01))
+            self.assertGreaterEqual(sampler._workspace.live_descriptor, 0)
+            gate.set()
+            self.assertTrue(sampler.stop(timeout=1.0))
 
     def test_archive_stops_at_its_quota_without_stopping_live_snapshots(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

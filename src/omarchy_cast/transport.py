@@ -18,7 +18,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .guard import GuardRequest, prepare_command, validate_helper_result
 from .identity import receiver_address
-from .telemetry import MAX_PROCESS_DESCRIPTORS, MAX_PROC_NETWORK_BYTES, MAX_SYSFS_INTERFACE_ENTRIES, BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, cleanup_live_telemetry
+from .telemetry import MAX_PROCESS_DESCRIPTORS, MAX_PROC_NETWORK_BYTES, MAX_SYSFS_INTERFACE_ENTRIES, BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, _bounded_stream_read, cleanup_live_telemetry
 
 
 CONNECT_TIMEOUT_SECONDS = 75
@@ -542,10 +542,10 @@ class GuardedTransportAdapter:
             return None
         if not owned:
             return False
-        try:
-            lines = _bounded_read(Path("/proc/net/tcp"), MAX_PROC_NETWORK_BYTES).splitlines()[1:]
-        except (OSError, ValueError):
-            return False
+        text, complete = _bounded_stream_read(Path("/proc/net/tcp"), MAX_PROC_NETWORK_BYTES)
+        if not complete:
+            return None
+        lines = text.splitlines()[1:]
         for line in lines:
             fields = line.split()
             if len(fields) >= 10 and fields[1].endswith(":1C44") and fields[3] == "01" and fields[9] in owned:
@@ -566,6 +566,7 @@ class GuardedTransportAdapter:
         helper_stdout_drain: _BoundedPipeDrain | None = None
         guard_ready = False
         guard_cleanup_confirmed = False
+        sampler_stopped = True
         startup_started_at = time.monotonic()
         try:
             helper = subprocess.Popen((*self.authorization_command, *prepare_command(self.request)), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
@@ -662,7 +663,7 @@ class GuardedTransportAdapter:
             return TransportResult("completed", detail, True) if engine.returncode == 0 else TransportResult("failed", detail, True, self._failure_code(engine_output))
         finally:
             if sampler is not None:
-                sampler.stop()
+                sampler_stopped = sampler.stop()
             if engine is not None and engine.poll() is None:
                 engine.terminate()
                 try:
@@ -673,6 +674,8 @@ class GuardedTransportAdapter:
                         engine.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         pass
+            if sampler is not None and not sampler_stopped:
+                sampler_stopped = sampler.stop()
             if lease is not None:
                 lease.stop()
             if guard_ready:
@@ -707,9 +710,10 @@ class GuardedTransportAdapter:
                 helper_stderr_drain.stop()
             if engine_output_collector is not None:
                 engine_output_collector.stop()
-            if telemetry is not None:
+            if telemetry is not None and sampler_stopped:
                 telemetry.close()
-            cleanup_live_telemetry(self.request.session_id, self.env)
+            if sampler_stopped:
+                cleanup_live_telemetry(self.request.session_id, self.env)
             if guard_ready and not guard_cleanup_confirmed:
                 raise TransportError(
                     "The networking helper could not confirm complete P2P cleanup. Re-scan before casting again.",

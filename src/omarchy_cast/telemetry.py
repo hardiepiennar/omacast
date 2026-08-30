@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import UTC, datetime
+import errno
+import fcntl
 import json
 import math
 import os
@@ -105,6 +107,20 @@ def _write_all(descriptor: int, encoded: bytes) -> None:
     while view:
         written = os.write(descriptor, view)
         view = view[written:]
+
+
+def _lock_with_deadline(descriptor: int, timeout: float = 0.25) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                raise
+            if time.monotonic() >= deadline:
+                raise ValueError("telemetry archive is busy") from exc
+            time.sleep(0.01)
 
 
 def _read_descriptor_text(descriptor: int, limit: int) -> str:
@@ -233,15 +249,25 @@ class TelemetryWorkspace:
     def append_sample(self, payload: Mapping[str, Any]) -> bool:
         if self.archive_descriptor is None:
             return False
+        if self.archive_capped:
+            return False
+        validate_json_budget(payload, max_depth=12, max_nodes=4_096)
         encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        if len(encoded) > MAX_TELEMETRY_BYTES:
+            raise ValueError("telemetry sample exceeds the safe size limit")
         flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         descriptor = os.open(f"{self.session_id}.jsonl", flags, 0o600, dir_fd=self.archive_descriptor)
         try:
+            _lock_with_deadline(descriptor)
             metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or metadata.st_nlink != 1
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+            ):
                 raise ValueError("telemetry archive is unsafe")
-            os.fchmod(descriptor, 0o600)
             if metadata.st_size + len(encoded) > MAX_ARCHIVED_TELEMETRY_BYTES:
                 self.archive_capped = True
                 return False
@@ -548,6 +574,29 @@ def _bounded_read(
             os.close(descriptor)
 
 
+def _bounded_stream_read(path: Path, limit: int) -> tuple[str, bool]:
+    """Read a proc-style regular stream and report whether EOF was observed."""
+    descriptor = -1
+    try:
+        flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return "", False
+        payload = bytearray()
+        while len(payload) <= limit:
+            chunk = os.read(descriptor, min(8192, limit + 1 - len(payload)))
+            if not chunk:
+                return bytes(payload).decode("utf-8", errors="replace"), True
+            payload.extend(chunk)
+        return bytes(payload[:limit]).decode("utf-8", errors="replace"), False
+    except (OSError, ValueError):
+        return "", False
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _number(value: str | None, default: float = 0.0) -> float:
     match = _PROGRESS_NUMBER.fullmatch(value or "")
     number = float(match[1]) if match else default
@@ -607,12 +656,15 @@ class TelemetrySampler:
         self._thread = threading.Thread(target=self._run, name="omarchy-cast-telemetry", daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 2.0) -> bool:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=2)
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                return False
         if self._owns_workspace:
             self._workspace.close()
+        return True
 
     def _descendants(self, proc_root: Path = Path("/proc")) -> list[int]:
         found: list[int] = []
@@ -709,7 +761,7 @@ class TelemetrySampler:
         candidates: list[Path] = []
         for entry_index, path in enumerate(network_root.glob(f"p2p-{self.wifi_interface}-*")):
             if entry_index >= MAX_SYSFS_INTERFACE_ENTRIES:
-                break
+                return None
             if path.is_dir():
                 candidates.append(path)
         candidates.sort()
@@ -723,12 +775,12 @@ class TelemetrySampler:
         parsed = _bounded_integer(value, minimum=0, maximum=2**64 - 1)
         return parsed if parsed is not None else 0
 
-    def _send_queue(self) -> int:
+    def _send_queue(self) -> int | None:
         suffix = f":{self.source_port:04X}"
-        try:
-            lines = _bounded_read(Path("/proc/net/udp"), MAX_PROC_NETWORK_BYTES).splitlines()[1:]
-        except (OSError, ValueError):
-            return 0
+        text, complete = _bounded_stream_read(Path("/proc/net/udp"), MAX_PROC_NETWORK_BYTES)
+        if not complete:
+            return None
+        lines = text.splitlines()[1:]
         for line in lines:
             fields = line.split()
             if len(fields) >= 5 and fields[1].upper().endswith(suffix):

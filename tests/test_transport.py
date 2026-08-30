@@ -176,10 +176,12 @@ class TransportTest(unittest.TestCase):
 
     def test_rtsp_state_requires_an_established_7236_socket(self) -> None:
         sockets = "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n  0: 00000000:1C44 00000000:0000 0A 0:0 0:0 0 0 0 111\n  1: C0A81B41:1C44 C0A81B72:A540 01 0:0 0:0 0 0 0 222\n"
-        with patch("omarchy_cast.transport._bounded_read", return_value=sockets), patch.object(GuardedTransportAdapter, "_socket_inodes", return_value={"222"}):
+        with patch("omarchy_cast.transport._bounded_stream_read", return_value=(sockets, True)), patch.object(GuardedTransportAdapter, "_socket_inodes", return_value={"222"}):
             self.assertTrue(GuardedTransportAdapter._rtsp_established(1234))
-        with patch("omarchy_cast.transport._bounded_read", return_value=sockets), patch.object(GuardedTransportAdapter, "_socket_inodes", return_value={"333"}):
+        with patch("omarchy_cast.transport._bounded_stream_read", return_value=(sockets, True)), patch.object(GuardedTransportAdapter, "_socket_inodes", return_value={"333"}):
             self.assertFalse(GuardedTransportAdapter._rtsp_established(1234))
+        with patch("omarchy_cast.transport._bounded_stream_read", return_value=(sockets, False)), patch.object(GuardedTransportAdapter, "_socket_inodes", return_value={"222"}):
+            self.assertIsNone(GuardedTransportAdapter._rtsp_established(1234))
 
     def test_receiver_negotiation_has_a_bounded_stage_deadline(self) -> None:
         self.assertEqual(CONNECT_TIMEOUT_SECONDS, 75)
