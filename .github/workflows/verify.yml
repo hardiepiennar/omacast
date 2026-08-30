@@ -41,3 +41,33 @@ jobs:
           assert manifest["id"] == "hardie.omarchy-cast"
           assert (root / manifest["entryPoints"]["barWidget"]).is_file()
           PY
+
+  companion-patches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the exact commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Reconstruct and test the companion patch stack
+        shell: bash
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            archlinux:base-devel@sha256:68bfc3b0d277b08a99101dc9b94aaa03e5ae70cf1b4fb965c03b2b87b915760d \
+            bash -euo pipefail -c '
+              printf "%s\n" "Server = https://archive.archlinux.org/repos/2026/08/24/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
+              pacman -Syu --needed --noconfirm \
+                git gpu-screen-recorder python python-dbus-next python-gobject
+              export GIT_COMMITTER_NAME="Omacast CI"
+              export GIT_COMMITTER_EMAIL="ci@localhost"
+              /workspace/scripts/bootstrap-fluxcast --target /build/fluxcast
+              PYTHONPATH=/build/fluxcast/src \
+                python -m unittest discover -s /build/fluxcast/tests -v
+              PYTHONPATH=/build/fluxcast/src \
+                python -c "import diagnostics"
+              PYTHONPATH=/build/fluxcast/src \
+                python /build/fluxcast/src/main.py --doctor > /build/doctor.txt
+              PYTHONPATH=/build/fluxcast/src \
+                python /build/fluxcast/src/main.py --doctor-json > /build/doctor.json
+              python -c "import json,sys; report=json.load(open(sys.argv[1], encoding=\"utf-8\")); sys.exit(0 if isinstance(report, dict) and isinstance(report.get(\"checks\"), list) else \"unexpected diagnostic report shape\")" /build/doctor.json
+            '

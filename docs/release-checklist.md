@@ -549,6 +549,9 @@
 - [x] Artifact and disposable install/upgrade lifecycle gates execute both
       packaged doctor entry points and validate the structured report, so an
       import-order regression cannot pass by exposing a working `--help` only.
+- [x] Pull-request CI reconstructs all production FluxCast patches from the
+      pinned upstream revision in a pinned Arch snapshot, runs the companion
+      suite, and exercises both doctor modes from fresh processes.
 - [ ] Build and install exact package revision 62, then run both shipped doctor
       entry points before closing the circular-import report.
 - [ ] Exercise forced recovery and complete the canonical three consecutive

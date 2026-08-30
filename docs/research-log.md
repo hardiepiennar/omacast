@@ -2267,3 +2267,10 @@ did find that release artifact and disposable lifecycle checks executed only
 the packaged `--help` path. Both gates now execute `--doctor` and
 `--doctor-json`, then parse and validate the structured report. This makes the
 original installed-package failure part of the ordinary release boundary.
+
+The audit also found that pull-request CI covered the Omacast controller but
+left companion reconstruction until tagged release CI. The verification
+workflow now rebuilds the full production patch stack from the pinned upstream
+revision in the same pinned Arch snapshot family, runs the FluxCast suite, and
+executes both diagnostics entry points. Patch-stack breakage is therefore
+visible before merge rather than first appearing during release packaging.
