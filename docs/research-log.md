@@ -2338,3 +2338,20 @@ The controller now forwards only a 2400–2500 MHz station frequency. It passes
 supplicant and the driver choose an allowed channel. Regression cases cover
 2412, 5180, 5500, 5745, and 5955 MHz. The privileged frequency validation and
 all other session arguments remain unchanged.
+
+### Specification-valid WFD source advertisement (2026-08-30)
+
+Issue 2 identified a byte-level protocol error in both source-advertisement
+implementations. They appended subelement ID 10 as a device name, but the WFD
+specification assigns that ID to a different capability. The device name is a
+Wi-Fi P2P attribute and must not be encoded as a WFD subelement.
+
+Production patch 45 now advertises only the required nine-byte Device
+Information subelement and removes the dead, misleading encoder and imports.
+The package-owned supplicant broker emits the identical payload, while normal
+and independent cleanup compare against that exact owned value before clearing
+global supplicant state. Regression tests pin the full byte sequence in both
+implementations, and the release-artifact audit executes the packaged broker's
+builder rather than trusting source-text matching. Companion revision 65 and
+guard API 13 make this corrected privileged/network contract an explicit
+compatibility boundary. The reconstructed 39-patch engine passes 154 tests.

@@ -41,7 +41,7 @@ remove_broker_socket() {
   rm -f -- "$broker_socket"
 }
 clear_owned_wfd_ies() {
-  local current expected='0x00 0x00 0x06 0x00 0x10 0x1c 0x44 0x00 0xc8 0x0a 0x00 0x07 0x4f 0x6d 0x61 0x63 0x61 0x73 0x74'
+  local current expected='0x00 0x00 0x06 0x00 0x10 0x1c 0x44 0x00 0xc8'
   [[ ! -e "$broker_wfd_file" ]] && return 0
   [[ -f "$broker_wfd_file" && ! -L "$broker_wfd_file" && "$(stat -c '%u:%a' "$broker_wfd_file" 2>/dev/null)" == "$EUID:600" ]] || return 1
   current="$(gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Get fi.w1.wpa_supplicant1 WFDIEs 2>/dev/null | { grep -oE '0x[0-9A-Fa-f]{2}' || true; } | tr '[:upper:]' '[:lower:]' | paste -sd ' ' -)" || return 1

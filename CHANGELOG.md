@@ -11,6 +11,8 @@
   direct-supplicant client path no longer fails on an unused `dnsmasq` check.
 - Stop forcing 5/6 GHz station frequencies into P2P group formation; retain
   the proven 2.4 GHz hint and let supplicant choose a legal channel otherwise.
+- Remove the invalid WFD Device Name subelement from both source-advertisement
+  implementations and require companion revision 65 / guard API 13.
 
 ## 0.1.3 — 2026-08-27
 

@@ -251,6 +251,10 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   DFS, or 6 GHz station now sends frequency `0`, leaving legal group-channel
   selection to supplicant and the driver instead of forcing the station
   channel into the receiver negotiation.
+- WFD source capabilities now contain only the specification-defined Device
+  Information subelement. The invalid Device Name encoder and advertisement
+  are removed from both FluxCast and the privileged broker, and guard API 13
+  prevents the corrected controller from accepting an older companion.
 
 ### Not yet proven
 
@@ -819,7 +823,7 @@ root `manifest.json`, a thin `ui/Panel.qml` bar widget, and a package-owned
 session helper. The controller issues a fixed, versioned `pkexec` request for a
 validated UID/interface/session/duration; the helper generates only
 session-named network state and a closed-operation supplicant broker, and an
-  independent recovery process bounds cleanup. Guard API revision 12 binds the
+  independent recovery process bounds cleanup. Guard API revision 13 binds the
 requested UID to
 Polkit's authenticated caller, while the installed declarative action permits
 only the exact guard executable with `prepare` as its first argument for an

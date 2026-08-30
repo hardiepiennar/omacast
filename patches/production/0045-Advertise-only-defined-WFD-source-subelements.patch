@@ -1,0 +1,125 @@
+From b2fd307f72c3b854930e30a84081b31489053fe9 Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Sun, 30 Aug 2026 22:09:25 +1200
+Subject: [PATCH] Advertise only defined WFD source subelements
+
+---
+ src/wfd/__init__.py         |  3 +--
+ src/wfd/ie.py               | 12 ++----------
+ src/wfd/p2p/dbus.py         |  9 +++++----
+ src/wfd/p2p/peers.py        |  3 +--
+ tests/test_wfd_source_ie.py | 16 ++++++++++++++++
+ 5 files changed, 25 insertions(+), 18 deletions(-)
+ create mode 100644 tests/test_wfd_source_ie.py
+
+diff --git a/src/wfd/__init__.py b/src/wfd/__init__.py
+index cabb6f0..367f94e 100644
+--- a/src/wfd/__init__.py
++++ b/src/wfd/__init__.py
+@@ -19,7 +19,7 @@ from capture.portal_capture import PortalCaptureError, PortalCaptureSession, clo
+ from .constants import WFD_RTSP_PORT, _DEVICE_NAME, WFD_CEA_640P60, WFD_CEA_720P30, WFD_CEA_720P60, WFD_CEA_1080P30, WFD_CEA_1080P60, WFD_VESA_1200P30, WFD_VESA_1200P60, WFD_LEVEL_31, WFD_LEVEL_32, WFD_LEVEL_40, WFD_LEVEL_42, WFD_LEVEL_50, WFD_LEVEL_51, WFD_AUDIO_AAC, WFD_AUDIO_LPCM_48K, NM_DEST, NM_PATH
+ 
+ 
+-from .ie import _wfd_ie_device_info, _wfd_ie_device_name, WFDPeer, _parse_gdbus_byte_array, _parse_wfd_ies_rtsp_port
++from .ie import _wfd_ie_device_info, WFDPeer, _parse_gdbus_byte_array, _parse_wfd_ies_rtsp_port
+ 
+ 
+ 
+@@ -255,4 +255,3 @@ from .p2p.addressing import _get_peer_ip_from_arp, _get_peer_ip_from_p2p_iface,
+ from .probe import _active_rtsp_probe
+ 
+ 
+-
+diff --git a/src/wfd/ie.py b/src/wfd/ie.py
+index 1304b74..eb29fa3 100644
+--- a/src/wfd/ie.py
++++ b/src/wfd/ie.py
+@@ -8,23 +8,15 @@ def _wfd_ie_device_info(rtsp_port: int) -> bytes:
+     Byte 0-1: Device Information bitmask
+               (0x0010 = Source, 0x0000 = Coupled Sink not supported)
+     Byte 2-3: Session Management Control Port (RTSP port)
+-    Byte 4-5: Device Throughput (max 100 Mbps)
++    Byte 4-5: Device Throughput (200 Mbps)
+     """
+     return bytes([
+         0x00, 0x00, 0x06,
+         0x00, 0x10,  # Info: WFD Source, Session Available (No HDCP/Coupled Sink)
+         (rtsp_port >> 8) & 0xff, rtsp_port & 0xff,
+-        0x00, 0xc8   # Throughput: 100 Mbps
++        0x00, 0xc8   # Throughput: 200 Mbps
+     ])
+ 
+-def _wfd_ie_device_name(name: str) -> bytes:
+-    """
+-    WFD Subelement ID 10: WFD Device Name
+-    """
+-    encoded = name.encode("utf-8")
+-    length = len(encoded)
+-    return bytes([0x0a, (length >> 8) & 0xff, length & 0xff]) + encoded
+-
+ @dataclass
+ class WFDPeer:
+     address: str
+diff --git a/src/wfd/p2p/dbus.py b/src/wfd/p2p/dbus.py
+index 789490e..c4c1999 100644
+--- a/src/wfd/p2p/dbus.py
++++ b/src/wfd/p2p/dbus.py
+@@ -4,8 +4,8 @@ import subprocess
+ from typing import Optional
+ 
+ from ..config import WFDNotReady
+-from ..constants import NM_DEST, _DEVICE_NAME
+-from ..ie import _wfd_ie_device_info, _wfd_ie_device_name
++from ..constants import NM_DEST
++from ..ie import _wfd_ie_device_info
+ from ..proc import _run
+ 
+ 
+@@ -114,5 +114,6 @@ def _variant_byte_array(data: bytes) -> str:
+ def _wfd_source_ie(rtsp_port: int) -> bytes:
+     if rtsp_port <= 0 or rtsp_port > 65535:
+         raise WFDNotReady(f"Invalid WFD RTSP port: {rtsp_port}")
+-    # Build WFD IE with Device Info and Device Name subelements.
+-    return _wfd_ie_device_info(rtsp_port) + _wfd_ie_device_name(_DEVICE_NAME)
++    # WFD Device Information is the complete source capability payload. Device
++    # names belong to Wi-Fi P2P attributes, not WFD subelement ID 10.
++    return _wfd_ie_device_info(rtsp_port)
+diff --git a/src/wfd/p2p/peers.py b/src/wfd/p2p/peers.py
+index 1dc309a..7124eb9 100644
+--- a/src/wfd/p2p/peers.py
++++ b/src/wfd/p2p/peers.py
+@@ -5,8 +5,7 @@ import time
+ from typing import Optional
+ 
+ from ..config import WFDNotReady
+-from ..constants import _DEVICE_NAME
+-from ..ie import WFDPeer, _wfd_ie_device_info, _wfd_ie_device_name
++from ..ie import WFDPeer
+ from ..proc import _run
+ from .nm import _nm_scan
+ 
+diff --git a/tests/test_wfd_source_ie.py b/tests/test_wfd_source_ie.py
+new file mode 100644
+index 0000000..db9db2d
+--- /dev/null
++++ b/tests/test_wfd_source_ie.py
+@@ -0,0 +1,16 @@
++import unittest
++
++from wfd.config import WFDNotReady
++from wfd.p2p.dbus import _wfd_source_ie
++
++
++class WFDSourceIETest(unittest.TestCase):
++    def test_contains_only_wfd_device_information(self):
++        self.assertEqual(
++            _wfd_source_ie(7236), bytes.fromhex("00000600101c4400c8")
++        )
++
++    def test_rejects_invalid_rtsp_ports(self):
++        for port in (0, 65536):
++            with self.subTest(port=port), self.assertRaises(WFDNotReady):
++                _wfd_source_ie(port)
+-- 
+2.55.0
+

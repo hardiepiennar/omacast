@@ -75,10 +75,8 @@ def set_property(path: str, interface: str, name: str, value: str) -> None:
 
 
 def source_wfd_ies() -> bytes:
-    name = b"Omacast"
     port = 7236
-    device_info = bytes((0, 0, 6, 0, 0x10, port >> 8, port & 0xFF, 0, 0xC8))
-    return device_info + bytes((0x0A, 0, len(name))) + name
+    return bytes((0, 0, 6, 0, 0x10, port >> 8, port & 0xFF, 0, 0xC8))
 
 
 def byte_variant(data: bytes) -> str:

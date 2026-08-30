@@ -28,6 +28,11 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
             frequency=2437,
         )
 
+    def test_source_advertises_only_defined_wfd_device_information(self) -> None:
+        self.assertEqual(
+            broker_module.source_wfd_ies(), bytes.fromhex("00000600101c4400c8")
+        )
+
     @staticmethod
     def exchange(broker, payload: object) -> dict[str, object]:
         server, client = socket.socketpair()

@@ -108,10 +108,22 @@ PY
 bash -n "$guard"
 bash -n "$recovery"
 python3 -m py_compile "$broker"
+python3 - "$broker" <<'PY' || die "broker advertises an invalid WFD source payload"
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+import sys
+
+loader = SourceFileLoader("omacast_release_broker", sys.argv[1])
+spec = spec_from_loader(loader.name, loader)
+assert spec is not None
+module = module_from_spec(spec)
+loader.exec_module(module)
+assert module.source_wfd_ies() == bytes.fromhex("00000600101c4400c8")
+PY
 
 guard_version="$($guard --version)"
-python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":12}' "$guard_version" \
-  || die "guard API contract does not match revision 12"
+python3 -c 'import json, sys; value=json.loads(sys.argv[1]); assert value == {"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":13}' "$guard_version" \
+  || die "guard API contract does not match revision 13"
 ! grep -Fq '/etc/dbus-1/system.d' "$guard" || die "guard still writes a temporary system-bus policy"
 grep -Fq 'omarchy-cast-supplicant-broker' "$guard" || die "guard does not start the session-scoped supplicant broker"
 ! grep -Fq 'RuntimeMaxSec' "$guard" || die "guard imposes a fixed wall-clock lifetime on a healthy broker"
