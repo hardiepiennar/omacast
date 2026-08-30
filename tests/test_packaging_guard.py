@@ -698,7 +698,7 @@ if record_session_interfaces; then exit 3; fi
         policy = ET.parse(ROOT / "packaging" / "arch" / "com.omacast.guard.policy").getroot()
         actions = {action.attrib["id"]: action for action in policy.findall("action")}
         self.assertEqual(set(actions), {"com.omacast.guard.prepare", "com.omacast.guard.reclaim"})
-        for name, active in (("prepare", "yes"), ("reclaim", "auth_admin_keep")):
+        for name, active in (("prepare", "yes"), ("reclaim", "auth_admin")):
             action = actions[f"com.omacast.guard.{name}"]
             defaults = action.find("defaults")
             self.assertIsNotNone(defaults)

@@ -95,7 +95,7 @@ import xml.etree.ElementTree as ET
 
 actions = {action.attrib["id"]: action for action in ET.parse(sys.argv[1]).getroot().findall("action")}
 assert set(actions) == {"com.omacast.guard.prepare", "com.omacast.guard.reclaim"}
-for name, active in (("prepare", "yes"), ("reclaim", "auth_admin_keep")):
+for name, active in (("prepare", "yes"), ("reclaim", "auth_admin")):
     action = actions[f"com.omacast.guard.{name}"]
     defaults = action.find("defaults")
     assert defaults is not None

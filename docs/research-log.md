@@ -2367,8 +2367,8 @@ prove Omacast ownership.
 Guard API 14 keeps automatic startup fail-closed and adds a separate Polkit
 `reclaim` action used only by the existing explicit Restore workflow. The
 unprivileged controller first detects a matching interface, so ordinary state
-recovery causes no authorization prompt. After administrator approval, the
-fixed helper validates the caller UID and selected managed adapter, refuses to
+recovery causes no authorization prompt. After fresh administrator approval,
+the fixed helper validates the caller UID and selected managed adapter, refuses to
 run while any protected Omacast root session exists, and prevalidates every
 candidate before any deletion. Each candidate must match the selected adapter,
 remain a down `P2P-client`, report `Not connected.`, and have neither IPv4 nor
