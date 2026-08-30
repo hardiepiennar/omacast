@@ -64,16 +64,21 @@ class ReceiverDiscoveryTest(unittest.TestCase):
             return [
                 SimpleNamespace(address="02:00:00:00:00:01", name="Living Room Fire TV", details="manufacturer=Amazon; wfd_ies=(<[byte 0x00, 0x11]>,)"),
                 SimpleNamespace(address="02:00:00:00:00:02", name="Nearby printer", details="manufacturer=Printer; wfd_ies=(<@ay []>,)"),
-                SimpleNamespace(address="00:11:22:33:44:55", name="[TV] Generic display", details="wfd_ies=(<[byte 0x00, 0x11]>,)"),
+                SimpleNamespace(address="02:00:00:00:00:03", name="Someone's phone", details="manufacturer=Phone"),
+                SimpleNamespace(address="00:11:22:33:44:55", name="[TV] Generic display", details="wfd_ies=(<[byte 0x00, 0x11]>,); sink_rtsp_port=7236"),
             ]
 
         payload = discovery_payload(FluxCastReceiverDiscovery(interface="wlan42", scanner=scanner), timeout_seconds=6)
         self.assertEqual(calls, [("wlan42", 6)])
+        self.assertEqual(len(payload["receivers"]), 2)
         self.assertEqual(payload["receivers"][0]["id"], "02:00:00:00:00:01")
         self.assertEqual(payload["receivers"][0]["kind"], "fire-tv")
-        self.assertEqual(len(payload["receivers"]), 1)
+        # A non-Amazon sink is a real cast target and keeps the generic kind.
+        self.assertEqual(payload["receivers"][1]["id"], "00:11:22:33:44:55")
+        self.assertEqual(payload["receivers"][1]["kind"], "wfd-display")
+        # An empty WFD IE and a peer with no WFD advertisement stay excluded.
         self.assertNotIn("02:00:00:00:00:02", [receiver["id"] for receiver in payload["receivers"]])
-        self.assertNotIn("00:11:22:33:44:55", [receiver["id"] for receiver in payload["receivers"]])
+        self.assertNotIn("02:00:00:00:00:03", [receiver["id"] for receiver in payload["receivers"]])
 
     def test_fluxcast_diagnostics_are_discarded_instead_of_collected(self) -> None:
         def scanner(*, interface: str | None, timeout: int):
