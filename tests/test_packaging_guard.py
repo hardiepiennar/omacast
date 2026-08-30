@@ -829,6 +829,14 @@ reclaim_orphan_interfaces
         self.assertIn('output directory must not be group- or world-writable', builder)
         self.assertIn("trap 'exit 143' TERM", builder)
 
+    def test_release_gates_reject_each_removed_capture_backend(self) -> None:
+        audit = (ROOT / "scripts" / "audit-release-artifact").read_text(encoding="utf-8")
+        lifecycle = (ROOT / "scripts" / "test-package-lifecycle").read_text(encoding="utf-8")
+        for gate in (audit, lifecycle):
+            self.assertIn("for removed_backend in portal wf-recorder x11grab; do", gate)
+            self.assertIn('grep -Fq -- "$removed_backend"', gate)
+            self.assertNotIn("'portal|wf-recorder|x11grab'", gate)
+
     def test_release_builder_replaces_output_links_without_touching_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
