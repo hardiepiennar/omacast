@@ -173,6 +173,23 @@ for removed_payload in \
   [[ ! -e "$removed_payload" ]] || die "package retains legacy integration payload: ${removed_payload#"$audit_root"}"
 done
 PYTHONPATH="$site_packages" "$engine" --help > "$audit_root/fluxcast-help.txt"
+engine_contract="$(PYTHONPATH="$site_packages" "$engine" --omacast-contract-json)"
+python3 -c '
+import json, sys
+actual = json.loads(sys.argv[1])
+expected = {
+    "schemaVersion": 1,
+    "kind": "omacast-engine-contract",
+    "apiRevision": 1,
+    "capture": "gpu-screen-recorder",
+    "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
+    "network": {"backend": "supplicant", "mode": "connect", "guardedSessionRequired": True},
+    "telemetry": {"controllerDescriptorsRequired": True},
+}
+assert json.dumps(actual, sort_keys=True, separators=(",", ":")) == json.dumps(
+    expected, sort_keys=True, separators=(",", ":")
+)
+' "$engine_contract" || die "packaged engine contract is incompatible"
 PYTHONPATH="$site_packages" "$engine" --doctor > "$audit_root/fluxcast-doctor.txt"
 PYTHONPATH="$site_packages" "$engine" --doctor-json > "$audit_root/fluxcast-doctor.json"
 python3 - "$audit_root/fluxcast-doctor.json" <<'PY' \

@@ -6,14 +6,14 @@ import tempfile
 import unittest
 
 from omarchy_cast.command import CommandResult
-from omarchy_cast.discovery import discover_host, parse_hyprland_monitors, parse_iw_link, parse_nmcli_devices
+from omarchy_cast.discovery import ENGINE_CONTRACT, discover_host, parse_hyprland_monitors, parse_iw_link, parse_nmcli_devices
 
 
 class DiscoveryTest(unittest.TestCase):
     @staticmethod
     def ready_runner(args, *, timeout=5.0):
         if args[0] == "fluxcast":
-            return CommandResult(tuple(args), 0, "--omacast-session --wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder --wfd-supplicant-network-trigger --wfd-supplicant-broker --wfd-progress-log gpu-screen-recorder", "")
+            return CommandResult(tuple(args), 0, json.dumps(ENGINE_CONTRACT), "")
         if Path(args[0]).name == "omarchy-cast-guard":
             return CommandResult(tuple(args), 0, json.dumps({"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 14}), "")
         if args[0] == "nmcli":
@@ -104,7 +104,7 @@ class DiscoveryTest(unittest.TestCase):
                 if Path(args[0]).name == "omarchy-cast-guard":
                     return CommandResult(tuple(args), 2, "", "Usage: old helper")
                 if args[0] == "fluxcast":
-                    return CommandResult(tuple(args), 0, "--wfd-p2p-backend --wfd-supplicant-mode --wfd-video-encoder", "")
+                    return CommandResult(tuple(args), 0, "--omacast-session --wfd-p2p-backend gpu-screen-recorder", "")
                 return self.ready_runner(args, timeout=timeout)
 
             snapshot = discover_host(
@@ -129,8 +129,9 @@ class DiscoveryTest(unittest.TestCase):
 
             def old_capture_runner(args, *, timeout=5.0):
                 if args[0] == "fluxcast":
-                    ready = self.ready_runner(args, timeout=timeout)
-                    return CommandResult(tuple(args), 0, ready.stdout + " portal x11grab gst-x11", "")
+                    contract = dict(ENGINE_CONTRACT)
+                    contract["capture"] = "portal"
+                    return CommandResult(tuple(args), 0, json.dumps(contract), "")
                 return self.ready_runner(args, timeout=timeout)
 
             snapshot = discover_host(
@@ -143,6 +144,42 @@ class DiscoveryTest(unittest.TestCase):
         self.assertFalse(snapshot["readiness"]["ready"])
         self.assertTrue(snapshot["readiness"]["setupRequired"])
         self.assertIn("engine-incompatible", {issue["code"] for issue in snapshot["readiness"]["issues"]})
+
+    def test_readiness_rejects_help_token_false_positives_and_open_contracts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            helpers = root / "helpers"
+            helpers.mkdir()
+            self.install_fake_helpers(helpers)
+
+            for payload in (
+                "--omacast-session --wfd-p2p-backend --wfd-supplicant-mode "
+                "--wfd-video-encoder gpu-screen-recorder",
+                json.dumps({**ENGINE_CONTRACT, "unexpected": True}),
+                json.dumps({**ENGINE_CONTRACT, "apiRevision": True}),
+                json.dumps({
+                    **ENGINE_CONTRACT,
+                    "profile": {**ENGINE_CONTRACT["profile"], "fps": 60.0},
+                }),
+                json.dumps({"nested": [[[[["too deep"]]]]]}),
+            ):
+                with self.subTest(payload=payload[:40]):
+                    def incompatible_runner(args, *, timeout=5.0):
+                        if args[0] == "fluxcast":
+                            return CommandResult(tuple(args), 0, payload, "")
+                        return self.ready_runner(args, timeout=timeout)
+
+                    snapshot = discover_host(
+                        runner=incompatible_runner,
+                        render_root=root / "dri",
+                        guard_root=helpers,
+                        command_finder=lambda name: f"/usr/bin/{name}",
+                    )
+                    self.assertFalse(snapshot["readiness"]["ready"])
+                    self.assertIn(
+                        "engine-incompatible",
+                        {issue["code"] for issue in snapshot["readiness"]["issues"]},
+                    )
 
     def test_readiness_rejects_buggy_guard_api_ten(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

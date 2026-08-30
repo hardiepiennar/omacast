@@ -1,0 +1,95 @@
+From 0481589a96a648426f185c23b0f6fdb7b7ef4bf9 Mon Sep 17 00:00:00 2001
+From: Omacast Maintainers <4540086+hardiepienaar@users.noreply.github.com>
+Date: Mon, 31 Aug 2026 06:58:16 +1200
+Subject: [PATCH] Expose exact Omacast engine contract
+
+---
+ src/main.py                    | 18 ++++++++++++++++++
+ tests/test_omacast_contract.py | 22 ++++++++++++++++++++++
+ 2 files changed, 40 insertions(+)
+
+diff --git a/src/main.py b/src/main.py
+index 7112c2f..2d21a12 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -1,6 +1,7 @@
+ """Omacast's pinned, guarded Wi-Fi Display engine entry point."""
+ 
+ import argparse
++import json
+ import os
+ import re
+ import signal
+@@ -19,6 +20,9 @@ def parse_args() -> argparse.Namespace:
+     general.add_argument("--doctor-json", action="store_true", dest="doctor_json")
+     general.add_argument("--omacast-session", default=None, dest="omacast_session",
+                          help="Controller-issued guarded session identifier")
++    general.add_argument("--omacast-contract-json", action="store_true",
++                         dest="omacast_contract_json",
++                         help="Print the versioned Omacast engine contract and exit")
+ 
+     stream = parser.add_argument_group("Omacast Safe profile")
+     stream.add_argument("--output-res", default=None, dest="output_res")
+@@ -105,6 +109,20 @@ def _validate_omacast_session(args: argparse.Namespace) -> None:
+ 
+ def main() -> None:
+     args = parse_args()
++    if getattr(args, "omacast_contract_json", False):
++        print(json.dumps({
++            "schemaVersion": 1,
++            "kind": "omacast-engine-contract",
++            "apiRevision": 1,
++            "capture": "gpu-screen-recorder",
++            "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
++            "network": {
++                "backend": "supplicant", "mode": "connect",
++                "guardedSessionRequired": True,
++            },
++            "telemetry": {"controllerDescriptorsRequired": True},
++        }, sort_keys=True, separators=(",", ":")))
++        return
+     if args.doctor or args.doctor_json:
+         from diagnostics import print_report, run_diagnostics
+         report = run_diagnostics(skip_firewall=True, p2p_backend="supplicant")
+diff --git a/tests/test_omacast_contract.py b/tests/test_omacast_contract.py
+index 4882b18..b4af13c 100644
+--- a/tests/test_omacast_contract.py
++++ b/tests/test_omacast_contract.py
+@@ -1,5 +1,6 @@
+ import contextlib
+ import io
++import json
+ import os
+ from pathlib import Path
+ import sys
+@@ -73,6 +74,27 @@ class GuardedLaunchContractTest(unittest.TestCase):
+                 with mock.patch.object(sys, "argv", ["fluxcast", option]), self.assertRaises(SystemExit):
+                     main.parse_args()
+ 
++    def test_versioned_contract_is_exact_and_side_effect_free(self):
++        output = io.StringIO()
++        with mock.patch.object(sys, "argv", ["fluxcast", "--omacast-contract-json"]), \
++                contextlib.redirect_stdout(output), mock.patch(
++                    "wfd.start_experimental_backend"
++                ) as start:
++            main.main()
++        self.assertEqual(json.loads(output.getvalue()), {
++            "schemaVersion": 1,
++            "kind": "omacast-engine-contract",
++            "apiRevision": 1,
++            "capture": "gpu-screen-recorder",
++            "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
++            "network": {
++                "backend": "supplicant", "mode": "connect",
++                "guardedSessionRequired": True,
++            },
++            "telemetry": {"controllerDescriptorsRequired": True},
++        })
++        start.assert_not_called()
++
+ 
+ class SupportedPipelineTest(unittest.TestCase):
+     def test_start_has_only_the_gpu_screen_recorder_route(self):
+-- 
+2.55.0
+

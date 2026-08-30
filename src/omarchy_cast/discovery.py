@@ -9,7 +9,7 @@ from pathlib import Path
 import shutil
 from typing import Callable
 
-from .bounds import bounded_text
+from .bounds import BoundError, bounded_text, validate_json_budget
 from .command import CommandResult, Runner, run_command
 
 
@@ -125,6 +125,34 @@ REQUIRED_COMMANDS = (
 COMPANION_COMMANDS = frozenset(name for name in REQUIRED_COMMANDS if name != "hyprctl")
 HELPER_NAMES = ("omarchy-cast-guard", "omarchy-cast-guard-recover", "omarchy-cast-supplicant-broker")
 GUARD_API_REVISION = 14
+ENGINE_CONTRACT = {
+    "schemaVersion": 1,
+    "kind": "omacast-engine-contract",
+    "apiRevision": 1,
+    "capture": "gpu-screen-recorder",
+    "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
+    "network": {
+        "backend": "supplicant",
+        "mode": "connect",
+        "guardedSessionRequired": True,
+    },
+    "telemetry": {"controllerDescriptorsRequired": True},
+}
+
+
+def _exact_json_value(actual: object, expected: object) -> bool:
+    """Compare JSON values without Python's bool/int numeric coercions."""
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            _exact_json_value(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _exact_json_value(left, right) for left, right in zip(actual, expected)
+        )
+    return actual == expected
 
 
 def _check_command(name: str, finder: Callable[[str], str | None]) -> dict[str, object]:
@@ -158,11 +186,24 @@ def _result_error(result: CommandResult) -> str:
 
 
 def _engine_capabilities(runner: Runner) -> dict[str, object]:
-    result = runner(("fluxcast", "--help"))
-    required = ("--omacast-session", "--wfd-p2p-backend", "--wfd-supplicant-mode", "--wfd-video-encoder", "--wfd-supplicant-network-trigger", "--wfd-supplicant-broker", "--wfd-progress-log", "gpu-screen-recorder")
-    forbidden = ("portal", "wf-recorder", "x11grab", "gst-x11")
-    available = result.returncode == 0 and all(token in result.stdout for token in required) and not any(token in result.stdout for token in forbidden)
-    return {"schemaVersion": 1, "installed": result.returncode == 0, "compatible": available, "requiredTokens": list(required), "forbiddenTokens": list(forbidden)}
+    result = runner(("fluxcast", "--omacast-contract-json"))
+    payload: object = None
+    if result.returncode == 0:
+        try:
+            payload = json.loads(result.stdout)
+            validate_json_budget(
+                payload, max_depth=4, max_nodes=24,
+                max_collection_items=8, max_string_chars=64,
+            )
+        except (json.JSONDecodeError, BoundError):
+            payload = None
+    compatible = _exact_json_value(payload, ENGINE_CONTRACT)
+    return {
+        "schemaVersion": 1,
+        "installed": result.returncode != 127,
+        "compatible": compatible,
+        "apiRevision": 1 if compatible else None,
+    }
 
 
 def _readiness(

@@ -39,3 +39,4 @@
 0045-Advertise-only-defined-WFD-source-subelements.patch
 0046-Limit-Omacast-WFD-capture-to-GPU-Screen-Recorder.patch
 0047-Restrict-engine-to-guarded-Omacast-sessions.patch
+0048-Expose-exact-Omacast-engine-contract.patch

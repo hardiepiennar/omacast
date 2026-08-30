@@ -2444,3 +2444,19 @@ each, kills the child on either overflow or deadline, and exposes only bounded
 decoded text to the property parsers and error response. Regressions cover
 simultaneous 60 KiB stdout/stderr pressure, a stream one byte over quota, and a
 child that outlives its deadline. This changes no package or helper API.
+
+### Exact companion compatibility contract (2026-08-31)
+
+Controller readiness previously inferred engine compatibility by finding
+required words and rejecting legacy words in `fluxcast --help`. That was not a
+behavioral contract: fabricated prose could satisfy it, harmless formatting
+could break it, and it could not prove profile values or guarded ownership.
+
+Production patch 48 adds a side-effect-free `--omacast-contract-json` response
+with a closed schema covering contract revision, capture backend, exact Safe
+profile, guarded supplicant mode, and controller-owned telemetry. The
+controller bounds JSON depth, nodes, collections, and strings, then requires
+exact structural equality; extra fields, wrong values, deeply nested input,
+old help text, and malformed JSON are incompatible. The built-package audit
+executes and compares the same contract. Companion revision 69 requires engine
+contract API 1 while retaining guard API 14.
