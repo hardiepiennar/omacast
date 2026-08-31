@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Make automatic P2P channel selection reach the privileged supplicant broker,
+  not only the FluxCast command. The closed launch plan now carries one
+  canonical P2P frequency, with a regression proving that a 5745 MHz station
+  reaches the guard as automatic (`0`) while the proven 2.4 GHz hint is kept.
 - Keep Q and the Cancel button active while a selected receiver waits for
   progressive discovery to stop, cancel that queued handoff without starting
   a session, and restore keyboard focus across connection state changes. Stop

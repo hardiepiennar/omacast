@@ -107,6 +107,31 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(payload["dryRun"])
 
+    def test_connect_passes_the_canonical_p2p_frequency_to_the_guard(self) -> None:
+        base_host = {
+            "schemaVersion": 1,
+            "checks": [{"name": name, "status": "ok"} for name in ("fluxcast", "nmcli", "gpu-screen-recorder", "ffmpeg")],
+            "monitors": [{"name": "eDP-1", "focused": True}],
+            "defaultSink": "alsa_output.example",
+            "renderNodes": ["/dev/dri/renderD128"],
+        }
+        for station_frequency, expected_p2p_frequency in ((2412, 2412), (5745, 0)):
+            with self.subTest(station_frequency=station_frequency):
+                host = {**base_host, "wifiLinks": [{
+                    "interface": "wlan42", "connected": True,
+                    "frequency_mhz": station_frequency,
+                }]}
+                completed = {"schemaVersion": 1, "ok": True, "transport": {"status": "completed"}}
+                with patch("omarchy_cast.cli.discover_host", return_value=host), patch(
+                    "omarchy_cast.cli.GuardedTransportAdapter"
+                ) as adapter, patch("omarchy_cast.cli.TransportTestSupervisor") as supervisor:
+                    supervisor.return_value.run.return_value = completed
+                    code, payload = self.invoke(["connect", "--peer", "AA:BB:CC:DD:EE:FF"])
+
+                self.assertEqual((code, payload), (0, completed))
+                request = adapter.call_args.args[0]
+                self.assertEqual(request.frequency_mhz, expected_p2p_frequency)
+
     def test_receiver_fixture_and_live_scan_share_the_ui_contract(self) -> None:
         code, payload = self.invoke(["receivers", "--fixture"])
         self.assertEqual(code, 0)

@@ -2795,3 +2795,25 @@ the cancellation authority; a best-effort bounded `stop-requested` history
 event adds timing evidence without allowing a busy history lock to block Stop.
 The source/sink receiver's separate P2P failures are not reclassified by this
 UI correction. No live receiver operation was run for the fix.
+
+### Privileged P2P frequency propagation regression (2026-08-31)
+
+The earlier automatic-channel conclusion was incomplete. The controller's
+FluxCast command used `0` for a 5/6 GHz station, but its privileged
+`GuardRequest` independently copied the raw station frequency. The
+session-scoped broker then supplied that nonzero value to supplicant as a
+forced channel. An installed Samsung attempt made the split observable: the
+preview path selected automatic operation while the guard and broker forced
+5745 MHz, and supplicant returned `ConnectChannelUnsupported` before group
+formation. The earlier section remains as experiment history, but its claim
+that the complete production path forwarded `0` is superseded.
+
+The launch plan now carries the observed station frequency and one canonical
+P2P frequency as distinct closed fields. The FluxCast command, production-plan
+validator, controller-to-guard request, and broker therefore share the same
+value. Validation independently reconstructs the policy: 2400–2500 MHz may be
+retained as the proven coexistence hint and every other station frequency must
+map to `0`. A CLI-boundary regression proves both 2412-to-2412 and 5745-to-0 at
+the actual `GuardRequest`, in addition to command and transport-plan coverage.
+This correction does not yet prove Samsung compatibility; one installed
+automatic-channel receiver test remains required.

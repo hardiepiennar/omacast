@@ -37,7 +37,7 @@ def plan() -> dict[str, object]:
         "schemaVersion": 1, "kind": "launch-plan", "readOnly": True,
         "execution": {"allowed": False, "reason": "read-only launch preview"},
         "profile": {"label": "Safe", "width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
-        "selection": {"peer": "00:11:22:33:44:55", "mode": "mirror", "source": "display", "wifiInterface": "wlan42", "wifiFrequencyMhz": 2412, "monitor": "eDP-1", "audioSource": "sink.monitor", "videoEncoder": "vaapi"},
+        "selection": {"peer": "00:11:22:33:44:55", "mode": "mirror", "source": "display", "wifiInterface": "wlan42", "wifiFrequencyMhz": 2412, "p2pFrequencyMhz": 2412, "monitor": "eDP-1", "audioSource": "sink.monitor", "videoEncoder": "vaapi"},
         "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "7M", "--wfd-video-encoder", "vaapi", "--wfd-p2p-backend", "supplicant", "--wfd-supplicant-mode", "connect", "--wfd-peer", "00:11:22:33:44:55", "--wfd-interface", "wlan42", "--wfd-timeout", "15", "--wfd-supplicant-frequency", "2412", "--wfd-no-firewall", "--monitor", "eDP-1", "--wfd-capture-backend", "gpu-screen-recorder", "--wfd-audio-device", "sink.monitor"],
         "warnings": [],
     }
@@ -108,6 +108,12 @@ class TransportTest(unittest.TestCase):
         boolean_execution["execution"] = {"allowed": 0, "reason": "read-only launch preview"}
         with self.assertRaisesRegex(TransportError, "execution permission"):
             validate_transport_plan(boolean_execution)
+
+        mismatched_frequency = plan()
+        mismatched_frequency["selection"] = dict(mismatched_frequency["selection"])
+        mismatched_frequency["selection"]["p2pFrequencyMhz"] = 0
+        with self.assertRaisesRegex(TransportError, "P2P frequency does not match"):
+            validate_transport_plan(mismatched_frequency)
         numeric_execution = executable_plan_fixture()
         numeric_execution["execution"] = {"allowed": 1, "reason": "guarded-session-supervisor"}
         with self.assertRaisesRegex(TransportError, "execution permission"):

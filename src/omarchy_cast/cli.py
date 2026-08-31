@@ -281,14 +281,16 @@ def main(argv: list[str] | None = None) -> int:
             session_id = uuid4().hex
             if args.duration != 0 and not 60 <= args.duration <= 86_400:
                 raise SessionError("a bounded guarded session must run between 60 seconds and 24 hours")
-            frequency = selection.get("wifiFrequencyMhz")
+            p2p_frequency = selection.get("p2pFrequencyMhz")
+            if type(p2p_frequency) is not int:
+                raise SessionError("launch plan did not provide a safe P2P frequency")
             request = GuardRequest(
                 1,
                 session_id,
                 os.getuid(),
                 selection["wifiInterface"],
                 peer,
-                frequency if isinstance(frequency, int) else 0,
+                p2p_frequency,
                 GUARD_LEASE_SECONDS,
             )
             result = TransportTestSupervisor(GuardedTransportAdapter(request)).run(peer=peer, mode=mode, profile=profile, plan=executable_plan(preview), timeout_seconds=args.duration or None, session_id=session_id, executable=True, production=True)

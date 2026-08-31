@@ -102,7 +102,8 @@ def build_launch_plan(
         "profile": selected_profile,
         "selection": {
             "peer": peer, "mode": mode, "source": source, "wifiInterface": wifi["interface"],
-            "wifiFrequencyMhz": frequency, "monitor": output["name"], "audioSource": sink + ".monitor",
+            "wifiFrequencyMhz": frequency, "p2pFrequencyMhz": supplicant_frequency,
+            "monitor": output["name"], "audioSource": sink + ".monitor",
             "videoEncoder": encoder,
         },
         "command": command,

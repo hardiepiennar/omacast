@@ -25,6 +25,7 @@ class EngineTest(unittest.TestCase):
         self.assertIn("1280x720", plan["command"])
         frequency_flag = plan["command"].index("--wfd-supplicant-frequency")
         self.assertEqual(plan["command"][frequency_flag + 1], "2412")
+        self.assertEqual(plan["selection"]["p2pFrequencyMhz"], 2412)
         self.assertEqual(plan["warnings"], [])
         self.assertEqual(plan["selection"]["peer"], "AA:BB:CC:DD:EE:FF")
 
@@ -36,6 +37,7 @@ class EngineTest(unittest.TestCase):
                 plan = build_launch_plan(host, peer="AA:BB:CC:DD:EE:FF", mode="mirror", profile="safe")
                 frequency_flag = plan["command"].index("--wfd-supplicant-frequency")
                 self.assertEqual(plan["command"][frequency_flag + 1], "0")
+                self.assertEqual(plan["selection"]["p2pFrequencyMhz"], 0)
                 self.assertEqual(plan["profile"]["fps"], 60)
                 self.assertEqual(len(plan["warnings"]), 1)
 

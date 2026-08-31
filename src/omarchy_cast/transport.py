@@ -305,7 +305,7 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
         for key, value in expected_profile.items()
     ):
         raise TransportError("transport plan has an unsupported profile")
-    expected_selection = {"peer", "mode", "source", "wifiInterface", "wifiFrequencyMhz", "monitor", "audioSource", "videoEncoder"}
+    expected_selection = {"peer", "mode", "source", "wifiInterface", "wifiFrequencyMhz", "p2pFrequencyMhz", "monitor", "audioSource", "videoEncoder"}
     if not isinstance(selection, Mapping) or set(selection) != expected_selection:
         raise TransportError("transport plan has an unexpected selection")
     try:
@@ -317,6 +317,7 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
     audio_source = selection.get("audioSource")
     encoder = selection.get("videoEncoder")
     frequency = selection.get("wifiFrequencyMhz")
+    p2p_frequency = selection.get("p2pFrequencyMhz")
     if selection.get("mode") != "mirror" or selection.get("source") != "display":
         raise TransportError("transport plan has an unsupported source selection")
     if not isinstance(interface, str) or not _INTERFACE.fullmatch(interface):
@@ -329,13 +330,15 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
         raise TransportError("transport plan encoder is invalid")
     if frequency is not None and (type(frequency) is not int or not 2300 <= frequency <= 7125):
         raise TransportError("transport plan Wi-Fi frequency is invalid")
-    supplicant_frequency = frequency if isinstance(frequency, int) and 2400 <= frequency <= 2500 else 0
+    expected_p2p_frequency = frequency if type(frequency) is int and 2400 <= frequency <= 2500 else 0
+    if type(p2p_frequency) is not int or p2p_frequency != expected_p2p_frequency:
+        raise TransportError("transport plan P2P frequency does not match its Wi-Fi selection")
     expected_command = [
         "fluxcast", "--protocol", "wfd", "--output-res", "1280x720",
         "--fps", "60", "--bitrate", "7M", "--wfd-video-encoder", encoder,
         "--wfd-p2p-backend", "supplicant", "--wfd-supplicant-mode", "connect",
         "--wfd-peer", peer, "--wfd-interface", interface, "--wfd-timeout", "15",
-        "--wfd-supplicant-frequency", str(supplicant_frequency), "--wfd-no-firewall",
+        "--wfd-supplicant-frequency", str(p2p_frequency), "--wfd-no-firewall",
         "--monitor", monitor, "--wfd-capture-backend", "gpu-screen-recorder",
         "--wfd-audio-device", audio_source,
     ]

@@ -1215,6 +1215,11 @@ waiting in Display Mirroring and understands any temporary network change.
 - **Encoding:** H.264/AAC through the accepted GSR/FFmpeg display pipeline.
 - **P2P role:** Fire TV as group owner; laptop as client via direct supplicant
   backend on the proven hardware.
+- **P2P frequency:** retain a connected 2.4 GHz station frequency only as the
+  proven coexistence hint; use automatic selection otherwise. The launch plan
+  records raw station frequency separately from the canonical P2P value, and
+  both the media command and privileged broker must consume that canonical
+  value.
 - **Product boundary:** QML UI -> unprivileged controller -> supervised session
   -> narrowly scoped privileged networking -> FluxCast.
 - **Omarchy format:** root `manifest.json`, schema version 1, validated by the
