@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from omarchy_cast.command import CommandResult
-from omarchy_cast.guard import GuardError, GuardRequest, HELPER_PATH, orphan_parent_interfaces, prepare_command, read_guard_status, reclaim_command, reclaim_orphan_interfaces, validate_helper_result, validate_reclaim_result
+from omarchy_cast.guard import GUARD_PATH, GuardError, GuardRequest, HELPER_PATH, orphan_parent_interfaces, prepare_command, read_guard_status, reclaim_command, reclaim_orphan_interfaces, validate_helper_result, validate_reclaim_result
 
 
 class GuardContractTest(unittest.TestCase):
@@ -38,7 +38,7 @@ class GuardContractTest(unittest.TestCase):
 
     def test_reclaim_command_is_fixed_and_validated(self) -> None:
         self.assertEqual(reclaim_command(uid=1000, interface="wlan42"), (
-            HELPER_PATH, "reclaim", "--schema-version", "1",
+            GUARD_PATH, "reclaim", "--schema-version", "1",
             "--uid", "1000", "--interface", "wlan42",
         ))
         for values in ({"uid": 0, "interface": "wlan42"}, {"uid": True, "interface": "wlan42"}, {"uid": 1000, "interface": "wlan0;id"}):
@@ -75,7 +75,7 @@ class GuardContractTest(unittest.TestCase):
             )
 
         def reclaim_runner(args, *, timeout=5.0):
-            self.assertEqual(args[:3], ("pkexec", HELPER_PATH, "reclaim"))
+            self.assertEqual(args[:3], ("pkexec", GUARD_PATH, "reclaim"))
             return CommandResult(tuple(args), 0, json.dumps({
                 "schemaVersion": 1, "kind": "omarchy-cast-guard-reclaim-status",
                 "ok": True, "reclaimed": 1,

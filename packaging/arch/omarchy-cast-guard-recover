@@ -2,10 +2,31 @@
 # Independent, bounded cleanup for a helper that was killed or orphaned.
 set -euo pipefail
 [[ ${EUID} -eq 0 && $# -eq 6 ]] || exit 2
+readonly status_ack_timeout_seconds=15
 startup_seconds="$1"; lease_seconds="$2"; session="$3"; token="$4"; uid="$5"; interface="$6"
 readonly max_p2p_interfaces=64 max_interfaces_file_bytes=1024
 [[ "$startup_seconds" =~ ^[0-9]{2,4}$ && "$startup_seconds" -ge 60 && "$startup_seconds" -le 600 && "$lease_seconds" =~ ^[0-9]{2,4}$ && "$lease_seconds" -ge 60 && "$lease_seconds" -le 1800 && "$session" =~ ^[a-f0-9]{32}$ && "$token" =~ ^[a-f0-9]{48}$ && "$uid" =~ ^[1-9][0-9]{3,9}$ && "$interface" =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || exit 2
-root="/run/omarchy-cast/$session"; user_root="$root/user"; token_file="$root/token"; ready_file="$root/ready.json"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; stop_file="$user_root/stop"; heartbeat_fd=''; network_root='/run/systemd/network'; network_file="$network_root/80-omarchy-cast-$session.network"; networkd_state_file="$root/networkd-units"; networkd_state_pending_file="$root/networkd-units.pending"; network_root_marker="$root/network-root-created"; interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"; recovery_ready_file="$root/recovery-ready"; broker_unit="omarchy-cast-supplicant-$session.service"; broker_socket="$root/supplicant.sock"; broker_wfd_file="$root/supplicant-wfd-owned"; recovery_cleanup_ok=true
+root="/run/omarchy-cast/$session"; user_root="$root/user"; token_file="$root/token"; ready_file="$root/status.json"; status_ack_file="$user_root/status-ack"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; stop_file="$user_root/stop"; heartbeat_fd=''; network_root='/run/systemd/network'; network_file="$network_root/80-omarchy-cast-$session.network"; networkd_state_file="$root/networkd-units"; networkd_state_pending_file="$root/networkd-units.pending"; network_root_marker="$root/network-root-created"; interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"; recovery_ready_file="$root/recovery-ready"; broker_unit="omarchy-cast-supplicant-$session.service"; broker_socket="$root/supplicant.sock"; broker_wfd_file="$root/supplicant-wfd-owned"; recovery_cleanup_ok=true
+publish_status() {
+  local ok="$1" phase="$2" error="${3:-null}" payload temporary="$root/.status.$BASHPID"
+  payload="$(printf '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":%s,"phase":"%s","sessionId":"%s","error":%s}' "$ok" "$phase" "$session" "$error")"
+  (umask 077; printf '%s\n' "$payload" > "$temporary") || return 1
+  chmod 644 "$temporary" || { rm -f -- "$temporary"; return 1; }
+  mv -T -- "$temporary" "$ready_file" || { rm -f -- "$temporary"; return 1; }
+}
+status_ack_valid() {
+  local metadata
+  [[ -f "$status_ack_file" && ! -L "$status_ack_file" ]] || return 1
+  metadata="$(stat -c '%F:%u:%a:%h:%s' "$status_ack_file" 2>/dev/null)" || return 1
+  [[ "$metadata" == "regular file:$uid:600:1:0" ]]
+}
+finalize_status() {
+  local deadline=$((SECONDS + status_ack_timeout_seconds))
+  while (( SECONDS <= deadline )); do status_ack_valid && break; sleep 0.1; done
+  status_ack_valid && rm -f -- "$status_ack_file" || true
+  rm -f -- "$ready_file" || true
+  rmdir --ignore-fail-on-non-empty "$user_root" "$root" 2>/dev/null || true
+}
 valid_recorded_interface() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; }
 bounded_session_interfaces() {
   timeout --signal=KILL 5s iw dev | awk -v prefix="p2p-$interface-" -v limit="$max_p2p_interfaces" '
@@ -131,7 +152,6 @@ recover_session() {
   [[ -f "$network_root_marker" ]] && remove_network_root=true
 
   remove_recovery_file "$network_file"
-  remove_recovery_file "$ready_file"
   remove_recovery_file "$trigger_file"
   remove_recovery_file "$heartbeat_file"
   remove_recovery_file "$stop_file"
@@ -150,7 +170,6 @@ recover_session() {
   fi
   if [[ "$recovery_cleanup_ok" == true ]]; then remove_recovery_file "$recovery_ready_file"; fi
   if [[ "$recovery_cleanup_ok" == true ]]; then remove_recovery_file "$token_file"; fi
-  rmdir --ignore-fail-on-non-empty "$user_root" "$root" 2>/dev/null || true
   [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true
   return 0
 }
@@ -166,4 +185,10 @@ while [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]]; do
 done
 [[ -r "$token_file" && "$(<"$token_file")" == "$token" ]] || exit 0
 recover_session
+if [[ "$recovery_cleanup_ok" == true ]]; then
+  publish_status true cleaned null
+else
+  publish_status false error '"independent session recovery was incomplete"'
+fi
+finalize_status
 [[ "$recovery_cleanup_ok" == true ]]

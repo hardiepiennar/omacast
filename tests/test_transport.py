@@ -492,6 +492,30 @@ class TransportTest(unittest.TestCase):
         self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(), request, StatusDrainFixture("x" * 65_537, overflowed=True)))
         self.assertFalse(GuardedTransportAdapter._cleanup_confirmed(process(), request, StatusDrainFixture("[" * 2_000 + "0" + "]" * 2_000)))
 
+    def test_root_owned_terminal_status_requires_private_acknowledgment(self) -> None:
+        from omarchy_cast.guard import GuardError, GuardRequest
+        request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
+        adapter = GuardedTransportAdapter(request, env={})
+        cleaned = {
+            "schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True,
+            "phase": "cleaned", "sessionId": "a" * 32, "error": None,
+        }
+        failed = {**cleaned, "ok": False, "phase": "error", "error": "cleanup incomplete"}
+        with (
+            patch("omarchy_cast.transport.read_guard_status", side_effect=[None, cleaned]),
+            patch("omarchy_cast.transport.time.sleep"),
+            patch.object(adapter, "_write_private_marker", return_value=True) as acknowledge,
+        ):
+            self.assertTrue(adapter._wait_cleanup_status(timeout=1))
+        acknowledge.assert_called_once_with(f"/run/omarchy-cast/{'a' * 32}/user/status-ack")
+        with (
+            patch("omarchy_cast.transport.read_guard_status", return_value=failed),
+            patch.object(adapter, "_write_private_marker", return_value=True),
+        ):
+            self.assertFalse(adapter._wait_cleanup_status(timeout=1))
+        with patch("omarchy_cast.transport.read_guard_status", side_effect=GuardError("unsafe")):
+            self.assertFalse(adapter._wait_cleanup_status(timeout=1))
+
     def test_root_owned_helper_cleanup_does_not_mask_setup_failure(self) -> None:
         from omarchy_cast.guard import GuardRequest
         request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)

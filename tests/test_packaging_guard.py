@@ -34,7 +34,7 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         version = subprocess.run(("bash", str(guard), "--version"), check=False, capture_output=True, text=True)
         self.assertEqual(version.returncode, 0, version.stderr)
-        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 14})
+        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 15})
         source = guard.read_text(encoding="utf-8")
         self.assertIn('[[ "$action" == prepare ]]', source)
         self.assertIn('[[ "$action" == reclaim ]]', source)
@@ -61,7 +61,7 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("systemd network runtime directory is unsafe", source)
         self.assertIn('restore_networkd_state', source)
         self.assertIn('runtime_dirs_created=false', source)
-        self.assertIn("api_revision=14", source)
+        self.assertIn("api_revision=15", source)
         self.assertIn('user_root="$session_root/user"', source)
         self.assertNotIn('user_root="/run/user/', source)
         self.assertIn('install -d -m711 "$session_root"', source)
@@ -142,12 +142,13 @@ session_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 token=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 uid=1000
 interface=wlan0
-setsid() { install -m600 /dev/null "$recovery_ready_file"; sleep 2; }
+recovery_unit=omarchy-cast-recovery-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service
+systemd-run() { install -m600 /dev/null "$recovery_ready_file"; }
+systemctl() { [[ "$1" == is-active ]]; }
 arm_recovery
 recovery_ready_marker_valid
-for child in $(jobs -pr); do kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; done
 rm -f -- "$recovery_ready_file"
-setsid() { return 1; }
+systemd-run() { return 1; }
 if arm_recovery; then exit 3; fi
 [[ ! -e "$recovery_ready_file" ]]
 '''
@@ -172,6 +173,40 @@ if arm_recovery; then exit 3; fi
         self.assertIn('while owns_session && [[ ! -e "$stop_file" ]]; do', guard)
         self.assertIn("lease_fresh || break", guard)
         self.assertIn("lease_fresh || break", recovery)
+
+    def test_privileged_workers_leave_the_user_service_cgroup(self) -> None:
+        launcher = (ROOT / "packaging" / "arch" / "omarchy-cast-guard-launch").read_text(encoding="utf-8")
+        guard = (ROOT / "packaging" / "arch" / "omarchy-cast-guard").read_text(encoding="utf-8")
+        self.assertIn("systemd-run --system --quiet --collect --no-block", launcher)
+        self.assertIn('omarchy-cast-guard-$session.service', launcher)
+        self.assertNotRegex(launcher, r"--(?:pipe|wait)(?:[ =]|$)")
+        self.assertIn('recovery_unit="omarchy-cast-recovery-$session_id.service"', guard)
+        arm = guard.split("arm_recovery() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("systemd-run --system --quiet --collect --no-block", arm)
+        self.assertNotIn("setsid", arm)
+
+    def test_guard_publishes_ready_status_atomically_for_the_controller(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+session_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+session_root="$2/$session_id"; mkdir -m711 "$session_root"
+user_root="$session_root/user"; mkdir -m700 "$user_root"
+ready_file="$session_root/status.json"
+trigger_file="$user_root/trigger"
+broker_socket="$session_root/supplicant.sock"
+status true ready null >/dev/null
+[[ "$(stat -c '%F:%a:%h' "$ready_file")" == 'regular file:644:1' ]]
+grep -Fq '"phase":"ready"' "$ready_file"
+grep -Fq '"triggerPath":"'"$trigger_file"'"' "$ready_file"
+[[ -z "$(find "$session_root" -maxdepth 1 -name '.status.*' -print -quit)" ]]
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), temp),
+                check=False, capture_output=True, text=True, timeout=2,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_broker_socket_cleanup_is_exact_type_owner_and_mode_only(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
@@ -541,8 +576,9 @@ network_manager_marker_valid
 
     def test_recipe_installs_the_immutable_privilege_boundary(self) -> None:
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
-        self.assertIn("pkgrel=79", recipe)
+        self.assertIn("pkgrel=80", recipe)
         self.assertIn('omarchy-cast-guard"', recipe)
+        self.assertIn('omarchy-cast-guard-launch"', recipe)
         self.assertIn('omarchy-cast-guard-recover"', recipe)
         self.assertIn('omarchy-cast-supplicant-broker"', recipe)
         self.assertIn('com.omacast.guard.policy"', recipe)
@@ -753,7 +789,7 @@ if record_session_interfaces; then exit 3; fi
             })
             annotations = {item.attrib["key"]: item.text for item in action.findall("annotate")}
             self.assertEqual(annotations, {
-                "org.freedesktop.policykit.exec.path": "/usr/lib/omarchy-cast/omarchy-cast-guard",
+                "org.freedesktop.policykit.exec.path": f"/usr/lib/omarchy-cast/omarchy-cast-guard{'-launch' if name == 'prepare' else ''}",
                 "org.freedesktop.policykit.exec.argv1": name,
             })
 

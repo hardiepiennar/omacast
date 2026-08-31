@@ -81,10 +81,11 @@ done
 bsdtar -xpf "$package" -C "$audit_root"
 engine="$audit_root/usr/bin/fluxcast"
 guard="$audit_root/usr/lib/omarchy-cast/omarchy-cast-guard"
+launcher="$audit_root/usr/lib/omarchy-cast/omarchy-cast-guard-launch"
 recovery="$audit_root/usr/lib/omarchy-cast/omarchy-cast-guard-recover"
 broker="$audit_root/usr/lib/omarchy-cast/omarchy-cast-supplicant-broker"
 policy="$audit_root/usr/share/polkit-1/actions/com.omacast.guard.policy"
-for executable in "$engine" "$guard" "$recovery" "$broker"; do
+for executable in "$engine" "$guard" "$launcher" "$recovery" "$broker"; do
   [[ -f "$executable" && ! -L "$executable" && -x "$executable" ]] || die "missing immutable executable: ${executable#"$audit_root"}"
   [[ "$(stat -c %a "$executable")" == 755 ]] || die "unsafe executable mode: ${executable#"$audit_root"}"
 done
@@ -103,11 +104,12 @@ for name, active in (("prepare", "yes"), ("reclaim", "auth_admin")):
         "allow_any": "no", "allow_inactive": "no", "allow_active": active,
     }
     assert {node.attrib["key"]: node.text for node in action.findall("annotate")} == {
-        "org.freedesktop.policykit.exec.path": "/usr/lib/omarchy-cast/omarchy-cast-guard",
+        "org.freedesktop.policykit.exec.path": f"/usr/lib/omarchy-cast/omarchy-cast-guard{'-launch' if name == 'prepare' else ''}",
         "org.freedesktop.policykit.exec.argv1": name,
     }
 PY
 bash -n "$guard"
+bash -n "$launcher"
 bash -n "$recovery"
 python3 -m py_compile "$broker"
 python3 - "$broker" <<'PY' || die "broker advertises an invalid WFD source payload"
@@ -124,7 +126,7 @@ assert module.source_wfd_ies() == bytes.fromhex("00000600101c4400c8")
 PY
 
 guard_version="$($guard --version)"
-python3 - "$guard_version" <<'PY' || die "guard API contract does not match revision 14"
+python3 - "$guard_version" <<'PY' || die "guard API contract does not match revision 15"
 import json
 import sys
 
@@ -133,10 +135,14 @@ assert type(value) is dict
 assert set(value) == {"schemaVersion", "kind", "apiRevision"}
 assert type(value["schemaVersion"]) is int and value["schemaVersion"] == 1
 assert type(value["kind"]) is str and value["kind"] == "omarchy-cast-guard-version"
-assert type(value["apiRevision"]) is int and value["apiRevision"] == 14
+assert type(value["apiRevision"]) is int and value["apiRevision"] == 15
 PY
 ! grep -Fq '/etc/dbus-1/system.d' "$guard" || die "guard still writes a temporary system-bus policy"
 grep -Fq 'omarchy-cast-supplicant-broker' "$guard" || die "guard does not start the session-scoped supplicant broker"
+grep -Fq 'systemd-run --system --quiet --collect --no-block' "$launcher" || die "launcher does not detach the guard into the system manager"
+grep -Fq 'omarchy-cast-guard-$session.service' "$launcher" || die "launcher does not bind the guard unit to the validated session"
+! grep -Eq -- '--(pipe|wait)([ =]|$)' "$launcher" || die "launcher retains a long-lived system-service attachment"
+grep -Fq 'omarchy-cast-recovery-$session_id.service' "$guard" || die "guard does not isolate independent recovery in the system manager"
 ! grep -Fq 'RuntimeMaxSec' "$guard" || die "guard imposes a fixed wall-clock lifetime on a healthy broker"
 grep -Fq 'set(payload) != {"schemaVersion", "op"}' "$broker" || die "broker request shape is not closed"
 grep -Fq 'operation == "connect"' "$broker" || die "broker lacks its fixed connect operation"

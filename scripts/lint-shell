@@ -7,6 +7,7 @@ command -v shellcheck >/dev/null || { printf '%s\n' 'shellcheck is required' >&2
 
 shellcheck \
   "$repo_root/packaging/arch/omarchy-cast-guard" \
+  "$repo_root/packaging/arch/omarchy-cast-guard-launch" \
   "$repo_root/packaging/arch/omarchy-cast-guard-recover" \
   "$repo_root/scripts/audit-release-artifact" \
   "$repo_root/scripts/bootstrap-fluxcast" \

@@ -19,7 +19,8 @@ from .command import Runner, run_command
 from .identity import receiver_address
 
 
-HELPER_PATH = "/usr/lib/omarchy-cast/omarchy-cast-guard"
+HELPER_PATH = "/usr/lib/omarchy-cast/omarchy-cast-guard-launch"
+GUARD_PATH = "/usr/lib/omarchy-cast/omarchy-cast-guard"
 _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 MAX_RECOVERY_INTERFACES = 32
@@ -82,15 +83,15 @@ def prepare_command(request: GuardRequest, *, helper_path: str = HELPER_PATH) ->
     )
 
 
-def reclaim_command(*, uid: int, interface: str, helper_path: str = HELPER_PATH) -> tuple[str, ...]:
-    if helper_path != HELPER_PATH:
+def reclaim_command(*, uid: int, interface: str, helper_path: str = GUARD_PATH) -> tuple[str, ...]:
+    if helper_path != GUARD_PATH:
         raise GuardError("production guard path is fixed by the installed package")
     if type(uid) is not int or uid < 1000 or uid > 2_147_483_647:
         raise GuardError("guard uid is outside the permitted user range")
     if not _INTERFACE.fullmatch(interface):
         raise GuardError("guard interface name is invalid")
     return (
-        HELPER_PATH, "reclaim", "--schema-version", "1",
+        GUARD_PATH, "reclaim", "--schema-version", "1",
         "--uid", str(uid), "--interface", interface,
     )
 

@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Any, Callable, Mapping, Protocol
 
-from .guard import GuardRequest, prepare_command, validate_helper_result
+from .guard import GuardError, GuardRequest, prepare_command, read_guard_status, validate_helper_result
 from .identity import receiver_address
 from .telemetry import MAX_PROCESS_DESCRIPTORS, MAX_PROC_NETWORK_BYTES, MAX_SYSFS_INTERFACE_ENTRIES, BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, _bounded_stream_read, cleanup_live_telemetry
 
@@ -405,11 +405,24 @@ class GuardedTransportAdapter:
                         raise TransportError("The networking helper returned unexpected session paths.", code="guard-setup-failed")
                     return expected, expected_broker
                 raise TransportError(str(payload.get("error") or "The networking helper refused session preparation."), code="guard-setup-failed")
+            try:
+                payload = read_guard_status(request.session_id)
+            except GuardError as exc:
+                raise TransportError("The networking helper returned an unsafe status file.", code="guard-setup-failed") from exc
+            if payload is not None:
+                if payload.get("phase") == "ready" and payload.get("ok") is True:
+                    return (
+                        f"/run/omarchy-cast/{request.session_id}/user/trigger",
+                        f"/run/omarchy-cast/{request.session_id}/supplicant.sock",
+                    )
+                if payload.get("phase") == "error":
+                    raise TransportError(str(payload.get("error") or "The networking helper refused session preparation."), code="guard-setup-failed")
             if process.poll() is not None:
                 error = stderr_drain.text().strip()
                 if process.returncode in {126, 127}:
                     raise TransportError("Administrator approval was cancelled. Nothing was changed.", code="authorization-cancelled")
-                raise TransportError(error or "The networking helper exited before it was ready.", code="guard-setup-failed")
+                if process.returncode != 0:
+                    raise TransportError(error or "The networking helper exited before it was ready.", code="guard-setup-failed")
         raise TransportError("Administrator approval or guarded setup took too long. Try again and answer the approval prompt.", code="authorization-timeout")
 
     @staticmethod
@@ -426,10 +439,30 @@ class GuardedTransportAdapter:
             return False
         return payload.get("sessionId") == request.session_id and payload.get("ok") is True and payload.get("phase") == "cleaned"
 
+    def _wait_cleanup_status(self, *, timeout: float = 15) -> bool:
+        """Acknowledge only a terminal status from the root-owned session file."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                payload = read_guard_status(self.request.session_id)
+            except GuardError:
+                return False
+            if payload is None or payload.get("phase") in {"ready", "active"}:
+                time.sleep(0.1)
+                continue
+            acknowledged = self._write_private_marker(
+                f"/run/omarchy-cast/{self.request.session_id}/user/status-ack"
+            )
+            return acknowledged and payload.get("phase") == "cleaned" and payload.get("ok") is True
+        return False
+
     def _stop_guard(self) -> None:
         """Signal the user-owned guard marker without a second authorization."""
         stop_path = f"/run/omarchy-cast/{self.request.session_id}/user/stop"
-        self._write_private_marker(stop_path)
+        for _ in range(20):
+            if self._write_private_marker(stop_path):
+                return
+            time.sleep(0.1)
 
     @staticmethod
     def _write_private_marker(path: str) -> bool:
@@ -709,8 +742,8 @@ class GuardedTransportAdapter:
                         pass
             if helper_stdout_drain is not None:
                 helper_stdout_drain.stop()
-            if helper is not None and guard_ready and helper_stdout_drain is not None:
-                guard_cleanup_confirmed = self._cleanup_confirmed(helper, self.request, helper_stdout_drain)
+            if guard_ready:
+                guard_cleanup_confirmed = self._wait_cleanup_status()
             if helper_stderr_drain is not None:
                 helper_stderr_drain.stop()
             if engine_output_collector is not None:

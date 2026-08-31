@@ -15,7 +15,7 @@ class DiscoveryTest(unittest.TestCase):
         if args[0] == "fluxcast":
             return CommandResult(tuple(args), 0, json.dumps(ENGINE_CONTRACT), "")
         if Path(args[0]).name == "omarchy-cast-guard":
-            return CommandResult(tuple(args), 0, json.dumps({"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 14}), "")
+            return CommandResult(tuple(args), 0, json.dumps({"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 15}), "")
         if args[0] == "nmcli":
             return CommandResult(tuple(args), 0, "wlan42:wifi:connected\n", "")
         if args[0] == "iw":
@@ -28,7 +28,7 @@ class DiscoveryTest(unittest.TestCase):
 
     @staticmethod
     def install_fake_helpers(root: Path) -> None:
-        for name in ("omarchy-cast-guard", "omarchy-cast-guard-recover", "omarchy-cast-supplicant-broker"):
+        for name in ("omarchy-cast-guard", "omarchy-cast-guard-launch", "omarchy-cast-guard-recover", "omarchy-cast-supplicant-broker"):
             path = root / name
             path.write_text("#!/bin/sh\n", encoding="utf-8")
             path.chmod(0o755)
@@ -135,7 +135,7 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(snapshot["readiness"]["issues"], [])
         self.assertEqual(snapshot["readiness"]["summary"], "Casting support ready")
         guard = next(helper for helper in snapshot["helpers"] if helper["name"] == "omarchy-cast-guard")
-        self.assertEqual(guard["apiRevision"], 14)
+        self.assertEqual(guard["apiRevision"], 15)
 
     def test_readiness_rejects_an_old_or_unversioned_companion(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -283,8 +283,8 @@ class DiscoveryTest(unittest.TestCase):
             helpers.mkdir()
             self.install_fake_helpers(helpers)
             for payload in (
-                {"schemaVersion": True, "kind": "omarchy-cast-guard-version", "apiRevision": 14},
-                {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 14, "extra": True},
+                {"schemaVersion": True, "kind": "omarchy-cast-guard-version", "apiRevision": 15},
+                {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 15, "extra": True},
             ):
                 with self.subTest(payload=payload):
                     def incompatible_runner(args, *, timeout=5.0):

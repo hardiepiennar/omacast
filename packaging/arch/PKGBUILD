@@ -6,7 +6,7 @@
 
 pkgname=fluxcast-omarchy-cast
 pkgver=0.1.5.r3.omarchy
-pkgrel=79
+pkgrel=80
 pkgdesc='Pinned FluxCast WFD engine with Omacast compatibility patches'
 arch=('any')
 url='https://github.com/hardiepiennar/omacast'
@@ -59,6 +59,7 @@ package() {
   cd "$srcdir/fluxcast"
   python -m installer --destdir="$pkgdir" dist/*.whl
   install -Dm755 "$startdir/omarchy-cast-guard" "$pkgdir/usr/lib/omarchy-cast/omarchy-cast-guard"
+  install -Dm755 "$startdir/omarchy-cast-guard-launch" "$pkgdir/usr/lib/omarchy-cast/omarchy-cast-guard-launch"
   install -Dm755 "$startdir/omarchy-cast-guard-recover" "$pkgdir/usr/lib/omarchy-cast/omarchy-cast-guard-recover"
   install -Dm755 "$startdir/omarchy-cast-supplicant-broker" "$pkgdir/usr/lib/omarchy-cast/omarchy-cast-supplicant-broker"
   install -Dm644 "$startdir/com.omacast.guard.policy" "$pkgdir/usr/share/polkit-1/actions/com.omacast.guard.policy"

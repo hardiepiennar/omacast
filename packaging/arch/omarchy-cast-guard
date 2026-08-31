@@ -4,16 +4,31 @@
 set -euo pipefail
 
 readonly schema_version=1 status_kind='omarchy-cast-guard-status'
-readonly api_revision=14 version_kind='omarchy-cast-guard-version'
+readonly api_revision=15 version_kind='omarchy-cast-guard-version'
 readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network'
 readonly wait_for_trigger_seconds=300
 readonly recovery_ready_timeout_seconds=5
+readonly status_ack_timeout_seconds=15
 readonly max_p2p_interfaces=64 max_interfaces_file_bytes=1024
 readonly networkd_units=(systemd-networkd.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-networkd-varlink-metrics.socket systemd-networkd-resolve-hook.socket)
-action='' session_id='' uid='' interface='' peer='' frequency='' duration='' session_root='' user_root='' token_file='' ready_file='' stop_file='' trigger_file='' heartbeat_file='' heartbeat_fd='' guard_lock_fd='' network_file='' networkd_state_file='' networkd_state_pending_file='' network_root_marker='' interfaces_file='' interfaces_armed_file='' network_manager_resume_file='' recovery_ready_file='' broker_socket='' broker_unit='' broker_wfd_file='' token='' ufw_rule_added=false runtime_dirs_created=false broker_started=false broker_cleanup_ok=true interface_cleanup_ok=true network_manager_cleanup_ok=true cleanup_ok=true network_sys_root='/sys/class/net'
+action='' session_id='' uid='' interface='' peer='' frequency='' duration='' session_root='' user_root='' token_file='' ready_file='' status_ack_file='' stop_file='' trigger_file='' heartbeat_file='' heartbeat_fd='' guard_lock_fd='' network_file='' networkd_state_file='' networkd_state_pending_file='' network_root_marker='' interfaces_file='' interfaces_armed_file='' network_manager_resume_file='' recovery_ready_file='' broker_socket='' broker_unit='' recovery_unit='' broker_wfd_file='' token='' ufw_rule_added=false runtime_dirs_created=false broker_started=false broker_cleanup_ok=true interface_cleanup_ok=true network_manager_cleanup_ok=true cleanup_ok=true network_sys_root='/sys/class/net'
 
 die() { printf '%s\n' "$*" >&2; exit 2; }
-status() { local ok="$1" phase="$2" error="${3:-null}"; printf '{"schemaVersion":%s,"kind":"%s","ok":%s,"phase":"%s","sessionId":"%s","error":%s}\n' "$schema_version" "$status_kind" "$ok" "$phase" "$session_id" "$error"; }
+status() {
+  local ok="$1" phase="$2" error="${3:-null}" payload temporary
+  if [[ "$phase" == ready ]]; then
+    payload="$(printf '{"schemaVersion":%s,"kind":"%s","ok":%s,"phase":"%s","sessionId":"%s","error":%s,"triggerPath":"%s","brokerPath":"%s"}' "$schema_version" "$status_kind" "$ok" "$phase" "$session_id" "$error" "$trigger_file" "$broker_socket")"
+  else
+    payload="$(printf '{"schemaVersion":%s,"kind":"%s","ok":%s,"phase":"%s","sessionId":"%s","error":%s}' "$schema_version" "$status_kind" "$ok" "$phase" "$session_id" "$error")"
+  fi
+  if [[ -n "$ready_file" && -d "$session_root" && ! -L "$session_root" ]]; then
+    temporary="$session_root/.status.$BASHPID"
+    (umask 077; printf '%s\n' "$payload" > "$temporary") || return 1
+    chmod 644 "$temporary" || { rm -f -- "$temporary"; return 1; }
+    mv -T -- "$temporary" "$ready_file" || { rm -f -- "$temporary"; return 1; }
+  fi
+  printf '%s\n' "$payload"
+}
 json_error() { status false error "\"$1\""; }
 valid_session() { [[ "$1" =~ ^[a-f0-9]{32}$ ]]; }
 valid_uid() { [[ "$1" =~ ^[1-9][0-9]{3,9}$ ]] && (( $1 <= 2147483647 )); }
@@ -40,7 +55,7 @@ parse_request() {
   [[ "${PKEXEC_UID:-}" == "$uid" ]] || die 'requested user does not match the Polkit caller'
   getent passwd "$uid" >/dev/null || die 'requested user does not exist'
   if [[ "$action" == prepare ]]; then
-    session_root="$run_root/$session_id"; user_root="$session_root/user"; token_file="$session_root/token"; ready_file="$session_root/ready.json"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; network_file="$network_root/80-omarchy-cast-$session_id.network"; networkd_state_file="$session_root/networkd-units"; networkd_state_pending_file="$session_root/networkd-units.pending"; network_root_marker="$session_root/network-root-created"; interfaces_file="$session_root/p2p-interfaces"; interfaces_armed_file="$session_root/p2p-armed"; network_manager_resume_file="$session_root/network-manager-resume-required"; recovery_ready_file="$session_root/recovery-ready"; broker_socket="$session_root/supplicant.sock"; broker_unit="omarchy-cast-supplicant-$session_id.service"; broker_wfd_file="$session_root/supplicant-wfd-owned"
+    session_root="$run_root/$session_id"; user_root="$session_root/user"; token_file="$session_root/token"; ready_file="$session_root/status.json"; status_ack_file="$user_root/status-ack"; stop_file="$user_root/stop"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; network_file="$network_root/80-omarchy-cast-$session_id.network"; networkd_state_file="$session_root/networkd-units"; networkd_state_pending_file="$session_root/networkd-units.pending"; network_root_marker="$session_root/network-root-created"; interfaces_file="$session_root/p2p-interfaces"; interfaces_armed_file="$session_root/p2p-armed"; network_manager_resume_file="$session_root/network-manager-resume-required"; recovery_ready_file="$session_root/recovery-ready"; broker_socket="$session_root/supplicant.sock"; broker_unit="omarchy-cast-supplicant-$session_id.service"; recovery_unit="omarchy-cast-recovery-$session_id.service"; broker_wfd_file="$session_root/supplicant-wfd-owned"
   fi
 }
 verify_user_runtime() { [[ -d "/run/user/$uid" && "$(stat -c '%u:%a' "/run/user/$uid")" == "$uid:700" ]] || die 'user runtime directory is unavailable or unsafe'; }
@@ -252,7 +267,6 @@ cleanup() {
   if [[ "$ufw_rule_added" == true ]] && ! ufw --force delete allow in on "p2p-$interface+" to any port 7236 proto tcp >/dev/null 2>&1; then cleanup_ok=false; fi
 
   remove_cleanup_file "$network_file"
-  remove_cleanup_file "$ready_file"
   remove_cleanup_file "$trigger_file"
   remove_cleanup_file "$heartbeat_file"
   remove_cleanup_file "$stop_file"
@@ -273,9 +287,24 @@ cleanup() {
   if [[ "$cleanup_ok" == true && "$interface_cleanup_ok" == true && "$network_manager_cleanup_ok" == true ]]; then
     remove_cleanup_file "$token_file"
   fi
-  rmdir --ignore-fail-on-non-empty "$user_root" "$session_root" 2>/dev/null || true
   [[ "$remove_network_root" == true ]] && rmdir "$network_root" 2>/dev/null || true
   return 0
+}
+status_ack_valid() {
+  local metadata
+  [[ -f "$status_ack_file" && ! -L "$status_ack_file" ]] || return 1
+  metadata="$(stat -c '%F:%u:%a:%h:%s' "$status_ack_file" 2>/dev/null)" || return 1
+  [[ "$metadata" == "regular file:$uid:600:1:0" ]]
+}
+finalize_status() {
+  local deadline=$((SECONDS + status_ack_timeout_seconds))
+  while (( SECONDS <= deadline )); do
+    status_ack_valid && break
+    sleep 0.1
+  done
+  status_ack_valid && rm -f -- "$status_ack_file" || true
+  rm -f -- "$ready_file" || true
+  rmdir --ignore-fail-on-non-empty "$user_root" "$session_root" 2>/dev/null || true
 }
 open_heartbeat() {
   local metadata kind owner mode size
@@ -297,18 +326,16 @@ lease_fresh() {
 }
 recovery_ready_marker_valid() { [[ -f "$recovery_ready_file" && ! -L "$recovery_ready_file" && "$(stat -c '%u:%a' "$recovery_ready_file" 2>/dev/null)" == "$EUID:600" ]]; }
 arm_recovery() {
-  local startup_seconds=$((wait_for_trigger_seconds + 60)) recovery_pid deadline
+  local startup_seconds=$((wait_for_trigger_seconds + 60)) deadline
   [[ ! -e "$recovery_ready_file" && ! -L "$recovery_ready_file" ]] || return 1
-  setsid /usr/lib/omarchy-cast/omarchy-cast-guard-recover "$startup_seconds" "$duration" "$session_id" "$token" "$uid" "$interface" </dev/null >/dev/null 2>&1 &
-  recovery_pid=$!
+  systemd-run --system --quiet --collect --no-block --unit="$recovery_unit" --property=Type=exec --property=KillMode=control-group -- /usr/lib/omarchy-cast/omarchy-cast-guard-recover "$startup_seconds" "$duration" "$session_id" "$token" "$uid" "$interface" || return 1
   deadline=$((SECONDS + recovery_ready_timeout_seconds))
   while (( SECONDS <= deadline )); do
-    if recovery_ready_marker_valid; then kill -0 "$recovery_pid" 2>/dev/null && return 0; return 1; fi
-    if ! kill -0 "$recovery_pid" 2>/dev/null; then wait "$recovery_pid" 2>/dev/null || true; return 1; fi
+    if recovery_ready_marker_valid; then systemctl is-active --quiet "$recovery_unit" && return 0; return 1; fi
+    systemctl is-failed --quiet "$recovery_unit" && return 1
     sleep 0.05
   done
-  kill "$recovery_pid" 2>/dev/null || true
-  wait "$recovery_pid" 2>/dev/null || true
+  systemctl stop "$recovery_unit" 2>/dev/null || true
   return 1
 }
 activate_network() { if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then ufw allow in on "p2p-$interface+" to any port 7236 proto tcp comment "omarchy-cast-$session_id" | grep -q 'Rule added' && ufw_rule_added=true; fi; pause_network_manager || die 'could not pause NetworkManager safely'; verify_clean_interface_baseline; install -m600 /dev/null "$interfaces_armed_file"; if systemctl is-active --quiet systemd-networkd.service; then systemctl reload systemd-networkd.service; else systemctl start systemd-networkd.service; fi; }
@@ -323,8 +350,8 @@ prepare() {
   arm_recovery || die 'independent recovery did not become ready'
   write_privileged_runtime
   start_broker || die 'session-scoped supplicant broker did not become ready'
-  trap 'cleanup; if [[ "$cleanup_ok" == true && "$interface_cleanup_ok" == true && "$network_manager_cleanup_ok" == true ]]; then status true cleaned null; else json_error "session network cleanup was incomplete"; fi' EXIT
-  printf '{"schemaVersion":1,"kind":"omarchy-cast-guard-status","ok":true,"phase":"ready","sessionId":"%s","error":null,"triggerPath":"%s","brokerPath":"%s"}\n' "$session_id" "$trigger_file" "$broker_socket"
+  trap 'cleanup; if [[ "$cleanup_ok" == true && "$interface_cleanup_ok" == true && "$network_manager_cleanup_ok" == true ]]; then status true cleaned null; else json_error "session network cleanup was incomplete"; fi; finalize_status' EXIT
+  status true ready null
   local deadline=$((SECONDS + wait_for_trigger_seconds))
   while [[ ! -e "$trigger_file" && ! -e "$stop_file" ]] && (( SECONDS < deadline )); do sleep 0.1; done
   [[ -e "$trigger_file" ]] || { json_error 'FluxCast did not trigger guarded networking'; exit 1; }
