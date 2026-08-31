@@ -28,6 +28,22 @@ class ReceiverDiscoveryTest(unittest.TestCase):
         with self.assertRaisesRegex(ReceiverError, "control"):
             normalize_receivers([{"id": "02:00:00:00:00:03", "name": "Fire TV\nInjected", "kind": "fire-tv", "capabilities": ["miracast"]}])
 
+    def test_receiver_metadata_requires_exact_bounded_scalar_types(self) -> None:
+        base = self.records()[0]
+        invalid = (
+            {"wfd_role": "television"},
+            {"rtsp_port": True},
+            {"rtsp_port": 65_536},
+            {"throughput_mbps": -1},
+            {"signal_percent": False},
+            {"signal_percent": 101},
+            {"manufacturer": "x" * 121},
+            {"model": "bad\nmodel"},
+        )
+        for mutation in invalid:
+            with self.subTest(mutation=mutation), self.assertRaises(ReceiverError):
+                normalize_receivers([{**base, **mutation}])
+
     def test_receiver_limit_stops_consuming_an_unbounded_iterable(self) -> None:
         consumed = 0
 
@@ -82,7 +98,11 @@ class ReceiverDiscoveryTest(unittest.TestCase):
         def scanner(*, interface: str | None, timeout: int) -> list[SimpleNamespace]:
             calls.append((interface, timeout))
             return [
-                SimpleNamespace(address="02:00:00:00:00:01", name="Living Room Fire TV", details="manufacturer=Amazon; wfd_dev_info=0x00111c4400c8"),
+                SimpleNamespace(
+                    address="02:00:00:00:00:01", name="Living Room Fire TV",
+                    details="wfd_dev_info=0x00111c4400c8", manufacturer="Amazon",
+                    model="AFT Example", strength_percent=73,
+                ),
                 SimpleNamespace(address="02:00:00:00:00:02", name="Nearby printer", details="manufacturer=Printer; wfd_ies=(<@ay []>,)"),
                 SimpleNamespace(address="02:00:00:00:00:03", name="Someone's phone", details="manufacturer=Phone"),
                 SimpleNamespace(address="00:11:22:33:44:55", name="[TV] Generic display", details="wfd_dev_info=0x00111c4400c8; sink_rtsp_port=7236"),
@@ -94,6 +114,12 @@ class ReceiverDiscoveryTest(unittest.TestCase):
         self.assertEqual(len(payload["receivers"]), 2)
         self.assertEqual(payload["receivers"][0]["id"], "02:00:00:00:00:01")
         self.assertEqual(payload["receivers"][0]["kind"], "fire-tv")
+        self.assertEqual(payload["receivers"][0]["wfd_role"], "primary-sink")
+        self.assertEqual(payload["receivers"][0]["rtsp_port"], 7236)
+        self.assertEqual(payload["receivers"][0]["throughput_mbps"], 200)
+        self.assertEqual(payload["receivers"][0]["manufacturer"], "Amazon")
+        self.assertEqual(payload["receivers"][0]["model"], "AFT Example")
+        self.assertEqual(payload["receivers"][0]["signal_percent"], 73)
         # A non-Amazon sink is a real cast target and keeps the generic kind.
         self.assertEqual(payload["receivers"][1]["id"], "00:11:22:33:44:55")
         self.assertEqual(payload["receivers"][1]["kind"], "wfd-display")

@@ -18,7 +18,7 @@ MAX_RECEIVERS = 64
 MAX_DISCOVERY_PEERS = 256
 MAX_PEER_DETAILS_CHARS = 4_096
 _WFD_DEVICE_INFO = re.compile(
-    r"(?:^|[;\s])wfd_dev_info=0x([0-9a-f]{4})[0-9a-f]{8}(?![0-9a-z])",
+    r"(?:^|[;\s])wfd_dev_info=0x([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})(?![0-9a-z])",
     re.IGNORECASE,
 )
 _WFD_IES = re.compile(r"(?:^|[;\s])wfd_ies=([^;\n]*)", re.IGNORECASE)
@@ -46,17 +46,23 @@ class Receiver:
     name: str
     kind: str
     capabilities: tuple[str, ...]
+    wfd_role: str = "unknown"
+    rtsp_port: int = 0
+    throughput_mbps: int = 0
+    manufacturer: str = ""
+    model: str = ""
+    signal_percent: int | None = None
 
 
 class ReceiverDiscovery(Protocol):
     def list_receivers(self, *, timeout_seconds: float) -> list[Receiver]: ...
 
 
-def _wfd_device_type(details: str) -> int | None:
-    """Return the advertised WFD device type, or ``None`` if it is invalid."""
+def _wfd_device_info(details: str) -> tuple[int, int, int] | None:
+    """Return the advertised WFD information word, RTSP port, and throughput."""
     parsed = _WFD_DEVICE_INFO.search(details)
     if parsed:
-        return int(parsed.group(1), 16) & 0x03
+        return int(parsed.group(1), 16), int(parsed.group(2), 16), int(parsed.group(3), 16)
 
     raw_ies = _WFD_IES.search(details)
     if not raw_ies:
@@ -73,9 +79,20 @@ def _wfd_device_type(details: str) -> int | None:
             if subelement_length != 6:
                 return None
             device_info = (values[offset + 3] << 8) | values[offset + 4]
-            return device_info & 0x03
+            port = (values[offset + 5] << 8) | values[offset + 6]
+            throughput = (values[offset + 7] << 8) | values[offset + 8]
+            return device_info, port, throughput
         offset = end
     return None
+
+
+def _optional_receiver_text(record: Mapping[str, object], name: str) -> str:
+    value = record.get(name, "")
+    if not isinstance(value, str) or len(value) > 120:
+        raise ReceiverError(f"receiver {name} must be a bounded string")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ReceiverError(f"receiver {name} contains control characters")
+    return value.strip()
 
 
 def _receiver_from_record(record: Mapping[str, object]) -> Receiver:
@@ -97,7 +114,30 @@ def _receiver_from_record(record: Mapping[str, object]) -> Receiver:
     normalized_capabilities = tuple(sorted(set(capabilities)))
     if not set(normalized_capabilities) <= _ALLOWED_CAPABILITIES or "miracast" not in normalized_capabilities:
         raise ReceiverError("receiver must advertise supported Miracast capabilities")
-    return Receiver(id=receiver_id, name=name.strip(), kind=kind, capabilities=normalized_capabilities)
+    wfd_role = record.get("wfd_role", "unknown")
+    if wfd_role not in {"unknown", "primary-sink", "secondary-sink", "dual-role"}:
+        raise ReceiverError("receiver WFD role is invalid")
+    rtsp_port = record.get("rtsp_port", 0)
+    throughput_mbps = record.get("throughput_mbps", 0)
+    signal_percent = record.get("signal_percent")
+    if type(rtsp_port) is not int or not 0 <= rtsp_port <= 65_535:
+        raise ReceiverError("receiver RTSP port is invalid")
+    if type(throughput_mbps) is not int or not 0 <= throughput_mbps <= 65_535:
+        raise ReceiverError("receiver WFD throughput is invalid")
+    if signal_percent is not None and (type(signal_percent) is not int or not 0 <= signal_percent <= 100):
+        raise ReceiverError("receiver signal percentage is invalid")
+    return Receiver(
+        id=receiver_id,
+        name=name.strip(),
+        kind=kind,
+        capabilities=normalized_capabilities,
+        wfd_role=wfd_role,
+        rtsp_port=rtsp_port,
+        throughput_mbps=throughput_mbps,
+        manufacturer=_optional_receiver_text(record, "manufacturer"),
+        model=_optional_receiver_text(record, "model"),
+        signal_percent=signal_percent,
+    )
 
 
 def normalize_receivers(records: Iterable[Mapping[str, object]]) -> list[Receiver]:
@@ -159,7 +199,8 @@ class FluxCastReceiverDiscovery:
                 # NetworkManager exposes every nearby Wi-Fi Direct peer, including
                 # printers and source-only phones. Only peers whose WFD Device
                 # Information identifies a sink are valid cast targets.
-                if _wfd_device_type(details) not in {1, 2, 3}:
+                wfd_info = _wfd_device_info(details)
+                if wfd_info is None or (wfd_info[0] & 0x03) not in {1, 2, 3}:
                     continue
                 try:
                     address = receiver_address(getattr(peer, "address", ""))
@@ -169,11 +210,23 @@ class FluxCastReceiverDiscovery:
                 advertised_name = bounded_text(raw_name, limit=120).strip()
                 name = advertised_name or f"Miracast display · {address[-5:]}"
                 is_fire_tv = "fire tv" in advertised_name.casefold()
+                device_type = wfd_info[0] & 0x03
+                role = {1: "primary-sink", 2: "secondary-sink", 3: "dual-role"}[device_type]
+                manufacturer = bounded_text(getattr(peer, "manufacturer", ""), limit=120).strip()
+                model = bounded_text(getattr(peer, "model", ""), limit=120).strip()
+                raw_signal = getattr(peer, "strength_percent", None)
+                signal_percent = raw_signal if type(raw_signal) is int and 0 <= raw_signal <= 100 else None
                 records.append({
                     "id": address,
                     "name": name,
                     "kind": "fire-tv" if is_fire_tv else "wfd-display",
                     "capabilities": ["miracast", "audio", "video"] if is_fire_tv else ["miracast"],
+                    "wfd_role": role,
+                    "rtsp_port": wfd_info[1],
+                    "throughput_mbps": wfd_info[2],
+                    "manufacturer": manufacturer,
+                    "model": model,
+                    "signal_percent": signal_percent,
                 })
         except ReceiverDiscoveryUnavailable:
             raise

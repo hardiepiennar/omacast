@@ -130,9 +130,10 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   after contributors demonstrated successful Samsung and TCL receiver use.
   Generic peers are now exposed only when their WFD Device Information proves
   a sink-capable role; source-only, port-only, empty, and malformed peers stay
-  hidden. Fire TV remains the locally hardware-validated receiver class, and
-  the panel labels generic targets experimental rather than presenting the two
-  evidence levels as equivalent.
+  hidden. Fire TV remains the locally hardware-validated receiver class. The
+  panel does not editorialize compatibility per brand: it shows bounded facts
+  advertised by each sink—role, RTSP port, throughput, manufacturer/model, and
+  signal—so users can distinguish peers without blocking contributor hardware.
 - The native Omarchy panel exposes live negotiated mode, capture/mux load,
   packet timing, RTP queueing, radio counters, and a derived health verdict.
 - The panel launches production work in `omacast-session.service`; a simulated
@@ -260,7 +261,7 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   path. Patch 49 budgets reconstructed-engine JSON contracts, and patch 50
   terminates the complete process group when a bounded engine command exceeds
   its output or time limit. Patch 51 removes the dormant MPEG-TS dump analyzer
-  from the installed engine. Companion revision 76 carries the resulting
+  from the installed engine. Companion revision 77 carries the resulting
   candidate; guard API 14 and engine contract API 1 are unchanged.
 - Direct-supplicant readiness no longer depends on dnsmasq. The supported
   laptop-as-P2P-client topology receives DHCP from the receiver; dnsmasq stays

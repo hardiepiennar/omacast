@@ -1,0 +1,172 @@
+From bb11c98cbc006919d86de9a2db4092ec9755ca01 Mon Sep 17 00:00:00 2001
+From: Omacast Maintainers <4540086+hardiepienaar@users.noreply.github.com>
+Date: Mon, 31 Aug 2026 18:32:32 +1200
+Subject: [PATCH] Expose bounded WFD peer metadata
+
+---
+ src/wfd/ie.py              |  3 +++
+ src/wfd/p2p/dbus.py        |  6 ++++++
+ src/wfd/p2p/nm.py          | 10 +++++++++-
+ src/wfd/p2p/scan_nm.py     | 15 +++++++++++----
+ tests/test_wfd_p2p_scan.py | 12 ++++++++++++
+ 5 files changed, 41 insertions(+), 5 deletions(-)
+
+diff --git a/src/wfd/ie.py b/src/wfd/ie.py
+index 5253805..d06ecab 100644
+--- a/src/wfd/ie.py
++++ b/src/wfd/ie.py
+@@ -26,6 +26,9 @@ class WFDPeer:
+     path: str = ""
+     source: str = ""
+     rtsp_port: int = 7236
++    manufacturer: str = ""
++    model: str = ""
++    strength_percent: Optional[int] = None
+ 
+ def _parse_gdbus_byte_array(raw: str) -> list[int]:
+     """Parse a gdbus @ay variant string into a list of integer byte values.
+diff --git a/src/wfd/p2p/dbus.py b/src/wfd/p2p/dbus.py
+index c4c1999..e2683b1 100644
+--- a/src/wfd/p2p/dbus.py
++++ b/src/wfd/p2p/dbus.py
+@@ -36,6 +36,12 @@ def _variant_uint_tuple(text: str) -> tuple[Optional[int], Optional[int]]:
+         return None, None
+     return int(matches[-2]), int(matches[-1])
+ 
++def _variant_byte(text: str) -> Optional[int]:
++    match = re.fullmatch(r"\s*\(\s*<byte 0x([0-9a-fA-F]{2})>\s*,?\s*\)\s*", text)
++    if not match:
++        return None
++    return int(match.group(1), 16)
++
+ NM_ACTIVE_STATE_NAMES = {
+     0: "unknown",
+     1: "activating",
+diff --git a/src/wfd/p2p/nm.py b/src/wfd/p2p/nm.py
+index f0102db..b5fb9b3 100644
+--- a/src/wfd/p2p/nm.py
++++ b/src/wfd/p2p/nm.py
+@@ -13,7 +13,7 @@ from ..ie import (
+ from .dbus import (
+     NM_ACTIVE_STATE_NAMES, NM_DEVICE_REASON_NAMES, NM_DEVICE_STATE_NAMES,
+     _gdbus_call, _nm_get_property, _nm_get_string, _object_paths,
+-    _variant_byte_array, _variant_uint, _variant_uint_tuple, _wfd_source_ie,
++    _variant_byte, _variant_byte_array, _variant_uint, _variant_uint_tuple, _wfd_source_ie,
+ )
+ 
+ 
+@@ -173,6 +173,11 @@ def _nm_scan(
+         address = _nm_get_string(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "HwAddress")
+         model = _nm_get_string(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "Model")
+         manufacturer = _nm_get_string(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "Manufacturer")
++        strength = _variant_byte(_nm_get_property(
++            peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "Strength"
++        ))
++        if strength is not None and strength > 100:
++            strength = None
+         wfd_ies_raw = _nm_get_property(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "WfdIEs")
+         
+         # wfd_ies_raw is the raw gdbus stdout string (e.g. "<@ay [byte 0x00, ...]>").
+@@ -197,6 +202,9 @@ def _nm_scan(
+             path=peer_path,
+             source="NetworkManager",
+             rtsp_port=sink_rtsp_port,
++            manufacturer=manufacturer,
++            model=model,
++            strength_percent=strength,
+         ))
+     return peers
+ 
+diff --git a/src/wfd/p2p/scan_nm.py b/src/wfd/p2p/scan_nm.py
+index d92dbc3..8358a43 100644
+--- a/src/wfd/p2p/scan_nm.py
++++ b/src/wfd/p2p/scan_nm.py
+@@ -11,7 +11,7 @@ from ..ie import (
+     _parse_wfd_ies_rtsp_port,
+     _wfd_device_info_detail,
+ )
+-from .dbus import _gdbus_call, _nm_get_property, _nm_get_string, _object_paths
++from .dbus import _gdbus_call, _nm_get_property, _nm_get_string, _object_paths, _variant_byte
+ 
+ 
+ def _p2p_device_path(interface: Optional[str] = None) -> Optional[str]:
+@@ -82,9 +82,15 @@ def _nm_scan(interface: Optional[str], timeout: int,
+ 
+     peers: list[WFDPeer] = []
+     for peer_path in peer_paths:
+-        name = _nm_get_string(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "Name")[:256]
+-        address = _nm_get_string(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "HwAddress")
+-        wfd_raw = _nm_get_property(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "WfdIEs")
++        peer_interface = "org.freedesktop.NetworkManager.WifiP2PPeer"
++        name = _nm_get_string(peer_path, peer_interface, "Name")[:256]
++        address = _nm_get_string(peer_path, peer_interface, "HwAddress")
++        manufacturer = _nm_get_string(peer_path, peer_interface, "Manufacturer")[:256]
++        model = _nm_get_string(peer_path, peer_interface, "Model")[:256]
++        strength = _variant_byte(_nm_get_property(peer_path, peer_interface, "Strength"))
++        if strength is not None and strength > 100:
++            strength = None
++        wfd_raw = _nm_get_property(peer_path, peer_interface, "WfdIEs")
+         if len(wfd_raw) > 65_536:
+             wfd_raw = ""
+         wfd_ies = _parse_gdbus_byte_array(wfd_raw)
+@@ -94,5 +100,6 @@ def _nm_scan(interface: Optional[str], timeout: int,
+         peers.append(WFDPeer(
+             address=address, name=name, details=details,
+             path=peer_path, source="NetworkManager", rtsp_port=sink_port,
++            manufacturer=manufacturer, model=model, strength_percent=strength,
+         ))
+     return peers
+diff --git a/tests/test_wfd_p2p_scan.py b/tests/test_wfd_p2p_scan.py
+index 81706e8..d70c6e6 100644
+--- a/tests/test_wfd_p2p_scan.py
++++ b/tests/test_wfd_p2p_scan.py
+@@ -4,6 +4,7 @@ from unittest import mock
+ 
+ from wfd.config import WFDNotReady
+ from wfd.ie import WFDPeer, _parse_wfd_ies_device_info, _wfd_device_info_detail
++from wfd.p2p.dbus import _variant_byte
+ from wfd.p2p.nm import _nm_scan
+ from wfd.p2p.peers import _scan_and_select, active_scan
+ 
+@@ -12,6 +13,12 @@ SELECTED = "00:11:22:33:44:55"
+ 
+ 
+ class SelectedPeerScanTest(unittest.TestCase):
++    def test_networkmanager_byte_property_is_exact_and_bounded(self):
++        self.assertEqual(_variant_byte("(<byte 0x64>,)"), 100)
++        for value in ("(<byte 0xff>,) trailing", "(<byte 0x1>,)", "(<uint32 42>,)", "64"):
++            with self.subTest(value=value):
++                self.assertIsNone(_variant_byte(value))
++
+     def test_device_information_preserves_primary_sink_role(self):
+         ies = [0x00, 0x00, 0x06, 0x00, 0x11, 0x1C, 0x44, 0x00, 0xC8]
+         self.assertEqual(_parse_wfd_ies_device_info(ies), (0x0011, 7236, 200))
+@@ -50,6 +57,8 @@ class SelectedPeerScanTest(unittest.TestCase):
+                 return next(peer_lists)
+             if name == "WfdIEs":
+                 return "<@ay []>"
++            if name == "Strength":
++                return "(<byte 0x32>,)"
+             raise AssertionError(name)
+ 
+         def get_string(path, _interface, name):
+@@ -80,6 +89,8 @@ class SelectedPeerScanTest(unittest.TestCase):
+                 return f"([objectpath '{peer_path}'],)"
+             if name == "WfdIEs":
+                 return "<@ay [byte 0x00, 0x00, 0x06, 0x00, 0x11, 0x1c, 0x44, 0x00, 0xc8]>"
++            if name == "Strength":
++                return "(<byte 0x4b>,)"
+             raise AssertionError(name)
+ 
+         def get_string(path, _interface, name):
+@@ -100,6 +111,7 @@ class SelectedPeerScanTest(unittest.TestCase):
+             peers = discovery_scan("wlan0", 1)
+ 
+         self.assertEqual(peers[0].details, "wfd_dev_info=0x00111c4400c8; sink_rtsp_port=7236")
++        self.assertEqual(peers[0].strength_percent, 75)
+ 
+     def test_wpa_cli_scan_returns_as_soon_as_selected_peer_appears(self):
+         peer_results = iter(("", SELECTED + "\n"))
+-- 
+2.55.0
+

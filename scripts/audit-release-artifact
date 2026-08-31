@@ -245,6 +245,8 @@ grep -Fq 'os.killpg(process.pid, signal.SIGKILL)' "$site_packages/wfd/proc.py" \
   || die "packaged engine does not terminate bounded command process groups"
 grep -Fq '_wfd_device_info_detail(wfd_ies)' "$site_packages/wfd/p2p/scan_nm.py" \
   || die "packaged engine drops WFD receiver role evidence"
+grep -Fq 'strength_percent=strength' "$site_packages/wfd/p2p/scan_nm.py" \
+  || die "packaged engine drops bounded WFD peer metadata"
 [[ -f "$site_packages/json_bounds.py" && ! -L "$site_packages/json_bounds.py" ]] \
   || die "packaged engine lacks the shared JSON shape budget"
 grep -Fq 'def json_shape_is_bounded(' "$site_packages/json_bounds.py" \

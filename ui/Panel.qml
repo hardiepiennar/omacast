@@ -153,9 +153,42 @@ Panel {
         && id !== "00:00:00:00:00:00" && id !== "FF:FF:FF:FF:FF:FF"
       if (!validAddress || !name || !kind || ids[id]) continue
       ids[id] = true
-      result.push({ id: id, name: name, kind: kind })
+      var role = ["primary-sink", "secondary-sink", "dual-role"].indexOf(item.wfd_role) >= 0
+        ? item.wfd_role : "unknown"
+      var rtspPort = typeof item.rtsp_port === "number" && isFinite(item.rtsp_port)
+        && Math.floor(item.rtsp_port) === item.rtsp_port && item.rtsp_port >= 0 && item.rtsp_port <= 65535
+        ? item.rtsp_port : 0
+      var throughput = typeof item.throughput_mbps === "number" && isFinite(item.throughput_mbps)
+        && Math.floor(item.throughput_mbps) === item.throughput_mbps
+        && item.throughput_mbps >= 0 && item.throughput_mbps <= 65535
+        ? item.throughput_mbps : 0
+      var signal = typeof item.signal_percent === "number" && isFinite(item.signal_percent)
+        && Math.floor(item.signal_percent) === item.signal_percent
+        && item.signal_percent >= 0 && item.signal_percent <= 100 ? item.signal_percent : -1
+      result.push({
+        id: id, name: name, kind: kind, wfdRole: role, rtspPort: rtspPort,
+        throughputMbps: throughput,
+        manufacturer: root.boundedText(item.manufacturer, "", 120),
+        model: root.boundedText(item.model, "", 120), signalPercent: signal
+      })
     }
     return result
+  }
+
+  function receiverFacts(receiver) {
+    var role = receiver.wfdRole === "primary-sink" ? "Primary sink"
+      : receiver.wfdRole === "secondary-sink" ? "Secondary sink"
+      : receiver.wfdRole === "dual-role" ? "Dual-role sink" : "WFD sink"
+    var parts = [role]
+    var maker = String(receiver.manufacturer || "").trim()
+    var model = String(receiver.model || "").trim()
+    if (maker && String(receiver.name || "").toLowerCase().indexOf(maker.toLowerCase()) < 0) parts.push(maker)
+    if (model && String(receiver.name || "").toLowerCase().indexOf(model.toLowerCase()) < 0
+        && model.toLowerCase() !== maker.toLowerCase()) parts.push(model)
+    if (receiver.rtspPort > 0) parts.push("RTSP " + receiver.rtspPort)
+    if (receiver.throughputMbps > 0) parts.push("WFD " + receiver.throughputMbps + " Mb/s")
+    if (receiver.signalPercent >= 0) parts.push("Signal " + receiver.signalPercent + "%")
+    return parts.join(" · ")
   }
 
   function normalizeDoctor(value) {
@@ -987,11 +1020,9 @@ Panel {
                 required property var modelData
                 required property int index
                 width: parent.width
-                labelText: root.boundedText(modelData.name, "Miracast display", 96)
-                  + (String(modelData.kind) === "fire-tv" ? " · validated" : " · experimental")
-                tooltipText: String(modelData.kind) === "fire-tv"
-                  ? "Fire TV · locally validated Miracast target"
-                  : "Miracast display · community-reported, not locally validated"
+                labelText: root.boundedText(modelData.name, "Miracast display", 120)
+                detailText: root.receiverFacts(modelData)
+                tooltipText: detailText
                 selected: root.receiverId === String(modelData.id)
                 hasCursor: root.keyboardCursor && root.receiverCursor === index
                 enabled: !root.sessionBusy
@@ -1202,19 +1233,34 @@ Panel {
 
   component ReceiverButton: Button {
     property string labelText: ""
-    implicitHeight: receiverLabel.implicitHeight + verticalPadding * 2 + Style.normalBorderWidth * 2
-    Text {
-      id: receiverLabel
+    property string detailText: ""
+    implicitHeight: receiverColumn.implicitHeight + verticalPadding * 2 + Style.normalBorderWidth * 2
+    Column {
+      id: receiverColumn
       anchors.centerIn: parent
       width: Math.max(0, parent.width - parent.horizontalPadding * 2)
-      text: parent.labelText
-      textFormat: Text.PlainText
-      color: parent.foreground
-      font.family: parent.fontFamily
-      font.pixelSize: parent.fontSize
-      font.bold: parent.selected
-      horizontalAlignment: Text.AlignHCenter
-      elide: Text.ElideRight
+      spacing: Style.space(2)
+      Text {
+        width: parent.width
+        text: parent.parent.labelText
+        textFormat: Text.PlainText
+        color: parent.parent.foreground
+        font.family: parent.parent.fontFamily
+        font.pixelSize: parent.parent.fontSize
+        font.bold: parent.parent.selected
+        horizontalAlignment: Text.AlignHCenter
+        elide: Text.ElideRight
+      }
+      Text {
+        width: parent.width
+        text: parent.parent.detailText
+        textFormat: Text.PlainText
+        color: root.muted
+        font.family: parent.parent.fontFamily
+        font.pixelSize: Style.font.caption
+        horizontalAlignment: Text.AlignHCenter
+        elide: Text.ElideRight
+      }
     }
   }
 

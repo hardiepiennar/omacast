@@ -2746,7 +2746,15 @@ session failed safely during P2P group formation with NetworkManager's
 `ConnectChannelUnsupported`; no core dump, OOM event, residual media process,
 or P2P interface remained, and the outer guard completed owned recovery. This
 single local failure does not supersede contributor reports of successful
-Samsung and TCL casts, but it showed that the panel presented community-reported
-generic compatibility as equivalent to the locally validated Fire TV gate.
-Receiver rows now state `validated` for Fire TV and `experimental` for generic
-sinks while retaining the role validation introduced by patch 52.
+Samsung and TCL casts, and the failure occurred before RTSP/WFD negotiation, so
+it does not prove a receiver capability mismatch. A short-lived brand verdict
+was rejected as unhelpful. Receiver rows instead show bounded objective facts:
+the parsed WFD role, RTSP port, advertised throughput, NetworkManager
+manufacturer/model when present, and current signal quality.
+
+Production patch 53 carries the manufacturer, model, and typed 0–100 signal
+value without exposing serial numbers. The controller applies exact scalar,
+range, string, and JSON bounds before QML projects those fields as plain text.
+Companion revision 77 carries patch 53; guard API 14 and engine contract API 1
+remain unchanged, and prior receiver evidence does not validate this UI/data
+path.
