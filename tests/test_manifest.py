@@ -143,7 +143,7 @@ class ManifestTest(unittest.TestCase):
         self.assertIn('readonly property bool visuallyBusy: scanRunning || sessionBusy', panel)
         self.assertIn('active: root.visuallyBusy || root.needsRecovery', panel)
         self.assertIn('tooltipText: root.iconTooltip()', panel)
-        for code in ("authorization-cancelled", "authorization-timeout", "guard-setup-failed", "dhcp-failed", "p2p-negotiation-failed", "receiver-negotiation-failed", "receiver-negotiation-timeout", "capture-failed", "engine-exited"):
+        for code in ("authorization-cancelled", "authorization-timeout", "guard-setup-failed", "dhcp-failed", "pairing-method-unsupported", "p2p-negotiation-failed", "receiver-negotiation-failed", "receiver-negotiation-timeout", "capture-failed", "engine-exited"):
             self.assertIn('code === "' + code + '"', panel)
         self.assertIn("function maybeAutoScan()", panel)
         self.assertIn("!sessionBusy && phase === \"idle\" && doctorComplete && systemReady() && !autoScanDone", panel)

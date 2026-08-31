@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -64,6 +65,101 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
         ]
         with self.assertRaises(subprocess.TimeoutExpired):
             broker_module.run_bounded(command, timeout=0.05)
+
+    def test_negotiation_failure_signal_is_exactly_attributed_and_bounded(self) -> None:
+        control = "/fi/w1/wpa_supplicant1/Interfaces/0"
+        peer = "/fi/w1/wpa_supplicant1/Interfaces/0/Peers/selected"
+        signal_line = (
+            f"{control}: {broker_module.WPA_P2P}.GONegotiationFailure "
+            f"({{'peer_object': <objectpath '{peer}'>, 'status': <10>}},)"
+        )
+        self.assertEqual(
+            broker_module.go_negotiation_failure(
+                signal_line, control_path=control, peer_path=peer
+            ),
+            10,
+        )
+        self.assertIsNone(
+            broker_module.go_negotiation_failure(
+                signal_line.replace("/selected'", "/foreign'"),
+                control_path=control,
+                peer_path=peer,
+            )
+        )
+        with self.assertRaisesRegex(broker_module.BrokerError, "invalid negotiation-failure"):
+            broker_module.go_negotiation_failure(
+                f"{control}: {broker_module.WPA_P2P}.GONegotiationFailure ({{'status': <10>}},)",
+                control_path=control,
+                peer_path=peer,
+            )
+        with self.assertRaisesRegex(broker_module.BrokerError, "invalid negotiation-failure status"):
+            broker_module.go_negotiation_failure(
+                signal_line.replace("<10>", "<0>"),
+                control_path=control,
+                peer_path=peer,
+            )
+
+    def test_long_lived_monitor_drains_pressure_and_stops_a_child_that_never_exits(self) -> None:
+        control = "/fi/w1/wpa_supplicant1/Interfaces/0"
+        peer = "/fi/w1/wpa_supplicant1/Interfaces/0/Peers/selected"
+        ready = f"Monitoring signals on object {control}\n"
+        failure = (
+            f"{control}: {broker_module.WPA_P2P}.GONegotiationFailure "
+            f"({{'peer_object': <objectpath '{peer}'>, 'status': <10>}},)\n"
+        )
+        script = (
+            "import os,threading,time;"
+            f"os.write(1,{ready!r}.encode());"
+            "a=threading.Thread(target=os.write,args=(1,(b'x'*79+b'\\n')*900));"
+            "b=threading.Thread(target=os.write,args=(2,b'e'*72000));"
+            "a.start();b.start();a.join();b.join();"
+            f"os.write(1,{failure!r}.encode());"
+            "time.sleep(30)"
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        monitor = broker_module.SupplicantSignalMonitor(
+            control_path=control, peer_path=peer
+        )
+        with mock.patch.object(broker_module.subprocess, "Popen", return_value=process):
+            monitor.start()
+        deadline = time.monotonic() + 2
+        while monitor.failure_status() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(monitor.failure_status(), 10)
+        self.assertEqual(len(monitor.stderr), broker_module.MAX_MONITOR_STDERR)
+        monitor.close()
+        self.assertIsNotNone(process.poll())
+        self.assertTrue(all(not thread.is_alive() for thread in monitor.threads))
+
+    def test_monitor_failure_is_closed_when_the_child_exits_after_readiness(self) -> None:
+        control = "/fi/w1/wpa_supplicant1/Interfaces/0"
+        peer = "/fi/w1/wpa_supplicant1/Interfaces/0/Peers/selected"
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                f"print({'Monitoring signals on object ' + control!r},flush=True)",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        monitor = broker_module.SupplicantSignalMonitor(
+            control_path=control, peer_path=peer
+        )
+        with mock.patch.object(broker_module.subprocess, "Popen", return_value=process):
+            monitor.start()
+        process.wait(timeout=2)
+        with self.assertRaisesRegex(broker_module.BrokerError, "stopped unexpectedly"):
+            monitor.failure_status()
+        monitor.close()
 
     def test_supplicant_collections_have_independent_count_limits(self) -> None:
         with self.assertRaisesRegex(broker_module.BrokerError, "too many object paths"):
@@ -147,7 +243,10 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
                 broker_module, "set_property"
             ) as set_property, mock.patch.object(
                 broker_module, "call", return_value="()"
-            ) as call:
+            ) as call, mock.patch.object(
+                broker_module, "SupplicantSignalMonitor"
+            ) as monitor:
+                monitor.return_value.failure_status.return_value = None
                 result = broker.connect()
 
         self.assertEqual(result, {"group": {"interface": "p2p-wlan42-0", "role": "client"}})
@@ -165,6 +264,34 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
         self.assertIn("'frequency': <int32 2437>", options)
         self.assertIn("'go_intent': <int32 0>", options)
         self.assertNotIn("wlan43", options)
+        monitor.return_value.start.assert_called_once_with()
+        monitor.return_value.close.assert_called_once_with()
+
+    def test_connect_surfaces_selected_receiver_provisioning_rejection(self) -> None:
+        broker = self.broker()
+        with tempfile.TemporaryDirectory() as directory:
+            broker.wfd_marker = Path(directory) / "owned"
+            with mock.patch.object(broker, "network_armed", return_value=True), mock.patch.object(
+                broker, "resolve_control", return_value="/selected-control"
+            ), mock.patch.object(
+                broker, "resolve_peer", return_value="/selected-peer"
+            ), mock.patch.object(
+                broker, "peer_groups", return_value=frozenset()
+            ), mock.patch.object(
+                broker_module, "get_property", return_value="(<@ay []>,)"
+            ), mock.patch.object(
+                broker_module, "set_property"
+            ), mock.patch.object(
+                broker_module, "call", return_value="()"
+            ), mock.patch.object(
+                broker_module, "SupplicantSignalMonitor"
+            ) as monitor:
+                monitor.return_value.failure_status.return_value = 10
+                with self.assertRaisesRegex(
+                    broker_module.BrokerError, "incompatible provisioning method"
+                ):
+                    broker.connect()
+        monitor.return_value.close.assert_called_once_with()
 
     def test_connect_refuses_preexisting_global_wfd_owner(self) -> None:
         broker = self.broker()

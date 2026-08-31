@@ -2847,3 +2847,19 @@ supplicant cleanup because `Cancel`/`Disconnect` followed a negotiation that
 had already terminated. A future pairing implementation must retain bounded
 signal draining and exact peer attribution at the privileged boundary rather
 than scraping global logs.
+
+Companion revision 79 implements that diagnostic boundary without adding a
+pairing mode. Before calling `Connect`, the root broker starts `gdbus monitor`
+on the already resolved supplicant control object and waits for its readiness
+line. Dedicated drains consume stdout and stderr for the complete negotiation,
+retain only fixed state, cap lines and event count, and terminate and join the
+monitor during every exit path. Only a well-formed `GONegotiationFailure` for
+the exact resolved peer can end the wait. Status 10 becomes the stable
+`pairing-method-unsupported` controller error and tells the panel that PIN
+pairing may be required; other attributed statuses remain bounded numeric P2P
+failures. Pressure, malformed/foreign signal, unexpected child exit, selected
+peer failure, process termination, controller-code, and QML-message
+regressions cover the new path. Guard API 14 and engine contract API 2 are
+unchanged. Because this modifies the privileged companion after the prior
+hardware run, the revision-79 exact package and normal Fire TV acceptance gate
+remain required before release.

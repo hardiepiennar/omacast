@@ -461,6 +461,8 @@ class GuardedTransportAdapter:
     @staticmethod
     def _failure_code(detail: str) -> str:
         lowered = detail.lower()
+        if "incompatible provisioning method" in lowered or "may require pin pairing" in lowered:
+            return "pairing-method-unsupported"
         if "timed out waiting for a direct supplicant p2p group" in lowered or "p2p group formation failed" in lowered:
             return "p2p-negotiation-failed"
         if "dhcp" in lowered or "ip address" in lowered:

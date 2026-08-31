@@ -22,6 +22,10 @@ MAX_REQUEST = 1024
 MAX_COMMAND_OUTPUT = 65_536
 MAX_OBJECT_PATHS = 256
 MAX_VARIANT_BYTES = 4_096
+MAX_MONITOR_LINE = 4_096
+MAX_MONITOR_LINES = 1_024
+MAX_MONITOR_STDERR = 4_096
+MONITOR_START_TIMEOUT_SECONDS = 3.0
 NETWORK_ARM_TIMEOUT_SECONDS = 10.0
 WPA_DEST = "fi.w1.wpa_supplicant1"
 WPA_ROOT = "/fi/w1/wpa_supplicant1"
@@ -186,6 +190,182 @@ def byte_variant(data: bytes) -> str:
     return "<@ay [" + ", ".join(f"byte 0x{value:02x}" for value in data) + "]>"
 
 
+def go_negotiation_failure(line: str, *, control_path: str, peer_path: str) -> int | None:
+    """Return an exactly attributed P2P status from one bounded gdbus line."""
+    signal_name = f"{WPA_P2P}.GONegotiationFailure"
+    if signal_name not in line:
+        return None
+    if len(line) > MAX_MONITOR_LINE or not line.startswith(f"{control_path}: {signal_name} "):
+        raise BrokerError("supplicant emitted an invalid negotiation-failure signal")
+    peer_match = re.search(r"['\"]peer_object['\"]:\s*<objectpath\s+['\"]([^'\"]{1,512})['\"]>", line)
+    status_match = re.search(r"['\"]status['\"]:\s*<(?:int32\s+)?([0-9]{1,3})>", line)
+    if peer_match is None or status_match is None:
+        raise BrokerError("supplicant emitted an invalid negotiation-failure signal")
+    status = int(status_match.group(1))
+    if not 1 <= status <= 255:
+        raise BrokerError("supplicant emitted an invalid negotiation-failure status")
+    if peer_match.group(1) != peer_path:
+        return None
+    return status
+
+
+class SupplicantSignalMonitor:
+    """Continuously drain a fixed gdbus monitor and retain only bounded state."""
+
+    def __init__(self, *, control_path: str, peer_path: str) -> None:
+        self.control_path = control_path
+        self.peer_path = peer_path
+        self.process: subprocess.Popen[bytes] | None = None
+        self.threads: list[threading.Thread] = []
+        self.ready = threading.Event()
+        self.lock = threading.Lock()
+        self.error: str | None = None
+        self.status: int | None = None
+        self.stderr = bytearray()
+        self.closing = False
+
+    def _set_error(self, detail: str) -> None:
+        with self.lock:
+            if self.error is None:
+                self.error = detail
+
+    def _stdout_line(self, raw: bytes) -> None:
+        line = raw.decode("utf-8", errors="replace")
+        if line.startswith("Monitoring signals on object "):
+            self.ready.set()
+            return
+        try:
+            status = go_negotiation_failure(
+                line, control_path=self.control_path, peer_path=self.peer_path
+            )
+        except BrokerError as exc:
+            self._set_error(str(exc))
+            return
+        if status is not None:
+            with self.lock:
+                if self.status is None:
+                    self.status = status
+
+    def _drain(self, stream: object, *, stdout: bool) -> None:
+        descriptor = stream.fileno()  # type: ignore[attr-defined]
+        pending = bytearray()
+        lines = 0
+        while True:
+            try:
+                chunk = os.read(descriptor, 4_096)
+            except OSError:
+                return
+            if not chunk:
+                break
+            if stdout:
+                pending.extend(chunk)
+                if len(pending) > MAX_MONITOR_LINE and b"\n" not in pending:
+                    self._set_error("supplicant signal monitor emitted an oversized line")
+                    pending.clear()
+                    continue
+                while b"\n" in pending:
+                    raw, _, remainder = pending.partition(b"\n")
+                    pending = bytearray(remainder)
+                    lines += 1
+                    if lines > MAX_MONITOR_LINES:
+                        self._set_error("supplicant signal monitor exceeded its event limit")
+                        continue
+                    if len(raw) > MAX_MONITOR_LINE:
+                        self._set_error("supplicant signal monitor emitted an oversized line")
+                        continue
+                    self._stdout_line(bytes(raw))
+            else:
+                remaining = MAX_MONITOR_STDERR - len(self.stderr)
+                if remaining > 0:
+                    self.stderr.extend(chunk[:remaining])
+        if stdout and pending:
+            self._set_error("supplicant signal monitor ended with an incomplete line")
+
+    def start(self) -> None:
+        self.process = subprocess.Popen(
+            [
+                "gdbus", "monitor", "--system", "--dest", WPA_DEST,
+                "--object-path", self.control_path,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            start_new_session=True,
+        )
+        if self.process.stdout is None or self.process.stderr is None:
+            self.close()
+            raise BrokerError("supplicant signal monitor did not expose bounded pipes")
+        self.threads = [
+            threading.Thread(target=self._drain, args=(self.process.stdout,), kwargs={"stdout": True}, daemon=True),
+            threading.Thread(target=self._drain, args=(self.process.stderr,), kwargs={"stdout": False}, daemon=True),
+        ]
+        for thread in self.threads:
+            thread.start()
+        deadline = time.monotonic() + MONITOR_START_TIMEOUT_SECONDS
+        while not self.ready.wait(0.05):
+            with self.lock:
+                error = self.error
+            if error is not None or self.process.poll() is not None or time.monotonic() >= deadline:
+                detail = error or bytes(self.stderr).decode("utf-8", errors="replace").strip()
+                self.close()
+                raise BrokerError(detail[:512] or "supplicant signal monitor did not become ready")
+
+    def failure_status(self) -> int | None:
+        with self.lock:
+            if self.error is not None:
+                raise BrokerError(self.error)
+            if (
+                not self.closing
+                and self.process is not None
+                and self.process.poll() is not None
+            ):
+                detail = bytes(self.stderr).decode("utf-8", errors="replace").strip()
+                raise BrokerError(detail[:512] or "supplicant signal monitor stopped unexpectedly")
+            return self.status
+
+    def close(self) -> None:
+        with self.lock:
+            self.closing = True
+        process = self.process
+        if process is not None and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    self._set_error("supplicant signal monitor did not stop")
+        for thread in self.threads:
+            thread.join(timeout=1.0)
+            if thread.is_alive():
+                self._set_error("supplicant signal monitor drain did not stop")
+        if process is not None:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+
+
+def negotiation_failure_detail(status: int) -> str:
+    if status == 10:
+        return (
+            "receiver rejected push-button pairing (Wi-Fi Direct status 10: "
+            "incompatible provisioning method); this display may require PIN pairing"
+        )
+    if status == 11:
+        return "receiver rejected the Wi-Fi Direct connection request (status 11)"
+    return f"receiver rejected Wi-Fi Direct group negotiation (status {status})"
+
+
 class SupplicantBroker:
     def __init__(self, *, session: str, uid: int, interface: str, peer: str, frequency: int) -> None:
         self.session = session
@@ -313,26 +493,37 @@ class SupplicantBroker:
         if self.frequency:
             options["frequency"] = f"<int32 {self.frequency}>"
         encoded = "{" + ", ".join(f"'{key}': {value}" for key, value in options.items()) + "}"
-        self.p2p_mutation_attempted = True
-        call([
-            "--dest", WPA_DEST,
-            "--object-path", self.control_path,
-            "--method", f"{WPA_P2P}.Connect",
-            encoded,
-        ], timeout=15.0)
-        deadline = time.monotonic() + 45
-        while time.monotonic() < deadline and not self.stop.is_set():
-            candidates: list[dict[str, str]] = []
-            for group_path in self.peer_groups(self.peer_path) - self.baseline_groups:
-                candidate = self.group_candidate(group_path)
-                if candidate is not None:
-                    candidates.append(candidate)
-            if len(candidates) > 1:
-                raise BrokerError("selected receiver created ambiguous P2P groups")
-            if candidates:
-                return {"group": candidates[0]}
-            self.stop.wait(0.5)
-        raise BrokerError("timed out waiting for the selected receiver P2P group")
+        monitor = SupplicantSignalMonitor(control_path=self.control_path, peer_path=self.peer_path)
+        monitor.start()
+        try:
+            self.p2p_mutation_attempted = True
+            call([
+                "--dest", WPA_DEST,
+                "--object-path", self.control_path,
+                "--method", f"{WPA_P2P}.Connect",
+                encoded,
+            ], timeout=15.0)
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline and not self.stop.is_set():
+                failure = monitor.failure_status()
+                if failure is not None:
+                    raise BrokerError(negotiation_failure_detail(failure))
+                candidates: list[dict[str, str]] = []
+                for group_path in self.peer_groups(self.peer_path) - self.baseline_groups:
+                    candidate = self.group_candidate(group_path)
+                    if candidate is not None:
+                        candidates.append(candidate)
+                if len(candidates) > 1:
+                    raise BrokerError("selected receiver created ambiguous P2P groups")
+                if candidates:
+                    return {"group": candidates[0]}
+                self.stop.wait(0.1)
+            raise BrokerError("timed out waiting for the selected receiver P2P group")
+        finally:
+            monitor.close()
+            late_failure = monitor.failure_status()
+            if late_failure is not None:
+                raise BrokerError(negotiation_failure_detail(late_failure))
 
     def cleanup(self) -> bool:
         cleaned = True

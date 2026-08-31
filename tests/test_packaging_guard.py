@@ -541,7 +541,7 @@ network_manager_marker_valid
 
     def test_recipe_installs_the_immutable_privilege_boundary(self) -> None:
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
-        self.assertIn("pkgrel=78", recipe)
+        self.assertIn("pkgrel=79", recipe)
         self.assertIn('omarchy-cast-guard"', recipe)
         self.assertIn('omarchy-cast-guard-recover"', recipe)
         self.assertIn('omarchy-cast-supplicant-broker"', recipe)

@@ -139,7 +139,9 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   arrive; users can choose an early result immediately while slower
   advertisements remain discoverable without a second `StartFind`. Selection
   cooperatively ends that scan before P2P connection starts. Companion revision
-  78 exposes this capability through engine contract API 2.
+  79 exposes this capability through engine contract API 2 and preserves the
+  same valid-sink discovery rule while reporting an attributed pairing-method
+  rejection after selection.
 - The native Omarchy panel exposes live negotiated mode, capture/mux load,
   packet timing, RTP queueing, radio counters, and a derived health verdict.
 - The panel launches production work in `omacast-session.service`; a simulated
@@ -267,9 +269,12 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   path. Patch 49 budgets reconstructed-engine JSON contracts, and patch 50
   terminates the complete process group when a bounded engine command exceeds
   its output or time limit. Patch 51 removes the dormant MPEG-TS dump analyzer
-  from the installed engine. Companion revision 78 carries the resulting
+  from the installed engine. Companion revision 79 carries the resulting
   candidate; guard API 14 is unchanged and engine contract API 2 proves
-  progressive discovery support.
+  progressive discovery support. Revision 79 also consumes the selected
+  supplicant control object's structured GO-negotiation failure signal, with
+  bounded continuous pipe draining and exact peer attribution, so a receiver
+  rejection does not collapse into the generic group timeout.
 - Direct-supplicant readiness no longer depends on dnsmasq. The supported
   laptop-as-P2P-client topology receives DHCP from the receiver; dnsmasq stays
   a requirement only for FluxCast's separate NetworkManager group-owner path.

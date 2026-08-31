@@ -516,6 +516,7 @@ class TransportTest(unittest.TestCase):
     def test_engine_failures_have_stable_actionable_codes(self) -> None:
         cases = {
             "DHCP client did not obtain an IP address": "dhcp-failed",
+            "receiver rejected push-button pairing (Wi-Fi Direct status 10: incompatible provisioning method); this display may require PIN pairing": "pairing-method-unsupported",
             "wpa_supplicant P2P group formation failed": "p2p-negotiation-failed",
             "Waiting for DHCP before timed out waiting for a direct supplicant P2P group": "p2p-negotiation-failed",
             "RTSP Miracast negotiation refused": "receiver-negotiation-failed",

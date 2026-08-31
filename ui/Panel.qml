@@ -362,6 +362,7 @@ Panel {
     if (code === "authorization-timeout") return "Restore this session, then update the companion package before retrying."
     if (code === "guard-setup-failed") return "Restore this session, run Check again, and update the companion if setup is still unavailable."
     if (code === "dhcp-failed") return "The direct Wi-Fi link formed but received no address. Restore it, return the TV to Display Mirroring, and retry."
+    if (code === "pairing-method-unsupported") return "This display rejected push-button pairing and may require a PIN. Restore this session; PIN pairing is not supported yet."
     if (code === "p2p-negotiation-failed") return "The direct Wi-Fi link could not form. Restore it, confirm Display Mirroring is open, and retry nearby."
     if (code === "receiver-negotiation-failed" || code === "receiver-negotiation-timeout") return "The TV did not finish Miracast setup. Restore this session, reopen Display Mirroring, and retry."
     if (code === "capture-failed") return "Desktop capture or encoding stopped. Restore this session, keep the selected display active, and run Check again."

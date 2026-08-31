@@ -2,11 +2,13 @@
 
 ## Unreleased
 
-- Record the installed automatic-channel Samsung test: the frequency fix
-  reached the privileged broker, after which the receiver rejected Omacast's
-  hard-coded push-button provisioning with Wi-Fi Direct status 10. Keep the
-  valid sink visible and track attributed negotiation errors and interactive
-  PIN provisioning as follow-up work.
+- Surface receiver-attributed Wi-Fi Direct negotiation failures immediately
+  instead of waiting for the generic group timeout. Status 10 now explains
+  that the display rejected push-button provisioning and may require PIN
+  pairing; the valid sink remains visible and PIN provisioning stays tracked
+  separately. The privileged monitor drains both streams continuously with
+  fixed bounds, matches the exact control object and peer, and is carried by
+  companion revision 79 without changing guard API 14 or engine API 2.
 - Make automatic P2P channel selection reach the privileged supplicant broker,
   not only the FluxCast command. The closed launch plan now carries one
   canonical P2P frequency, with a regression proving that a 5745 MHz station
