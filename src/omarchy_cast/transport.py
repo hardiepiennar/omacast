@@ -423,6 +423,7 @@ class GuardedTransportAdapter:
                     raise TransportError("Administrator approval was cancelled. Nothing was changed.", code="authorization-cancelled")
                 if process.returncode != 0:
                     raise TransportError(error or "The networking helper exited before it was ready.", code="guard-setup-failed")
+                time.sleep(0.05)
         raise TransportError("Administrator approval or guarded setup took too long. Try again and answer the approval prompt.", code="authorization-timeout")
 
     @staticmethod

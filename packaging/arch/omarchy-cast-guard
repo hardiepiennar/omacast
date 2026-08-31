@@ -341,12 +341,13 @@ arm_recovery() {
 activate_network() { if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then ufw allow in on "p2p-$interface+" to any port 7236 proto tcp comment "omarchy-cast-$session_id" | grep -q 'Rule added' && ufw_rule_added=true; fi; pause_network_manager || die 'could not pause NetworkManager safely'; verify_clean_interface_baseline; install -m600 /dev/null "$interfaces_armed_file"; if systemctl is-active --quiet systemd-networkd.service; then systemctl reload systemd-networkd.service; else systemctl start systemd-networkd.service; fi; }
 prepare() {
   verify_user_runtime
-  verify_interface
-  verify_network_manager
-  verify_clean_interface_baseline
   trap 'cleanup' EXIT
   trap 'exit 0' HUP INT TERM
   create_session_identity
+  trap 'cleanup; json_error "guarded networking setup failed"; finalize_status' EXIT
+  verify_interface
+  verify_network_manager
+  verify_clean_interface_baseline
   arm_recovery || die 'independent recovery did not become ready'
   write_privileged_runtime
   start_broker || die 'session-scoped supplicant broker did not become ready'

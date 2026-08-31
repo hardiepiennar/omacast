@@ -472,6 +472,24 @@ class TransportTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "authorization-cancelled")
         self.assertIn("Nothing was changed", str(caught.exception))
 
+    def test_detached_launcher_waits_for_root_worker_status_without_busy_spinning(self) -> None:
+        from omarchy_cast.guard import GuardRequest
+        request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)
+        process = Mock(returncode=0)
+        process.poll.return_value = 0
+        with (
+            patch("omarchy_cast.transport.read_guard_status", return_value=None),
+            patch("omarchy_cast.transport.time.monotonic", side_effect=(0.0, 0.0, 0.0, 2.0)),
+            patch("omarchy_cast.transport.time.sleep") as sleep,
+            self.assertRaises(TransportError) as caught,
+        ):
+            GuardedTransportAdapter._read_ready(
+                process, request, lambda: False, timeout=1,
+                stdout_drain=StatusDrainFixture(), stderr_drain=StatusDrainFixture(),
+            )
+        self.assertEqual(caught.exception.code, "authorization-timeout")
+        sleep.assert_called_once_with(0.05)
+
     def test_helper_cleanup_status_is_bounded_session_scoped_and_explicit(self) -> None:
         from omarchy_cast.guard import GuardRequest
         request = GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60)

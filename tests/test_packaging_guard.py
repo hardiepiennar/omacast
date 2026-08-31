@@ -90,6 +90,8 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn('"$1" == --version', source)
         prepare_body = source.split('prepare() {', 1)[1].split('}', 1)[0]
         self.assertLess(prepare_body.index("trap 'cleanup' EXIT"), prepare_body.index('create_session_identity'))
+        self.assertLess(prepare_body.index('create_session_identity'), prepare_body.index('verify_interface'))
+        self.assertLess(prepare_body.index('json_error "guarded networking setup failed"'), prepare_body.index('verify_interface'))
         self.assertLess(prepare_body.index('create_session_identity'), prepare_body.index('arm_recovery'))
         self.assertLess(prepare_body.index('arm_recovery'), prepare_body.index('write_privileged_runtime'))
         self.assertLess(prepare_body.index('write_privileged_runtime'), prepare_body.index('start_broker'))
@@ -835,6 +837,45 @@ reclaim_orphan_interfaces
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["reclaimed"], 1)
+
+    def test_detached_guard_reports_an_early_setup_failure_through_status_file(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+session_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+uid=1000
+test_root="$2"
+verify_user_runtime() { :; }
+create_session_identity() {
+  session_root="$test_root/session"
+  user_root="$session_root/user"
+  ready_file="$session_root/status.json"
+  status_ack_file="$user_root/status-ack"
+  trigger_file="$user_root/trigger"
+  broker_socket="$session_root/supplicant.sock"
+  mkdir -p "$user_root"
+}
+verify_interface() { die 'simulated interface failure'; }
+cleanup() { :; }
+finalize_status() { :; }
+prepare
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), temp),
+                check=False, capture_output=True, text=True, timeout=2,
+            )
+            payload = json.loads((Path(temp) / "session" / "status.json").read_text(encoding="utf-8"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("simulated interface failure", result.stderr)
+        self.assertEqual(payload, {
+            "schemaVersion": 1,
+            "kind": "omarchy-cast-guard-status",
+            "ok": False,
+            "phase": "error",
+            "sessionId": "a" * 32,
+            "error": "guarded networking setup failed",
+        })
 
     def test_explicit_recovery_prevalidates_every_candidate_before_deletion(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
