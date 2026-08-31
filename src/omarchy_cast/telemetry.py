@@ -18,7 +18,7 @@ import time
 from typing import Any, Mapping
 from uuid import uuid4
 
-from .bounds import BoundError, MAX_TELEMETRY_BYTES, read_bounded_regular_file, validate_json_budget
+from .bounds import BoundError, MAX_TELEMETRY_BYTES, open_private_directory, open_user_state_root, read_bounded_regular_file, validate_json_budget
 from .command import run_command
 from .state import _open_session_runtime_descriptor, runtime_directory
 
@@ -47,27 +47,12 @@ _PATH_KEYS = {
 
 
 def _open_private_child(directory_descriptor: int, name: str, *, create: bool) -> int:
-    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    if create:
-        try:
-            os.mkdir(name, mode=0o700, dir_fd=directory_descriptor)
-        except FileExistsError:
-            pass
-    descriptor = os.open(name, flags, dir_fd=directory_descriptor)
     try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
-            raise ValueError("telemetry directory ownership or permissions are unsafe")
-        if stat.S_IMODE(metadata.st_mode) != 0o700:
-            os.fchmod(descriptor, 0o700)
-            metadata = os.fstat(descriptor)
-        if stat.S_IMODE(metadata.st_mode) != 0o700:
-            raise ValueError("telemetry directory ownership or permissions are unsafe")
-        return descriptor
-    except Exception:
-        os.close(descriptor)
-        raise
+        return open_private_directory(
+            directory_descriptor, name, create=create, repair_mode=True,
+        )
+    except BoundError as exc:
+        raise ValueError("telemetry directory ownership or permissions are unsafe") from exc
 
 
 def _open_live_parent(environ: Mapping[str, str] | None, *, create: bool) -> int:
@@ -84,15 +69,8 @@ def _state_home(environ: Mapping[str, str]) -> Path:
 
 def _open_archive_directory(environ: Mapping[str, str], *, create: bool) -> int:
     state_home = _state_home(environ)
-    if create:
-        state_home.mkdir(mode=0o700, parents=True, exist_ok=True)
-    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    state_descriptor = os.open(state_home, flags)
+    state_descriptor = open_user_state_root(state_home, create=create)
     try:
-        metadata = os.fstat(state_descriptor)
-        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o022:
-            raise ValueError("telemetry state directory ownership or permissions are unsafe")
         product_descriptor = _open_private_child(state_descriptor, "omarchy-cast", create=create)
     finally:
         os.close(state_descriptor)

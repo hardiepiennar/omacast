@@ -24,6 +24,7 @@ Panel {
   readonly property int maxReceivers: 64
   readonly property int maxIssues: 16
   readonly property int maxWarnings: 8
+  readonly property int maxScanStreamLines: 65
 
   property var doctor: ({})
   property var launchPlan: ({})
@@ -227,18 +228,31 @@ Panel {
     }
   }
 
-  function finiteNumber(value) {
-    return typeof value === "number" && isFinite(value) ? value : 0
+  function boundedNumber(value, minimum, maximum, fallback) {
+    return typeof value === "number" && isFinite(value) && value >= minimum && value <= maximum
+      ? value : fallback
+  }
+
+  function boundedInteger(value, minimum, maximum, fallback) {
+    return typeof value === "number" && isFinite(value) && Math.floor(value) === value
+      && value >= minimum && value <= maximum ? value : fallback
   }
 
   function normalizeProcess(value) {
     value = value && typeof value === "object" ? value : {}
-    return { pid: finiteNumber(value.pid), cpuPercent: finiteNumber(value.cpuPercent), cpuDelayMsPerSec: finiteNumber(value.cpuDelayMsPerSec) }
+    return {
+      pid: boundedInteger(value.pid, 1, 2147483647, 0),
+      cpuPercent: boundedNumber(value.cpuPercent, 0, 100000, 0),
+      cpuDelayMsPerSec: boundedNumber(value.cpuDelayMsPerSec, 0, 1000000, 0)
+    }
   }
 
   function normalizePacket(value) {
     value = value && typeof value === "object" ? value : {}
-    return { packets: finiteNumber(value.packets), p95GapMs: finiteNumber(value.p95GapMs) }
+    return {
+      packets: boundedInteger(value.packets, 0, 9007199254740991, 0),
+      p95GapMs: boundedNumber(value.p95GapMs, 0, 86400000, 0)
+    }
   }
 
   function normalizeTelemetry(value) {
@@ -253,36 +267,64 @@ Panel {
     var health = value.health && typeof value.health === "object" ? value.health : {}
     return {
       sampledAt: boundedText(value.sampledAt, "", 64),
-      negotiated: { mode: boundedText(negotiated.mode, "", 64), fps: finiteNumber(negotiated.fps) },
+      negotiated: {
+        mode: typeof negotiated.mode === "string" && /^[0-9]{1,5}x[0-9]{1,5}p[0-9]{1,4}$/.test(negotiated.mode)
+          ? negotiated.mode : "",
+        fps: boundedNumber(negotiated.fps, 0, 1000, 0)
+      },
       output: {
-        measuredFps: finiteNumber(output.measuredFps), reportedFps: finiteNumber(output.reportedFps),
-        realtimeRatio: finiteNumber(output.realtimeRatio), dropFrames: finiteNumber(output.dropFrames),
-        dupFrames: finiteNumber(output.dupFrames)
+        measuredFps: boundedNumber(output.measuredFps, 0, 1000, 0),
+        reportedFps: boundedNumber(output.reportedFps, 0, 1000, 0),
+        realtimeRatio: boundedNumber(output.realtimeRatio, 0, 1000, 0),
+        dropFrames: boundedInteger(output.dropFrames, 0, 9007199254740991, 0),
+        dupFrames: boundedInteger(output.dupFrames, 0, 9007199254740991, 0)
       },
       processes: { capture: normalizeProcess(processes.capture), mux: normalizeProcess(processes.mux) },
       transport: {
-        interface: boundedText(transport.interface, "", 64), txMbps: finiteNumber(transport.txMbps),
-        sendQueueBytes: finiteNumber(transport.sendQueueBytes), txErrors: finiteNumber(transport.txErrors),
-        txDropped: finiteNumber(transport.txDropped)
+        interface: typeof transport.interface === "string" && /^[A-Za-z0-9_.-]{1,15}$/.test(transport.interface)
+          ? transport.interface : "",
+        txMbps: boundedNumber(transport.txMbps, 0, 1000000, 0),
+        sendQueueBytes: boundedInteger(transport.sendQueueBytes, 0, 9007199254740991, 0),
+        txErrors: boundedInteger(transport.txErrors, 0, 9007199254740991, 0),
+        txDropped: boundedInteger(transport.txDropped, 0, 9007199254740991, 0)
       },
       radio: {
-        signalDbm: radio.signalDbm === undefined ? undefined : finiteNumber(radio.signalDbm),
-        txBitrateMbps: finiteNumber(radio.txBitrateMbps), retryDelta: finiteNumber(radio.retryDelta),
-        failureDelta: finiteNumber(radio.failureDelta), beaconLossDelta: finiteNumber(radio.beaconLossDelta)
+        signalDbm: radio.signalDbm === undefined ? undefined : boundedNumber(radio.signalDbm, -200, 0, undefined),
+        txBitrateMbps: boundedNumber(radio.txBitrateMbps, 0, 1000000, 0),
+        retryDelta: boundedInteger(radio.retryDelta, 0, 9007199254740991, 0),
+        failureDelta: boundedInteger(radio.failureDelta, 0, 9007199254740991, 0),
+        beaconLossDelta: boundedInteger(radio.beaconLossDelta, 0, 9007199254740991, 0)
       },
-      packetTiming: { video: normalizePacket(timing.video), audio: normalizePacket(timing.audio), avSkewMs: finiteNumber(timing.avSkewMs) },
-      maxima: { sendQueueBytes: finiteNumber(maxima.sendQueueBytes), cpuDelayMsPerSec: finiteNumber(maxima.cpuDelayMsPerSec) },
-      health: { status: boundedText(health.status, "", 32), issues: boundedStrings(health.issues, maxIssues, 240) }
+      packetTiming: {
+        video: normalizePacket(timing.video), audio: normalizePacket(timing.audio),
+        avSkewMs: boundedNumber(timing.avSkewMs, -86400000, 86400000, 0)
+      },
+      maxima: {
+        sendQueueBytes: boundedInteger(maxima.sendQueueBytes, 0, 9007199254740991, 0),
+        cpuDelayMsPerSec: boundedNumber(maxima.cpuDelayMsPerSec, 0, 1000000, 0)
+      },
+      health: {
+        status: ["warming", "healthy", "attention"].indexOf(health.status) >= 0 ? health.status : "",
+        issues: boundedStrings(health.issues, maxIssues, 240)
+      }
     }
   }
 
   function normalizeSession(value) {
     value = value && typeof value === "object" ? value : {}
+    if (value.schemaVersion !== 1) return ({
+      schemaVersion: 1,
+      phase: "error",
+      sessionId: "",
+      startedAt: "",
+      error: { code: "runtime-state-invalid", message: "Casting state uses an incompatible protocol" },
+      telemetry: normalizeTelemetry({})
+    })
     var allowed = ["idle", "checking", "discovering", "preparing", "connecting", "streaming", "stopping", "error", "recovering"]
     var valuePhase = typeof value.phase === "string" && allowed.indexOf(value.phase) >= 0 ? value.phase : "error"
     var error = value.error && typeof value.error === "object" ? value.error : {}
     return {
-      schemaVersion: value.schemaVersion === 1 ? 1 : 0,
+      schemaVersion: 1,
       phase: valuePhase,
       sessionId: boundedText(value.sessionId, "", 64),
       startedAt: boundedText(value.startedAt, "", 64),
@@ -834,25 +876,31 @@ Panel {
   Process {
     id: scanProc
     command: [root.controllerPath, "scan", "--timeout", "8", "--stream"]
-    stdout: SplitParser {
-      splitMarker: "\n"
-      onRead: function(line) {
-        if (line.length > root.maxControllerResponseChars) {
-          root.scanFailed = true
-          root.message = "Receiver scan returned too much data"
-          scanProc.running = false
-          return
-        }
+    stdout: BoundedLineCollector {
+      id: scanOutput
+      onLineReady: function(line) {
         root.scanReceived = true
         root.applyScan(line)
       }
     }
     stderr: DiscardCollector {}
-    onRunningChanged: root.scanRunning = running
+    onRunningChanged: {
+      root.scanRunning = running
+      if (running) scanOutput.reset()
+    }
     onExited: function(exitCode) {
       root.scanRunning = false
+      if (scanOutput.overflow || scanOutput.pending.length > 0) {
+        root.scanFailed = true
+        root.message = "Receiver scan returned too much or incomplete data"
+      }
       if (root.connectAfterScan) {
         root.connectAfterScan = false
+        if (root.scanFailed) {
+          root.pendingReceiverId = ""
+          root.restorePanelFocus()
+          return
+        }
         root.startConnect()
         return
       }
@@ -1309,6 +1357,52 @@ Panel {
   component DiscardCollector: SplitParser {
     splitMarker: ""
     onRead: function(data) {}
+  }
+
+  // Progressive discovery is newline-delimited, but a delimiter-based parser
+  // can retain an unbounded unterminated line internally. Consume raw chunks,
+  // retain at most one bounded line, and cap the number of snapshots too.
+  component BoundedLineCollector: SplitParser {
+    signal lineReady(string line)
+    property string pending: ""
+    property bool overflow: false
+    property int lines: 0
+    splitMarker: ""
+
+    function reset() {
+      pending = ""
+      overflow = false
+      lines = 0
+    }
+
+    onRead: function(data) {
+      if (overflow) return
+      var cursor = 0
+      while (cursor < data.length) {
+        var newline = data.indexOf("\n", cursor)
+        var end = newline >= 0 ? newline : data.length
+        var segmentLength = end - cursor
+        if (segmentLength > root.maxControllerResponseChars - pending.length) {
+          pending = ""
+          overflow = true
+          scanProc.running = false
+          return
+        }
+        pending += data.slice(cursor, end)
+        if (newline < 0) return
+        lines += 1
+        if (lines > root.maxScanStreamLines) {
+          pending = ""
+          overflow = true
+          scanProc.running = false
+          return
+        }
+        var complete = pending
+        pending = ""
+        lineReady(complete)
+        cursor = newline + 1
+      }
+    }
   }
 
   component ReceiverButton: Button {

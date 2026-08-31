@@ -15,7 +15,7 @@ import time
 from typing import Any, Mapping
 from uuid import uuid4
 
-from .bounds import BoundError, read_bounded_regular_file, validate_json_budget
+from .bounds import BoundError, open_private_directory, open_user_state_root, read_bounded_regular_file, validate_json_budget
 from .state import SessionLock, StateError, _open_session_runtime_descriptor, idle_state, read_state, transition, write_state
 from .telemetry import cleanup_live_telemetry, remove_archived_telemetry
 from .transport import TransportAdapter, TransportError, TransportResult, result_payload, validate_test_transport_plan, validate_transport_plan
@@ -70,30 +70,28 @@ def event_log_path(session_id: str, environ: Mapping[str, str] | None = None) ->
 
 
 def _open_event_directory(environ: Mapping[str, str] | None, *, create: bool) -> int:
-    directory = _state_home(environ) / "sessions"
-    if create:
-        try:
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        except OSError as exc:
-            raise SessionError("session history directory is unavailable or unsafe") from exc
-    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
+    environ = os.environ if environ is None else environ
+    configured = environ.get("XDG_STATE_HOME")
+    state_home = Path(configured) if configured else Path.home() / ".local" / "state"
+    state_descriptor = product_descriptor = -1
     try:
-        descriptor = os.open(directory, flags)
+        state_descriptor = open_user_state_root(state_home, create=create)
+        product_descriptor = open_private_directory(
+            state_descriptor, "omarchy-cast", create=create, repair_mode=True,
+        )
+        descriptor = open_private_directory(
+            product_descriptor, "sessions", create=create, repair_mode=True,
+        )
     except FileNotFoundError:
         raise
-    except OSError as exc:
+    except (OSError, BoundError) as exc:
         raise SessionError("session history directory is unavailable or unsafe") from exc
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISDIR(metadata.st_mode):
-            raise SessionError("session history path is not a directory")
-        if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
-            raise SessionError("session history directory ownership or permissions are unsafe")
-        return descriptor
-    except Exception:
-        os.close(descriptor)
-        raise
+    finally:
+        if product_descriptor >= 0:
+            os.close(product_descriptor)
+        if state_descriptor >= 0:
+            os.close(state_descriptor)
+    return descriptor
 
 
 def _event_candidates(

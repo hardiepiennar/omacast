@@ -129,6 +129,27 @@ class TelemetryTest(unittest.TestCase):
 
             self.assertEqual(list(target.iterdir()), [])
 
+    def test_archive_directory_cannot_be_redirected_through_product_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Path(temp) / "run"
+            runtime.mkdir(mode=0o700)
+            state_home = Path(temp) / "state"
+            state_home.mkdir(mode=0o700)
+            unrelated = Path(temp) / "unrelated"
+            archive = unrelated / "telemetry"
+            archive.mkdir(mode=0o700, parents=True)
+            unrelated.chmod(0o700)
+            target = archive / ("a" * 32 + ".jsonl")
+            target.write_text("preserve\n", encoding="utf-8")
+            target.chmod(0o600)
+            (state_home / "omarchy-cast").symlink_to(unrelated, target_is_directory=True)
+            environment = {"XDG_RUNTIME_DIR": str(runtime), "XDG_STATE_HOME": str(state_home)}
+
+            with self.assertRaises(OSError):
+                TelemetryWorkspace("a" * 32, environment)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve\n")
+
     def test_existing_owned_telemetry_directories_are_tightened_by_descriptor(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             runtime = Path(temp) / "run"

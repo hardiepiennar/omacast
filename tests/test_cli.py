@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from omarchy_cast.cli import _emit, build_parser, main
+from omarchy_cast.cli import MAX_STREAMED_SCAN_SNAPSHOTS, _emit, build_parser, main
 from omarchy_cast.guard import GuardError
 from omarchy_cast.receivers import FixtureReceiverDiscovery
 
@@ -38,6 +38,18 @@ class CliTest(unittest.TestCase):
         self.assertEqual(build_parser().parse_args(["connect", "--peer", "tv-01"]).duration, 0)
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             build_parser().parse_args(["start", "--peer", "tv-01", "--source", "window"])
+
+    def test_numeric_arguments_are_lexically_and_numerically_bounded(self) -> None:
+        parser = build_parser()
+        for arguments in (
+            ["scan", "--timeout", "0"],
+            ["scan", "--timeout", "9" * 100_000],
+            ["start", "--peer", "tv-01", "--duration", "86401"],
+            ["connect", "--peer", "tv-01", "--duration", "1e3"],
+            ["logs", "--limit", "51"],
+        ):
+            with self.subTest(arguments=arguments), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(arguments)
 
     def test_executable_session_surface_exposes_only_accepted_mode_and_profile(self) -> None:
         parser = build_parser()
@@ -165,6 +177,25 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(discovery.timeout_seconds, 4)
         self.assertEqual([len(line["receivers"]) for line in lines], [0, 1])
+
+    def test_streaming_scan_stops_after_its_snapshot_budget(self) -> None:
+        class FloodedDiscovery:
+            def watch_receivers(self, *, timeout_seconds, callback):
+                del timeout_seconds
+                for _ in range(MAX_STREAMED_SCAN_SNAPSHOTS + 1):
+                    callback([])
+                return []
+
+        output = io.StringIO()
+        with patch("omarchy_cast.cli.read_state", return_value={"phase": "idle"}), patch(
+            "omarchy_cast.cli.discover_host", return_value={"wifiLinks": []}
+        ), patch("omarchy_cast.cli.FluxCastReceiverDiscovery", return_value=FloodedDiscovery()), redirect_stdout(output):
+            code = main(["scan", "--timeout", "4", "--stream"])
+
+        lines = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(code, 2)
+        self.assertEqual(len(lines), MAX_STREAMED_SCAN_SNAPSHOTS + 1)
+        self.assertEqual(lines[-1]["error"]["code"], "receiver-scan-failed")
 
     def test_logs_is_empty_before_any_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict("os.environ", {"XDG_RUNTIME_DIR": temp, "XDG_STATE_HOME": temp}, clear=False):

@@ -150,6 +150,25 @@ class SessionTest(unittest.TestCase):
             with self.assertRaisesRegex(SessionError, "unavailable or unsafe"):
                 append_event(session_id, "test", environment)
 
+    def test_event_directory_cannot_be_redirected_through_product_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_home = Path(temp) / "state"
+            state_home.mkdir(mode=0o700)
+            unrelated = Path(temp) / "unrelated"
+            sessions = unrelated / "sessions"
+            sessions.mkdir(mode=0o700, parents=True)
+            unrelated.chmod(0o700)
+            session_id = "a" * 32
+            target = sessions / f"{session_id}.jsonl"
+            target.write_text("preserve\n", encoding="utf-8")
+            target.chmod(0o600)
+            (state_home / "omarchy-cast").symlink_to(unrelated, target_is_directory=True)
+
+            with self.assertRaisesRegex(SessionError, "unavailable or unsafe"):
+                append_event(session_id, "session-started", {"XDG_STATE_HOME": str(state_home)})
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve\n")
+
     def test_event_reads_reject_links_fifo_hardlinks_and_oversized_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             environment = self.environment(temp)

@@ -20,6 +20,60 @@ class BoundError(ValueError):
     """Runtime input exceeded an explicit local trust boundary."""
 
 
+def open_private_directory(
+    directory_descriptor: int,
+    name: str,
+    *,
+    create: bool,
+    repair_mode: bool = False,
+) -> int:
+    """Open one private child directory through its already pinned parent."""
+    if not name or name in {".", ".."} or "/" in name or "\0" in name:
+        raise BoundError("private directory name is invalid")
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    if create:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=directory_descriptor)
+        except FileExistsError:
+            pass
+    descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise BoundError("private directory ownership is unsafe")
+        if stat.S_IMODE(metadata.st_mode) != 0o700 and repair_mode:
+            os.fchmod(descriptor, 0o700)
+            metadata = os.fstat(descriptor)
+        if stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise BoundError("private directory permissions are unsafe")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def open_user_state_root(path: Path, *, create: bool) -> int:
+    """Open the configured user-state root as the trust anchor for child paths."""
+    if create:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_mode & 0o022
+        ):
+            raise BoundError("user state directory ownership or permissions are unsafe")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
 def bounded_text(value: object, *, limit: int = MAX_RUNTIME_TEXT_CHARS, fallback: str = "") -> str:
     """Return one display-safe string with control characters normalized."""
     text = value if isinstance(value, str) else fallback

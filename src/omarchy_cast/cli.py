@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 from uuid import uuid4
@@ -22,6 +23,28 @@ from .state import StateError, read_state, session_lock_is_held
 from .telemetry import read_telemetry
 from .transport import GUARD_LEASE_SECONDS, FakeTransportAdapter, GuardedTransportAdapter, executable_plan
 from .wfd_fixture import INCOMPATIBLE_VIDEO_FIXTURE, SUCCESS_FIXTURE, TIMEOUT_FIXTURE, result_payload as wfd_result_payload, run_wfd_fixture
+
+
+MAX_STREAMED_SCAN_SNAPSHOTS = 64
+
+
+def _bounded_cli_integer(*, minimum: int, maximum: int, label: str):
+    maximum_width = len(str(maximum))
+
+    def parse(value: str) -> int:
+        if not re.fullmatch(rf"[0-9]{{1,{maximum_width}}}", value):
+            raise argparse.ArgumentTypeError(f"{label} must be between {minimum} and {maximum}")
+        parsed = int(value)
+        if not minimum <= parsed <= maximum:
+            raise argparse.ArgumentTypeError(f"{label} must be between {minimum} and {maximum}")
+        return parsed
+
+    return parse
+
+
+_SCAN_TIMEOUT = _bounded_cli_integer(minimum=1, maximum=30, label="scan timeout")
+_SESSION_DURATION = _bounded_cli_integer(minimum=0, maximum=86_400, label="session duration")
+_LOG_LIMIT = _bounded_cli_integer(minimum=1, maximum=50, label="history limit")
 
 
 def _emit(value: object) -> None:
@@ -44,17 +67,6 @@ def _error_message(exc: BaseException) -> str:
     return bounded_text(str(exc), limit=512, fallback="The controller operation failed.")
 
 
-def _not_ready(action: str) -> dict[str, object]:
-    return {
-        "schemaVersion": 1,
-        "ok": False,
-        "error": {
-            "code": "session-supervisor-not-implemented",
-            "message": f"{action} is unavailable until the guarded session supervisor is implemented.",
-        },
-    }
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="omacast", description="Cast your Omarchy desktop to a Miracast display")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -62,11 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser("monitors", help="read-only Hyprland monitor discovery")
     subcommands.add_parser("status", help="read session state")
     scan = subcommands.add_parser("scan", help="scan for nearby Miracast receivers without connecting")
-    scan.add_argument("--timeout", type=int, default=8, help="Wi-Fi Direct scan duration in seconds (1-30)")
+    scan.add_argument("--timeout", type=_SCAN_TIMEOUT, default=8, help="Wi-Fi Direct scan duration in seconds (1-30)")
     scan.add_argument("--stream", action="store_true", help="emit each changed receiver snapshot as one JSON line")
     receivers = subcommands.add_parser("receivers", help="list nearby Miracast receivers")
     receivers.add_argument("--fixture", action="store_true", help="return the deterministic development Fire TV fixture")
-    receivers.add_argument("--timeout", type=int, default=8, help="Wi-Fi Direct scan duration in seconds (1-30)")
+    receivers.add_argument("--timeout", type=_SCAN_TIMEOUT, default=8, help="Wi-Fi Direct scan duration in seconds (1-30)")
     plan = subcommands.add_parser("plan", help="preview the supported FluxCast command; read-only")
     plan.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     plan.add_argument("--mode", choices=("mirror",), default="mirror")
@@ -91,18 +103,18 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     start.add_argument("--mode", choices=("mirror",), default="mirror")
     start.add_argument("--profile", choices=("safe",), default="safe")
-    start.add_argument("--duration", type=int, default=0, help="optional acceptance-test duration in seconds; 0 casts until stopped")
+    start.add_argument("--duration", type=_SESSION_DURATION, default=0, help="optional acceptance-test duration in seconds; 0 casts until stopped")
     start.add_argument("--simulate", action="store_true", help=argparse.SUPPRESS)
     connect = subcommands.add_parser("connect", help="run the supported guarded session (normally started by Omacast)")
     connect.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     connect.add_argument("--mode", choices=("mirror",), default="mirror")
     connect.add_argument("--profile", choices=("safe",), default="safe")
     connect.add_argument("--simulate", action="store_true", help="exercise lifecycle only; never touches hardware")
-    connect.add_argument("--duration", type=int, default=0, help="optional acceptance-test duration in seconds; 0 casts until stopped")
+    connect.add_argument("--duration", type=_SESSION_DURATION, default=0, help="optional acceptance-test duration in seconds; 0 casts until stopped")
     subcommands.add_parser("stop", help="request cooperative stop of an active supervised session")
     recover = subcommands.add_parser("recover", help="safely clear stale runtime state when no session owns the lock")
     logs = subcommands.add_parser("logs", help="read bounded local session history")
-    logs.add_argument("--limit", type=int, default=10, help="number of summaries to return (1-50)")
+    logs.add_argument("--limit", type=_LOG_LIMIT, default=10, help="number of summaries to return (1-50)")
     logs.add_argument("--session", help="read detailed events for one controller-issued session id")
     return parser
 
@@ -152,10 +164,14 @@ def main(argv: list[str] | None = None) -> int:
             discovery = FixtureReceiverDiscovery(DEMO_FIRE_TV) if fixture else FluxCastReceiverDiscovery(interface=interface)
             if args.command == "scan" and args.stream:
                 last_emitted: list[Receiver] | None = None
+                emitted_snapshots = 0
 
                 def publish(receivers: list[Receiver]) -> None:
-                    nonlocal last_emitted
+                    nonlocal emitted_snapshots, last_emitted
+                    if emitted_snapshots >= MAX_STREAMED_SCAN_SNAPSHOTS:
+                        raise ReceiverDiscoveryUnavailable("receiver discovery produced too many changed snapshots")
                     _emit(receiver_payload(receivers))
+                    emitted_snapshots += 1
                     last_emitted = receivers
 
                 def cancel_scan(_signum: int, _frame: object) -> None:
@@ -165,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     final_receivers = discovery.watch_receivers(timeout_seconds=args.timeout, callback=publish)
                     if final_receivers != last_emitted:
-                        _emit(receiver_payload(final_receivers))
+                        publish(final_receivers)
                 finally:
                     signal.signal(signal.SIGTERM, previous_handler)
             else:
@@ -315,8 +331,7 @@ def main(argv: list[str] | None = None) -> int:
             _emit({"schemaVersion": 1, "ok": False, "error": {"code": "stop-unavailable", "message": _error_message(exc)}})
             return 1
         return 0
-    _emit(_not_ready(args.command))
-    return 2
+    raise AssertionError("argparse accepted an unknown controller command")
 
 
 if __name__ == "__main__":
