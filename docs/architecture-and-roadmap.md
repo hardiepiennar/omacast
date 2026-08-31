@@ -1027,6 +1027,17 @@ NetworkManager group-owner support for adapters that reject direct supplicant
 reinvocation (issue 5) remain separately tracked architecture work and are not
 claimed by 0.1.4.
 
+Version 0.1.5 is a focused follow-up to the marketplace review boundary. It
+adds end-to-end progressive-discovery stream limits, closed and range-bounded
+QML state/telemetry projection, lexical controller-number limits, and
+descriptor-anchored persistent history/telemetry parents. It does not change
+the companion media, networking, helper, broker, or protocol APIs; revision 79,
+guard API 14, and engine API 2 remain the required companion contract. Because
+the panel scan and status paths change, the exact installed candidate requires
+a panel scan/connect/Stop smoke test in addition to the clean offline and
+distribution gates. The deferred reliability matrix remains deferred and must
+not be reported as passed by this release.
+
 The first supported release is complete only when all are true:
 
 - install, validation, enable, update, disable, and removal work through

@@ -2880,3 +2880,41 @@ managed Wi-Fi interface remained connected to its original profile. This
 validates that attributed failure monitoring did not regress the supported
 Fire TV PBC or cleanup path. Interactive PIN provisioning remains outside this
 release and is tracked in GitHub issue 10.
+
+### Post-0.1.4 marketplace-boundary audit (2026-08-31)
+
+The full tracked codebase and the actual marketplace review comments were
+re-audited before retargeting the pending verification. The original bounded
+subprocess/QML/state findings, FIFO nonblocking fix, removal of privileged PID
+selection, and descriptor-safe session lock remain present. The lifetime trace
+still classifies QML and media waits as startup deadlines, service waits as
+shutdown bounds, and the root guard duration as a renewable failure lease;
+healthy `duration=0` sessions retain no fixed wall clock.
+
+Three adjacent gaps were found. Progressive scan output capped each JSON
+record but not the number of records, while delimiter parsing could retain an
+unterminated line before the QML length check. Wrong-version status JSON could
+also preserve a streaming phase in the panel, and finite Nerd Mode numbers had
+no field-specific range limits. The controller and panel now independently cap
+the stream, the panel consumes bounded raw chunks, a failed scan cannot trigger
+a queued connection, incompatible status fails closed, and telemetry is
+allowlisted by exact numeric type and documented range before projection.
+
+The sibling persistent-history audit found session logs still opened the full
+`omarchy-cast/sessions` path at once. Session history and archived telemetry now
+open the state root and each private child through pinned directory
+descriptors, rejecting product-directory symlinks without touching their
+targets. Controller integer arguments also reject excessive lexical width
+before conversion. Focused adversarial regressions cover snapshot floods,
+wide numeric arguments, linked product directories, incompatible state, and
+bounded QML collectors. These changes do not modify the privileged helper,
+network, media, or receiver protocol path.
+
+Release and marketplace reconciliation found version 0.1.4 already published
+at exact commit `2c2f4fbfd03d40ccf2f2de92057e3f839851e8ed`, with its companion
+asset checksum and source-commit record valid. Project issues 2 and 3 describe
+fixes delivered by that release and should be linked when they are closed;
+issue 4 was already closed by PR 6. Issues 5, 8, 9, and 10 remain open and are
+not claimed. Marketplace issue 3770 still targets the 0.1.4 SHA, so it must be
+retargeted to the exact 0.1.5 release commit after the remaining candidate
+gates rather than receiving an early summary for a moving tree.

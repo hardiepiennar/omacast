@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.1.5 — Unreleased
+
+- Bound progressive receiver discovery at both ends of the controller/QML
+  stream, including changed-snapshot count and unterminated-line retention.
+- Fail closed on incompatible runtime-state versions and range-check every
+  numeric telemetry value before it becomes a Nerd Mode model.
+- Anchor persistent session history and telemetry below descriptor-validated
+  state directories so a same-user product-directory link cannot redirect
+  reads, writes, retention, or cleanup.
+- Apply lexical width limits to controller numeric arguments and remove the
+  obsolete pre-supervisor placeholder response.
 
 ## 0.1.4 — 2026-08-31
 

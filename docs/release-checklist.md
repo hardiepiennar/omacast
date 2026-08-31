@@ -159,10 +159,11 @@
       worse and became unwatchable despite its superior offline loopback packet
       cadence, so it remains diagnostic-only and is rejected as the default.
 - [ ] Privileged live failure injection remains pending.
-- [ ] Revision 51 must complete a short GUI connect/stream/Stop run after
-      supplicant interface and peer-group ownership were narrowed in patch 32.
-      Confirm idle state, exact helper cleanup, no session P2P/media processes,
-      active NetworkManager, and connected infrastructure Wi-Fi afterward.
+- [x] Revision 51 completed its short GUI connect/stream/Stop run together with
+      revision 52 after supplicant interface and peer-group ownership were
+      narrowed in patch 32. The accepted retry returned idle with exact helper
+      cleanup, no session P2P/media processes, active NetworkManager, and
+      connected infrastructure Wi-Fi; its evidence is recorded below.
 - [x] Revision 35 added patch 26's private MPEG-TS GSR handoff candidate while
       preserving Matroska as the default and excluding superseded patches
       24–25. Under sustained offline motion it reduced timestamp-change gaps at
@@ -236,7 +237,7 @@
       state reader before descriptor validation. State and current telemetry
       now open nonblocking, and a deadline-bounded subprocess test proves the
       FIFO is rejected as non-regular without hanging.
-- [ ] Follow-up review at `540f578` also found that the passwordless guard could
+- [x] Follow-up review at `540f578` also found that the passwordless guard could
       apply negative nice to a same-user process selected through a user-owned
       PID file and spoofable identity labels. Version 0.1.1 removes that channel,
       advances companion revision 41 to guard API 7, applies CPU weight only
@@ -246,8 +247,8 @@
       package and receiver acceptance before the adjacent races were found.
       Revision 40 then passed streaming but left its down P2P client after Stop;
       revision 41 records and removes only session-owned client devices.
-      Complete the exact revision-41 package and receiver lifecycle before
-      closing this item.
+      The exact revision-41 package and receiver lifecycle later passed; the
+      receiver-backed cleanup evidence is recorded in the research log.
 - [x] Proposed marketplace metadata: category `Hardware`; tags `bar`, `media`,
       and `quickshell`. These match the closest current Hardware/media peers and
       describe the user-facing plugin more precisely than duplicating Hardware
@@ -294,8 +295,8 @@
 
 ## Publishing actions
 
-- [ ] Push the repository to its permanent public git URL.
-- [ ] Publish a trusted companion Arch package or signed release artifact.
+- [x] Push the repository to its permanent public git URL.
+- [x] Publish a trusted companion Arch package and attested release artifact.
 - [x] Replace `<repository-url>` in the README with the permanent URL.
 - [ ] From a clean Omarchy account, run add, enable, Super+Alt+C summon, update,
       disable, and remove using the permanent public repository; the equivalent
@@ -303,8 +304,9 @@
 - [ ] Complete the documented 30-minute repeatability and forced-cleanup gates
       before describing 0.1.0 as broadly supported rather than a release
       candidate.
-- [ ] After the exact release candidate is pushed, submit its full SHA through
-      the newer-upstream action documented in `docs/marketplace-update.md`.
+- [x] Submit the exact newer-upstream SHA through the action documented in
+      `docs/marketplace-update.md`. Marketplace issue #3770 is open and must be
+      retargeted if version 0.1.5 supersedes its current version-0.1.4 SHA.
 
 ## Production and competition finish
 
@@ -378,12 +380,12 @@
 - [ ] Bar icon and tooltip are verified across idle, scanning, preparation,
       connecting, streaming, stopping, error, recovery, shell reload, and lost
       ownership; color is never the only state cue.
-- [ ] Revision 42 authenticates passive and active RTSP peers as the selected
+- [x] Revision 42 authenticates passive and active RTSP peers as the selected
       receiver on the session-owned P2P interface before negotiation or
       capture, admits only one receiver, and fails closed on ambiguous identity
-      or conventional-address fallback. The exact 22-patch reconstruction and
-      all offline suites pass; a short selected-Fire-TV connect/Stop run remains
-      the receiver-backed release gate.
+      or conventional-address fallback. The exact reconstruction and offline
+      suites passed; subsequent revision-50 and later selected-Fire-TV
+      connect/stream/Stop runs exercised the retained authenticated path.
 - [x] Revision 43 removes user-owned telemetry from the independent root
       recovery helper. Normal and explicit stale recovery retain unprivileged
       cleanup; source and built-package contracts reject `/run/user/` and live
@@ -570,6 +572,13 @@
       fps with zero FFmpeg drops or duplicates, produced normal picture and
       audio by user confirmation, and left no P2P group, media process,
       transient service, or runtime-session residue after cooperative Stop.
+- [ ] Version 0.1.5 is the post-review boundary-hardening candidate. It caps the
+      progressive scan stream end to end, closes QML runtime/telemetry
+      projection, applies lexical CLI-number bounds, and descriptor-anchors
+      persistent state children. Companion behavior remains revision 79 / guard
+      API 14 / engine API 2. Complete one exact clean build, artifact/lifecycle
+      audit, installed readiness check, and panel scan/connect/Stop smoke test
+      against the final commit before retargeting marketplace issue #3770.
 - [ ] Exercise forced recovery and complete the canonical three consecutive
       30-minute acceptance sessions. Revision 60's short run and pre-broker
       20.5-minute soak do not satisfy these gates.
