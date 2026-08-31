@@ -206,7 +206,7 @@ def read_guard_status(
     if not _SESSION_ID.fullmatch(session_id):
         raise GuardError("guard session id must be controller-issued")
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW
-    directory_flags = flags | os.O_DIRECTORY
+    directory_flags = os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY
     descriptors: list[int] = []
     try:
         try:

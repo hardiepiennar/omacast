@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from omarchy_cast.command import CommandResult
 from omarchy_cast.guard import GUARD_PATH, GuardError, GuardRequest, HELPER_PATH, orphan_parent_interfaces, prepare_command, read_guard_status, reclaim_command, reclaim_orphan_interfaces, validate_helper_result, validate_reclaim_result
@@ -153,10 +154,16 @@ class GuardContractTest(unittest.TestCase):
             status = session / "status.json"
             status.write_text(json.dumps(payload), encoding="utf-8")
             status.chmod(0o644)
-            self.assertEqual(
-                read_guard_status(session_id, runtime_root=root, expected_owner=owner),
-                payload,
-            )
+            real_open = os.open
+            with patch("omarchy_cast.guard.os.open", wraps=real_open) as opened:
+                self.assertEqual(
+                    read_guard_status(session_id, runtime_root=root, expected_owner=owner),
+                    payload,
+                )
+            self.assertGreaterEqual(len(opened.call_args_list), 3)
+            self.assertTrue(opened.call_args_list[0].args[1] & os.O_PATH)
+            self.assertTrue(opened.call_args_list[1].args[1] & os.O_PATH)
+            self.assertFalse(opened.call_args_list[2].args[1] & os.O_PATH)
             status.unlink()
             self.assertIsNone(read_guard_status(session_id, runtime_root=root, expected_owner=owner))
 
