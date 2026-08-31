@@ -135,6 +135,9 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   advertised by each sink—role, RTSP port, throughput, manufacturer/model, and
   signal—in a compact icon row with expanded definitions in the tooltip, so
   users can distinguish peers without blocking contributor hardware.
+  Discovery publishes a two-second initial list and merges a longer background
+  pass; users can choose an early result immediately while later advertisements
+  still join the same ordered list.
 - The native Omarchy panel exposes live negotiated mode, capture/mux load,
   packet timing, RTP queueing, radio counters, and a derived health verdict.
 - The panel launches production work in `omacast-session.service`; a simulated

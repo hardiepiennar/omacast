@@ -2766,3 +2766,9 @@ the peer name. Hover text retains the expanded definitions. WFD device type 3
 is named `source-primary-sink` and rendered `Source/Sink`, reflecting that it
 can originate or receive a display session rather than implying a special sink
 quality tier.
+
+The batch scan originally withheld all results until its fixed eight-second
+window ended. The panel now runs a two-second first pass, renders that bounded
+result immediately, and merges an eight-second follow-up. Selecting an early
+receiver cancels the follow-up before connection. The compact row no longer
+repeats manufacturer/model; those remain available in its expanded tooltip.

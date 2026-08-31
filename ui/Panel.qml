@@ -35,7 +35,8 @@ Panel {
   property int receiverCursor: -1
   property bool keyboardCursor: false
   property string message: "Put your TV in Display Mirroring, then choose it below."
-  property bool scanRunning: false
+  property int scanStage: 0
+  property int scanTimeoutSeconds: 2
   property bool connectRunning: false
   property bool startPending: false
   property bool cancelRequested: false
@@ -51,6 +52,7 @@ Panel {
   readonly property bool streaming: phase === "streaming"
   readonly property bool needsRecovery: phase === "error"
   readonly property bool sessionBusy: sessionActive || connectRunning || startPending
+  readonly property bool scanRunning: scanStage !== 0
   readonly property bool visuallyBusy: scanRunning || sessionBusy
   readonly property color connectingColor: Qt.hsla(0.10, 0.72, 0.62, 1.0)
   readonly property color connectedColor: Qt.hsla(0.36, 0.55, 0.55, 1.0)
@@ -179,14 +181,7 @@ Panel {
     var role = receiver.wfdRole === "primary-sink" ? "󰍹 Sink"
       : receiver.wfdRole === "secondary-sink" ? "󰍹 Secondary"
       : receiver.wfdRole === "source-primary-sink" ? "󰑃 Source/Sink" : "󰍹 WFD"
-    var parts = []
-    var maker = String(receiver.manufacturer || "").trim()
-    var model = String(receiver.model || "").trim()
-    var name = String(receiver.name || "").toLowerCase()
-    if (model && String(receiver.name || "").toLowerCase().indexOf(model.toLowerCase()) < 0
-        && model.toLowerCase() !== maker.toLowerCase()) parts.push(model)
-    else if (maker && name.indexOf(maker.toLowerCase()) < 0) parts.push(maker)
-    parts.push(role)
+    var parts = [role]
     if (receiver.rtspPort > 0) parts.push("󰈀 " + receiver.rtspPort)
     if (receiver.throughputMbps > 0) parts.push("󰓅 " + receiver.throughputMbps + "M")
     if (receiver.signalPercent >= 0) parts.push("󰤨 " + receiver.signalPercent + "%")
@@ -434,21 +429,36 @@ Panel {
     }
   }
 
-  function applyScan(text) {
+  function mergeReceiverLists(fresh) {
+    var merged = []
+    var seen = ({})
+    for (var i = 0; i < fresh.length; i++) {
+      seen[fresh[i].id] = true
+      merged.push(fresh[i])
+    }
+    for (var j = 0; j < receivers.length; j++)
+      if (!seen[receivers[j].id]) merged.push(receivers[j])
+    return merged
+  }
+
+  function applyScan(text, mergeResults, finalResult) {
     // A receiver normally stops advertising after it joins the P2P group. A
     // late scan must not clear the selected display or replace active-session
     // progress with a misleading empty-discovery message.
     if (sessionBusy) return
     var result = parseJsonObject(text, {})
     if (result.ok === false) {
-      receivers = []
-      receiverId = ""
-      receiverName = ""
-      receiverCursor = -1
-      message = boundedText(result.error && result.error.message, "Could not scan for displays", 512)
+      if (!mergeResults || !receivers.length) {
+        receivers = []
+        receiverId = ""
+        receiverName = ""
+        receiverCursor = -1
+        message = boundedText(result.error && result.error.message, "Could not scan for displays", 512)
+      }
       return
     }
     var items = normalizeReceivers(result.receivers)
+    if (mergeResults) items = mergeReceiverLists(items)
     receivers = items
     if (!selectedReceiverStillExists(items)) {
       receiverId = ""
@@ -456,7 +466,8 @@ Panel {
     }
     receiverCursor = items.length ? 0 : -1
     keyboardCursor = items.length > 0
-    message = items.length
+    message = !finalResult ? "Still looking for displays…"
+      : items.length
       ? (items.length === 1 ? "Select " + items[0].name : "Choose a display")
       : "No displays found. Check that the TV is in Display Mirroring."
   }
@@ -471,6 +482,8 @@ Panel {
 
   function selectAndConnect(receiver) {
     if (sessionBusy) return
+    scanStage = 0
+    if (scanProc.running) scanProc.running = false
     selectReceiver(receiver)
     startConnect()
   }
@@ -494,6 +507,8 @@ Panel {
       receiverName = ""
       receiverCursor = -1
       message = "Looking for nearby displays…"
+      scanStage = 1
+      scanTimeoutSeconds = 2
       scanProc.running = true
     }
   }
@@ -795,14 +810,24 @@ Panel {
   }
   Process {
     id: scanProc
-    command: [root.controllerPath, "scan", "--timeout", "8"]
+    command: [root.controllerPath, "scan", "--timeout", String(root.scanTimeoutSeconds)]
     stdout: BoundedCollector { id: scanOutput }
     stderr: DiscardCollector {}
-    onRunningChanged: {
-      root.scanRunning = running
-      if (running) scanOutput.reset()
+    onRunningChanged: if (running) scanOutput.reset()
+    onExited: {
+      var completedStage = root.scanStage
+      if (completedStage === 0) return
+      root.applyScan(scanOutput.output, completedStage === 2, completedStage === 2)
+      if (completedStage === 1 && !root.sessionBusy) {
+        root.scanStage = 2
+        root.scanTimeoutSeconds = 8
+        Qt.callLater(function() {
+          if (root.scanStage === 2 && !scanProc.running) scanProc.running = true
+        })
+      } else {
+        root.scanStage = 0
+      }
     }
-    onExited: root.applyScan(scanOutput.output)
   }
   Process {
     id: connectProc
