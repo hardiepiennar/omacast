@@ -350,7 +350,8 @@
       text rather than silently returning to idle.
 - [x] Generic discovery requires a parsed WFD sink role and rejects source-only,
       port-only, empty, truncated, and malformed advertisements. Generic sinks
-      remain visibly distinct from the locally validated Fire TV class.
+      remain visibly distinct and explicitly experimental beside the locally
+      validated Fire TV class.
 - [ ] Optional smooth-playback buffering remains research-only. Compare the
       current no-extra-buffer baseline with a bounded adaptive candidate; ship
       no toggle until receiver tests prove a repeatable benefit and report its

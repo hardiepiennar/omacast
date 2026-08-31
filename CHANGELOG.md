@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Label locally validated Fire TV targets separately from experimental generic
+  Miracast displays, so broader community compatibility is not presented as
+  equivalent to the release receiver gate.
 - Preserve NetworkManager's advertised WFD device role in discovery results,
   so the controller can identify genuine sinks without inferring capability
   from an RTSP port. Companion revision 76 carries production patch 52.

@@ -987,10 +987,11 @@ Panel {
                 required property var modelData
                 required property int index
                 width: parent.width
-                labelText: root.boundedText(modelData.name, "Miracast display", 120)
+                labelText: root.boundedText(modelData.name, "Miracast display", 96)
+                  + (String(modelData.kind) === "fire-tv" ? " · validated" : " · experimental")
                 tooltipText: String(modelData.kind) === "fire-tv"
-                  ? "Fire TV · Miracast audio and video"
-                  : "Miracast display · audio and video"
+                  ? "Fire TV · locally validated Miracast target"
+                  : "Miracast display · community-reported, not locally validated"
                 selected: root.receiverId === String(modelData.id)
                 hasCursor: root.keyboardCursor && root.receiverCursor === index
                 enabled: !root.sessionBusy

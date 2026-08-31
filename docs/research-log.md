@@ -2739,3 +2739,14 @@ source-only advertisements remain distinguishable and cannot become castable
 through a port inference. Companion revision 76 carries the correction; guard
 API 14 and engine contract API 1 remain unchanged. Revision-75 acceptance
 evidence predates this behavior and does not validate revision 76.
+
+The first installed revision-76 panel attempt selected the separately
+advertised Samsung sink while the Fire TV was also the intended target. The
+session failed safely during P2P group formation with NetworkManager's
+`ConnectChannelUnsupported`; no core dump, OOM event, residual media process,
+or P2P interface remained, and the outer guard completed owned recovery. This
+single local failure does not supersede contributor reports of successful
+Samsung and TCL casts, but it showed that the panel presented community-reported
+generic compatibility as equivalent to the locally validated Fire TV gate.
+Receiver rows now state `validated` for Fire TV and `experimental` for generic
+sinks while retaining the role validation introduced by patch 52.

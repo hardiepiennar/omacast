@@ -130,7 +130,9 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   after contributors demonstrated successful Samsung and TCL receiver use.
   Generic peers are now exposed only when their WFD Device Information proves
   a sink-capable role; source-only, port-only, empty, and malformed peers stay
-  hidden. Fire TV remains the locally hardware-validated receiver class.
+  hidden. Fire TV remains the locally hardware-validated receiver class, and
+  the panel labels generic targets experimental rather than presenting the two
+  evidence levels as equivalent.
 - The native Omarchy panel exposes live negotiated mode, capture/mux load,
   packet timing, RTP queueing, radio counters, and a derived health verdict.
 - The panel launches production work in `omacast-session.service`; a simulated

@@ -55,6 +55,8 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("onActivateRequested: root.activateKeyboardAction()", panel)
         self.assertIn('text: "Click a TV, or use ↑/↓ and Enter · Esc close"', panel)
         self.assertIn("hasCursor: root.keyboardCursor && root.receiverCursor === index", panel)
+        self.assertIn('? " · validated" : " · experimental"', panel)
+        self.assertIn("community-reported, not locally validated", panel)
         self.assertNotIn("onHovered:", panel)
         self.assertIn("onClicked: root.selectAndConnect(modelData)", panel)
         self.assertIn('(text === "n" || text === "N") && root.sessionActive', panel)
