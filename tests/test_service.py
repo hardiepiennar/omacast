@@ -57,6 +57,41 @@ class ServiceTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["unit"], UNIT_NAME)
 
+    def test_pairing_pin_crosses_only_a_transient_credential_descriptor(self) -> None:
+        observed_path = ""
+
+        def runner(command: tuple[str, ...], **kwargs: object) -> CommandResult:
+            nonlocal observed_path
+            self.assertNotIn("12345670", command)
+            credential = next(item for item in command if item.startswith("--property=LoadCredential="))
+            observed_path = credential.split(":", 1)[1]
+            self.assertEqual(Path(observed_path).read_bytes(), b"12345670")
+            self.assertIn("--pairing-pin-credential", command)
+            return CommandResult(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as temp:
+            launcher = Path(temp) / "omacast"
+            launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+            start_session_service(
+                executable=str(launcher), peer="AA:BB:CC:DD:EE:FF",
+                mode="mirror", profile="safe", duration=60,
+                pairing_pin=b"12345670", runner=runner,
+            )
+        self.assertTrue(observed_path)
+        self.assertFalse(Path(observed_path).exists())
+
+    def test_pairing_pin_is_validated_before_systemd(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            launcher = Path(temp) / "omacast"
+            launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+            with self.assertRaises(ServiceError):
+                start_session_service(
+                    executable=str(launcher), peer="AA:BB:CC:DD:EE:FF",
+                    mode="mirror", profile="safe", duration=60,
+                    pairing_pin=b"12345671",
+                    runner=lambda *_args, **_kwargs: self.fail("systemd must not run"),
+                )
+
     def test_start_surfaces_a_bounded_systemd_failure(self) -> None:
         def runner(command: tuple[str, ...], **kwargs: object) -> CommandResult:
             return CommandResult(command, 1, "", "unit already exists")

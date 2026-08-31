@@ -16,6 +16,7 @@ from .engine import LaunchPlanError, build_launch_plan
 from .guard import GuardError, GuardRequest, orphan_parent_interfaces, reclaim_orphan_interfaces
 from .identity import receiver_address
 from .media_probe import MediaProbeError, probe_media
+from .pairing import PairingError, read_pairing_credential, read_pairing_pin_stdin
 from .receivers import DEMO_FIRE_TV, FixtureReceiverDiscovery, FluxCastReceiverDiscovery, Receiver, ReceiverDiscoveryUnavailable, ReceiverError, discovery_payload, receiver_payload
 from .service import ServiceError, start_session_service, stop_pending_session_service
 from .session import DryRunSupervisor, SessionError, SimulatedSupervisor, TransportTestSupervisor, read_session_events, recover_stale_session, request_stop, session_history
@@ -105,12 +106,14 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--profile", choices=("safe",), default="safe")
     start.add_argument("--duration", type=_SESSION_DURATION, default=0, help="optional acceptance-test duration in seconds; 0 casts until stopped")
     start.add_argument("--simulate", action="store_true", help=argparse.SUPPRESS)
+    start.add_argument("--pairing-pin-stdin", action="store_true", help="read one receiver-displayed WPS PIN from stdin")
     connect = subcommands.add_parser("connect", help="run the supported guarded session (normally started by Omacast)")
     connect.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     connect.add_argument("--mode", choices=("mirror",), default="mirror")
     connect.add_argument("--profile", choices=("safe",), default="safe")
     connect.add_argument("--simulate", action="store_true", help="exercise lifecycle only; never touches hardware")
     connect.add_argument("--duration", type=_SESSION_DURATION, default=0, help="optional acceptance-test duration in seconds; 0 casts until stopped")
+    connect.add_argument("--pairing-pin-credential", action="store_true", help=argparse.SUPPRESS)
     subcommands.add_parser("stop", help="request cooperative stop of an active supervised session")
     recover = subcommands.add_parser("recover", help="safely clear stale runtime state when no session owns the lock")
     logs = subcommands.add_parser("logs", help="read bounded local session history")
@@ -247,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise SessionError("simulation duration must be between 1 and 300 seconds")
             elif duration != 0 and not 60 <= duration <= 86_400:
                 raise SessionError("a bounded guarded session must run between 60 seconds and 24 hours")
+            pairing_pin = read_pairing_pin_stdin(sys.stdin.buffer) if args.pairing_pin_stdin else None
             _emit(start_session_service(
                 executable=sys.argv[0],
                 peer=peer,
@@ -254,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
                 profile=args.profile,
                 duration=duration,
                 simulate=args.simulate,
+                pairing_pin=pairing_pin,
             ))
             return 0
         except (ServiceError, SessionError, StateError, ValueError) as exc:
@@ -279,6 +284,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     if args.command == "connect" and args.simulate:
+        if args.pairing_pin_credential:
+            _emit({"schemaVersion": 1, "ok": False, "error": {"code": "simulation-failed", "message": "Pairing credentials are not accepted by simulated sessions."}})
+            return 1
         try:
             _emit(SimulatedSupervisor().run(peer=args.peer, mode=args.mode, profile=args.profile, duration=args.duration or 1))
         except (SessionError, StateError) as exc:
@@ -309,10 +317,11 @@ def main(argv: list[str] | None = None) -> int:
                 p2p_frequency,
                 GUARD_LEASE_SECONDS,
             )
-            result = TransportTestSupervisor(GuardedTransportAdapter(request)).run(peer=peer, mode=mode, profile=profile, plan=executable_plan(preview), timeout_seconds=args.duration or None, session_id=session_id, executable=True, production=True)
+            pairing_pin = read_pairing_credential(os.environ) if args.pairing_pin_credential else None
+            result = TransportTestSupervisor(GuardedTransportAdapter(request, pairing_pin=pairing_pin)).run(peer=peer, mode=mode, profile=profile, plan=executable_plan(preview), timeout_seconds=args.duration or None, session_id=session_id, executable=True, production=True)
             _emit(result)
             return 0 if result["ok"] else 1
-        except (LaunchPlanError, SessionError, StateError, ValueError) as exc:
+        except (LaunchPlanError, PairingError, SessionError, StateError, ValueError) as exc:
             _emit({"schemaVersion": 1, "ok": False, "error": {"code": "guarded-session-failed", "message": _error_message(exc)}})
             return 1
     if args.command == "stop":

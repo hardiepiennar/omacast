@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .guard import GuardError, GuardRequest, prepare_command, read_guard_status, validate_helper_result
 from .identity import receiver_address
+from .pairing import validate_pairing_pin
 from .telemetry import MAX_PROCESS_DESCRIPTORS, MAX_PROC_NETWORK_BYTES, MAX_SYSFS_INTERFACE_ENTRIES, BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, _bounded_stream_read, cleanup_live_telemetry
 
 
@@ -375,10 +376,11 @@ def executable_plan(plan: Mapping[str, Any]) -> dict[str, object]:
 class GuardedTransportAdapter:
     """Run only the installed FluxCast engine behind the package-owned helper."""
 
-    def __init__(self, request: GuardRequest, *, authorization_command: tuple[str, ...] = ("pkexec",), env: Mapping[str, str] | None = None) -> None:
+    def __init__(self, request: GuardRequest, *, authorization_command: tuple[str, ...] = ("pkexec",), env: Mapping[str, str] | None = None, pairing_pin: bytes | None = None) -> None:
         self.request = request.validate()
         self.authorization_command = authorization_command
         self.env = dict(os.environ if env is None else env)
+        self.pairing_pin = validate_pairing_pin(pairing_pin) if pairing_pin is not None else None
 
     @staticmethod
     def _read_ready(process: subprocess.Popen[str], request: GuardRequest, cancelled: CancelCheck, *, stdout_drain: _BoundedPipeDrain, stderr_drain: _BoundedPipeDrain, timeout: float = 90) -> tuple[str, str] | None:
@@ -497,6 +499,8 @@ class GuardedTransportAdapter:
         lowered = detail.lower()
         if "incompatible provisioning method" in lowered or "may require pin pairing" in lowered:
             return "pairing-method-unsupported"
+        if "pairing pin" in lowered or "pin pairing" in lowered:
+            return "pairing-pin-failed"
         if "timed out waiting for a direct supplicant p2p group" in lowered or "p2p group formation failed" in lowered:
             return "p2p-negotiation-failed"
         if "dhcp" in lowered or "ip address" in lowered:
@@ -542,7 +546,7 @@ class GuardedTransportAdapter:
                 return True
         return False
 
-    def _engine_command(self, plan: Mapping[str, Any], paths: Mapping[str, Path], trigger: str, broker: str) -> list[str]:
+    def _engine_command(self, plan: Mapping[str, Any], paths: Mapping[str, Path], trigger: str, broker: str, pairing_pin_fd: int | None = None) -> list[str]:
         """Attach session-owned instrumentation without coupling it to cast lifetime."""
         command = [str(value) for value in plan["command"]]
         command.extend(("--omacast-session", self.request.session_id))
@@ -552,6 +556,10 @@ class GuardedTransportAdapter:
             "--wfd-supplicant-broker", broker,
             "--wfd-supplicant-hold", str(SUPPLICANT_GROUP_TIMEOUT_SECONDS),
         ))
+        if pairing_pin_fd is not None:
+            if pairing_pin_fd <= 2:
+                raise TransportError("The pairing PIN descriptor is unsafe.")
+            command.extend(("--wfd-pairing-pin-fd", str(pairing_pin_fd)))
         return command
 
     @staticmethod
@@ -603,6 +611,7 @@ class GuardedTransportAdapter:
         engine_output_collector: BoundedOutputCollector | None = None
         helper_stderr_drain: _BoundedPipeDrain | None = None
         helper_stdout_drain: _BoundedPipeDrain | None = None
+        pairing_pin_read_fd: int | None = None
         guard_ready = False
         guard_cleanup_confirmed = False
         sampler_stopped = True
@@ -629,9 +638,21 @@ class GuardedTransportAdapter:
             # Per-packet framecrc remains a research-only engine capability. It
             # is deliberately absent here so production diagnostics cannot add
             # a second unbounded FFmpeg output or steal time from capture.
-            command = self._engine_command(plan, engine_paths, trigger, broker)
+            pass_fds: tuple[int, ...] = ()
+            if self.pairing_pin is not None:
+                pairing_pin_read_fd, pairing_pin_write_fd = os.pipe2(os.O_CLOEXEC)
+                try:
+                    if os.write(pairing_pin_write_fd, self.pairing_pin) != len(self.pairing_pin):
+                        raise TransportError("The pairing PIN pipe could not be prepared.")
+                finally:
+                    os.close(pairing_pin_write_fd)
+                pass_fds = (pairing_pin_read_fd,)
+            command = self._engine_command(plan, engine_paths, trigger, broker, pairing_pin_read_fd)
             stage("connecting")
-            engine = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=self.env)
+            engine = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=self.env, pass_fds=pass_fds)
+            if pairing_pin_read_fd is not None:
+                os.close(pairing_pin_read_fd)
+                pairing_pin_read_fd = None
             if engine.stdout is None:
                 raise TransportError("FluxCast did not expose its diagnostic stream", code="engine-exited")
             engine_output_collector = BoundedOutputCollector(engine.stdout, telemetry)
@@ -701,6 +722,8 @@ class GuardedTransportAdapter:
             detail = self._bounded_detail(engine_output, "FluxCast exited" if engine.returncode == 0 else f"FluxCast exited with status {engine.returncode}")
             return TransportResult("completed", detail, True) if engine.returncode == 0 else TransportResult("failed", detail, True, self._failure_code(engine_output))
         finally:
+            if pairing_pin_read_fd is not None:
+                os.close(pairing_pin_read_fd)
             if sampler is not None:
                 sampler_stopped = sampler.stop()
             if engine is not None and engine.poll() is None:

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an explicit receiver-PIN retry after an attributed provisioning-method
+  rejection. The PIN is validated with the WPS checksum and crosses the panel,
+  transient service, engine, and privileged broker only through bounded stdin,
+  systemd credentials, anonymous descriptors, and the protected session
+  socket; it is never an argument, durable state field, or log value. Require
+  companion revision 82, guard API 16, and engine API 3.
 - Move the privileged guard and independent recovery worker into explicit,
   session-scoped system services so the transient user service owns no root
   process. A descriptor-safe root status and private acknowledgment protocol

@@ -1,0 +1,234 @@
+From 991a5980e94fa1255dad81e18e694c5154ce0809 Mon Sep 17 00:00:00 2001
+From: Omacast Maintainers <4540086+hardiepienaar@users.noreply.github.com>
+Date: Mon, 31 Aug 2026 22:19:38 +1200
+Subject: [PATCH] Pass receiver PIN through guarded descriptor
+
+---
+ src/main.py                    | 15 +++++++++++-
+ src/wfd/p2p/broker.py          | 45 +++++++++++++++++++++++++++++++---
+ src/wfd/p2p/supplicant.py      |  5 +++-
+ src/wfd/session.py             |  5 +++-
+ tests/test_omacast_contract.py |  3 ++-
+ tests/test_wfd_p2p_broker.py   | 29 +++++++++++++++++++++-
+ 6 files changed, 93 insertions(+), 9 deletions(-)
+
+diff --git a/src/main.py b/src/main.py
+index f9c2de9..3e1bc26 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -55,6 +55,8 @@ def parse_args() -> argparse.Namespace:
+                      dest="wfd_supplicant_broker", metavar="SOCKET")
+     wfd.add_argument("--wfd-supplicant-frequency", type=int, default=0,
+                      dest="wfd_supplicant_frequency", metavar="MHZ")
++    wfd.add_argument("--wfd-pairing-pin-fd", type=int, default=None,
++                     dest="wfd_pairing_pin_fd", metavar="FD")
+     return parser.parse_args()
+ 
+ 
+@@ -105,6 +107,16 @@ def _validate_omacast_session(args: argparse.Namespace) -> None:
+         raise WFDNotReady("The P2P frequency is outside the supported range.")
+     if not 1 <= args.wfd_supplicant_hold <= 75:
+         raise WFDNotReady("The P2P group timeout is outside the supported range.")
++    if args.wfd_pairing_pin_fd is not None:
++        if type(args.wfd_pairing_pin_fd) is not int or args.wfd_pairing_pin_fd <= 2:
++            raise WFDNotReady("The pairing PIN descriptor is invalid.")
++        try:
++            metadata = os.fstat(args.wfd_pairing_pin_fd)
++        except OSError as exc:
++            raise WFDNotReady("The pairing PIN descriptor is unavailable.") from exc
++        import stat
++        if not stat.S_ISFIFO(metadata.st_mode) or metadata.st_uid != os.getuid():
++            raise WFDNotReady("The pairing PIN descriptor is unsafe.")
+ 
+ 
+ def main() -> None:
+@@ -113,7 +125,7 @@ def main() -> None:
+         print(json.dumps({
+             "schemaVersion": 1,
+             "kind": "omacast-engine-contract",
+-            "apiRevision": 2,
++            "apiRevision": 3,
+             "capture": "gpu-screen-recorder",
+             "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
+             "network": {
+@@ -122,6 +134,7 @@ def main() -> None:
+             },
+             "telemetry": {"controllerDescriptorsRequired": True},
+             "discovery": {"progressiveSnapshots": True},
++            "pairing": {"receiverPinDescriptor": True},
+         }, sort_keys=True, separators=(",", ":")))
+         return
+     if args.doctor or args.doctor_json:
+diff --git a/src/wfd/p2p/broker.py b/src/wfd/p2p/broker.py
+index 0fdfbe6..cc247cd 100644
+--- a/src/wfd/p2p/broker.py
++++ b/src/wfd/p2p/broker.py
+@@ -10,9 +10,42 @@ from ..config import WFDNotReady
+ 
+ _BROKER_PATH = re.compile(r"^/run/omarchy-cast/[a-f0-9]{32}/supplicant\.sock$")
+ _INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
++_PIN = re.compile(r"^[0-9]{8}$")
+ 
+ 
+-def broker_request(path: str, operation: str, *, timeout: float) -> dict:
++def _pin_checksum(pin: str) -> int:
++    accumulator = 0
++    value = int(pin[:7])
++    while value:
++        accumulator += 3 * (value % 10)
++        value //= 10
++        accumulator += value % 10
++        value //= 10
++    return (10 - accumulator % 10) % 10
++
++
++def _read_pairing_pin(descriptor: int | None) -> str | None:
++    if descriptor is None:
++        return None
++    try:
++        encoded = os.read(descriptor, 9)
++    except OSError as exc:
++        raise WFDNotReady("The pairing PIN could not be read.") from exc
++    finally:
++        try:
++            os.close(descriptor)
++        except OSError:
++            pass
++    try:
++        pin = encoded.decode("ascii")
++    except UnicodeDecodeError as exc:
++        raise WFDNotReady("The pairing PIN is invalid.") from exc
++    if not _PIN.fullmatch(pin) or _pin_checksum(pin) != int(pin[7]):
++        raise WFDNotReady("The pairing PIN is invalid.")
++    return pin
++
++
++def broker_request(path: str, operation: str, *, timeout: float, pairing_pin_fd: int | None = None) -> dict:
+     if operation not in {"connect", "cleanup"}:
+         raise WFDNotReady("The supplicant broker operation is unsupported.")
+     if not _BROKER_PATH.fullmatch(path):
+@@ -27,9 +60,13 @@ def broker_request(path: str, operation: str, *, timeout: float) -> dict:
+         or stat.S_IMODE(metadata.st_mode) != 0o600
+     ):
+         raise WFDNotReady("The supplicant broker socket is unsafe.")
+-    request = json.dumps(
+-        {"schemaVersion": 1, "op": operation}, separators=(",", ":")
+-    ).encode("utf-8") + b"\n"
++    pairing_pin = _read_pairing_pin(pairing_pin_fd)
++    if pairing_pin is not None and operation != "connect":
++        raise WFDNotReady("A pairing PIN is accepted only for connection setup.")
++    request_payload = {"schemaVersion": 1, "op": operation}
++    if pairing_pin is not None:
++        request_payload["pin"] = pairing_pin
++    request = json.dumps(request_payload, separators=(",", ":")).encode("utf-8") + b"\n"
+     response = bytearray()
+     try:
+         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+diff --git a/src/wfd/p2p/supplicant.py b/src/wfd/p2p/supplicant.py
+index 22813d6..407ffce 100644
+--- a/src/wfd/p2p/supplicant.py
++++ b/src/wfd/p2p/supplicant.py
+@@ -303,7 +303,10 @@ def connect_supplicant_group(
+         time.sleep(preconnect_delay)
+ 
+     if broker_path:
+-        result = broker_request(broker_path, "connect", timeout=50.0)
++        result = broker_request(
++            broker_path, "connect", timeout=50.0,
++            pairing_pin_fd=getattr(args, "wfd_pairing_pin_fd", None),
++        )
+         group = result.get("group")
+         if (
+             not isinstance(group, dict)
+diff --git a/src/wfd/session.py b/src/wfd/session.py
+index 4f12197..fa749f8 100644
+--- a/src/wfd/session.py
++++ b/src/wfd/session.py
+@@ -99,7 +99,10 @@ def start_experimental_backend(args) -> None:
+                 f"Could not trigger the guarded P2P network session: {exc}"
+             ) from exc
+         print("[FluxCast WFD] Guarded P2P network session triggered.")
+-        result = broker_request(broker_path, "connect", timeout=50.0)
++        result = broker_request(
++            broker_path, "connect", timeout=50.0,
++            pairing_pin_fd=getattr(args, "wfd_pairing_pin_fd", None),
++        )
+         group = result.get("group")
+         if (
+             not isinstance(group, dict)
+diff --git a/tests/test_omacast_contract.py b/tests/test_omacast_contract.py
+index bbfc993..ce05226 100644
+--- a/tests/test_omacast_contract.py
++++ b/tests/test_omacast_contract.py
+@@ -84,7 +84,7 @@ class GuardedLaunchContractTest(unittest.TestCase):
+         self.assertEqual(json.loads(output.getvalue()), {
+             "schemaVersion": 1,
+             "kind": "omacast-engine-contract",
+-            "apiRevision": 2,
++            "apiRevision": 3,
+             "capture": "gpu-screen-recorder",
+             "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
+             "network": {
+@@ -93,6 +93,7 @@ class GuardedLaunchContractTest(unittest.TestCase):
+             },
+             "telemetry": {"controllerDescriptorsRequired": True},
+             "discovery": {"progressiveSnapshots": True},
++            "pairing": {"receiverPinDescriptor": True},
+         })
+         start.assert_not_called()
+ 
+diff --git a/tests/test_wfd_p2p_broker.py b/tests/test_wfd_p2p_broker.py
+index f6b5315..51fddfc 100644
+--- a/tests/test_wfd_p2p_broker.py
++++ b/tests/test_wfd_p2p_broker.py
+@@ -1,4 +1,5 @@
+ import json
++import os
+ import stat
+ import unittest
+ from types import SimpleNamespace
+@@ -58,6 +59,32 @@ class SupplicantBrokerClientTest(unittest.TestCase):
+         self.assertEqual(client.path, BROKER)
+         self.assertEqual(json.loads(client.sent), {"schemaVersion": 1, "op": "cleanup"})
+ 
++    def test_receiver_pin_is_read_from_a_pipe_and_never_an_argument(self):
++        response = json.dumps({
++            "schemaVersion": 1, "kind": "omarchy-cast-supplicant-response",
++            "ok": True, "result": {"group": {"interface": "p2p-wlan0-0", "role": "client"}},
++            "error": None,
++        }).encode() + b"\n"
++        read_fd, write_fd = os.pipe()
++        os.write(write_fd, b"12345670")
++        os.close(write_fd)
++        client = _Socket(response)
++        with mock.patch("wfd.p2p.broker.os.stat", return_value=self.metadata()), mock.patch(
++            "wfd.p2p.broker.os.getuid", return_value=1000
++        ), mock.patch("wfd.p2p.broker.socket.socket", return_value=client):
++            broker_request(BROKER, "connect", timeout=1, pairing_pin_fd=read_fd)
++        self.assertEqual(json.loads(client.sent), {
++            "schemaVersion": 1, "op": "connect", "pin": "12345670",
++        })
++
++    def test_pairing_pin_rejects_bad_checksum_and_cleanup_use(self):
++        for pin, operation in ((b"12345671", "connect"), (b"12345670", "cleanup")):
++            read_fd, write_fd = os.pipe()
++            os.write(write_fd, pin)
++            os.close(write_fd)
++            with self.subTest(pin=pin, operation=operation), self.assertRaises(WFDNotReady):
++                broker_request(BROKER, operation, timeout=1, pairing_pin_fd=read_fd)
++
+     def test_client_rejects_paths_socket_metadata_and_response_shapes(self):
+         with self.assertRaisesRegex(WFDNotReady, "outside the guarded session"):
+             broker_request("/tmp/broker", "connect", timeout=1)
+@@ -129,7 +156,7 @@ class SupplicantBrokerClientTest(unittest.TestCase):
+             return_value={"group": {"interface": "p2p-wlan0-0", "role": "client"}},
+         ) as request, mock.patch("wfd.p2p.supplicant._supplicant_interface_path") as direct:
+             group = connect_supplicant_group(args, WFDPeer(address="00:11:22:33:44:55"))
+-        request.assert_called_once_with(BROKER, "connect", timeout=50.0)
++        request.assert_called_once_with(BROKER, "connect", timeout=50.0, pairing_pin_fd=None)
+         direct.assert_not_called()
+         self.assertEqual((group.ifname, group.role), ("p2p-wlan0-0", "client"))
+ 
+-- 
+2.55.0
+

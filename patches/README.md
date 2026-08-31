@@ -7,7 +7,7 @@ reviewable without hiding the changes in a private fork.
 
 ## Production
 
-`production/series` is the sole build authority. Its 48 ordered patches cover
+`production/series` is the sole build authority. Its 49 ordered patches cover
 eight parts of the receiver-tested path:
 
 - Wi-Fi Direct and WFD negotiation: patches 1–2 and 5.
@@ -43,6 +43,8 @@ eight parts of the receiver-tested path:
 - Complete NetworkManager WFD sink roles and bounded objective receiver
   metadata: patches 52–53.
 - Progressive snapshots from one cancellable discovery session: patch 54.
+- A bounded inherited descriptor for an explicitly entered receiver PIN and a
+  closed engine capability for that path: patch 55.
 
 The patches are intentionally atomic. Package builds apply them with `git am`,
 run FluxCast's tests, and fail if the pinned base or series no longer applies

@@ -156,7 +156,7 @@ REQUIRED_COMMANDS = (
 )
 COMPANION_COMMANDS = frozenset(name for name in REQUIRED_COMMANDS if name != "hyprctl")
 HELPER_NAMES = ("omarchy-cast-guard", "omarchy-cast-guard-launch", "omarchy-cast-guard-recover", "omarchy-cast-supplicant-broker")
-GUARD_API_REVISION = 15
+GUARD_API_REVISION = 16
 GUARD_VERSION_CONTRACT = {
     "schemaVersion": 1,
     "kind": "omarchy-cast-guard-version",
@@ -165,7 +165,7 @@ GUARD_VERSION_CONTRACT = {
 ENGINE_CONTRACT = {
     "schemaVersion": 1,
     "kind": "omacast-engine-contract",
-    "apiRevision": 2,
+    "apiRevision": 3,
     "capture": "gpu-screen-recorder",
     "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
     "network": {
@@ -175,6 +175,7 @@ ENGINE_CONTRACT = {
     },
     "telemetry": {"controllerDescriptorsRequired": True},
     "discovery": {"progressiveSnapshots": True},
+    "pairing": {"receiverPinDescriptor": True},
 }
 
 
@@ -231,8 +232,8 @@ def _engine_capabilities(runner: Runner) -> dict[str, object]:
         try:
             payload = json.loads(result.stdout)
             validate_json_budget(
-                payload, max_depth=4, max_nodes=32,
-                max_collection_items=8, max_string_chars=64,
+                payload, max_depth=4, max_nodes=40,
+                max_collection_items=12, max_string_chars=64,
             )
         except (json.JSONDecodeError, BoundError, RecursionError):
             payload = None

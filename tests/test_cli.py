@@ -237,6 +237,35 @@ class CliTest(unittest.TestCase):
         self.assertEqual(launch.call_args.kwargs["profile"], "safe")
         self.assertNotIn("source", launch.call_args.kwargs)
 
+    def test_start_reads_pairing_pin_from_stdin_not_arguments(self) -> None:
+        from types import SimpleNamespace
+
+        started = {"schemaVersion": 1, "ok": True, "phase": "starting", "unit": "omacast-session.service"}
+        stdin = SimpleNamespace(buffer=io.BytesIO(b"12345670\n"))
+        with patch("omarchy_cast.cli.read_state", return_value={"phase": "idle"}), patch(
+            "omarchy_cast.cli.start_session_service", return_value=started
+        ) as launch, patch("omarchy_cast.cli.sys.stdin", stdin):
+            code, payload = self.invoke([
+                "start", "--peer", "AA:BB:CC:DD:EE:FF", "--pairing-pin-stdin"
+            ])
+        self.assertEqual(code, 0)
+        self.assertEqual(payload, started)
+        self.assertEqual(launch.call_args.kwargs["pairing_pin"], b"12345670")
+
+    def test_start_rejects_invalid_pairing_pin_before_service_launch(self) -> None:
+        from types import SimpleNamespace
+
+        stdin = SimpleNamespace(buffer=io.BytesIO(b"12345671\n"))
+        with patch("omarchy_cast.cli.read_state", return_value={"phase": "idle"}), patch(
+            "omarchy_cast.cli.start_session_service"
+        ) as launch, patch("omarchy_cast.cli.sys.stdin", stdin):
+            code, payload = self.invoke([
+                "start", "--peer", "AA:BB:CC:DD:EE:FF", "--pairing-pin-stdin"
+            ])
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["error"]["code"], "session-start-failed")
+        launch.assert_not_called()
+
     def test_start_refuses_a_non_idle_session(self) -> None:
         with patch("omarchy_cast.cli.read_state", return_value={"phase": "error"}), patch("omarchy_cast.cli.start_session_service") as launch:
             code, payload = self.invoke(["start", "--peer", "tv-01"])

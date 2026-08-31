@@ -250,6 +250,23 @@ class TransportTest(unittest.TestCase):
         )._engine_command(executable, paths, "/run/omarchy-cast/" + "a" * 32 + "/user/trigger", "/run/omarchy-cast/" + "a" * 32 + "/supplicant.sock")
         self.assertNotIn("--wfd-packet-log", traced)
 
+    def test_pairing_pin_is_inherited_only_as_an_anonymous_descriptor(self) -> None:
+        from omarchy_cast.guard import GuardRequest
+        executable = executable_plan_fixture()
+        paths = {name: Path("/run/user/1000/omarchy-cast") / name for name in ("progress", "latency", "packets")}
+        adapter = GuardedTransportAdapter(
+            GuardRequest(1, "a" * 32, 1000, "wlan42", "00:11:22:33:44:55", 2437, 60),
+            pairing_pin=b"12345670",
+        )
+        command = adapter._engine_command(
+            executable, paths,
+            "/run/omarchy-cast/" + "a" * 32 + "/user/trigger",
+            "/run/omarchy-cast/" + "a" * 32 + "/supplicant.sock",
+            pairing_pin_fd=7,
+        )
+        self.assertNotIn("12345670", command)
+        self.assertEqual(command[command.index("--wfd-pairing-pin-fd") + 1], "7")
+
     def test_session_lease_is_private_and_renewable(self) -> None:
         self.assertEqual(GUARD_LEASE_SECONDS, 60)
         with tempfile.TemporaryDirectory() as directory:
@@ -559,6 +576,7 @@ class TransportTest(unittest.TestCase):
         cases = {
             "DHCP client did not obtain an IP address": "dhcp-failed",
             "receiver rejected push-button pairing (Wi-Fi Direct status 10: incompatible provisioning method); this display may require PIN pairing": "pairing-method-unsupported",
+            "receiver rejected the pairing PIN; check the displayed digits and try again": "pairing-pin-failed",
             "wpa_supplicant P2P group formation failed": "p2p-negotiation-failed",
             "Waiting for DHCP before timed out waiting for a direct supplicant P2P group": "p2p-negotiation-failed",
             "RTSP Miracast negotiation refused": "receiver-negotiation-failed",

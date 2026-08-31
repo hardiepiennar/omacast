@@ -7,6 +7,7 @@ from pathlib import Path
 from .bounds import bounded_text
 from .command import Runner, run_command
 from .identity import receiver_address
+from .pairing import sealed_pairing_credential, validate_pairing_pin, validate_sealed_credential_path
 
 
 class ServiceError(RuntimeError):
@@ -26,6 +27,7 @@ def session_service_command(
     profile: str,
     duration: int,
     simulate: bool = False,
+    pairing_credential_path: str | None = None,
 ) -> tuple[str, ...]:
     launcher = Path(executable).resolve()
     if not launcher.is_file():
@@ -46,6 +48,11 @@ def session_service_command(
         "--property=KillMode=mixed",
         "--property=TimeoutStopSec=20s",
         f"--property=CPUWeight={SESSION_CPU_WEIGHT}",
+    ]
+    if pairing_credential_path is not None:
+        validate_sealed_credential_path(pairing_credential_path)
+        command.append(f"--property=LoadCredential=omacast-pairing-pin:{pairing_credential_path}")
+    command.extend([
         "systemd-inhibit",
         "--what=idle:sleep",
         "--who=Omacast",
@@ -61,7 +68,9 @@ def session_service_command(
         profile,
         "--duration",
         str(duration),
-    ]
+    ])
+    if pairing_credential_path is not None:
+        command.append("--pairing-pin-credential")
     if simulate:
         command.append("--simulate")
     return tuple(command)
@@ -75,19 +84,28 @@ def start_session_service(
     profile: str,
     duration: int,
     simulate: bool = False,
+    pairing_pin: bytes | None = None,
     runner: Runner = run_command,
 ) -> dict[str, object]:
-    command = session_service_command(
-        executable=executable,
-        peer=peer,
-        mode=mode,
-        profile=profile,
-        duration=duration,
-        simulate=simulate,
-    )
     try:
-        result = runner(command, timeout=10)
-    except OSError as exc:
+        if pairing_pin is None:
+            command = session_service_command(
+                executable=executable, peer=peer, mode=mode, profile=profile,
+                duration=duration, simulate=simulate,
+            )
+            result = runner(command, timeout=10)
+        else:
+            if simulate:
+                raise ServiceError("Pairing credentials are not accepted by simulated sessions")
+            encoded = validate_pairing_pin(pairing_pin)
+            with sealed_pairing_credential(encoded) as credential_path:
+                command = session_service_command(
+                    executable=executable, peer=peer, mode=mode, profile=profile,
+                    duration=duration, simulate=False,
+                    pairing_credential_path=credential_path,
+                )
+                result = runner(command, timeout=10)
+    except (OSError, ValueError) as exc:
         raise ServiceError("could not start the Omacast session service: " + bounded_text(str(exc), limit=512)) from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "systemd refused the session").strip()

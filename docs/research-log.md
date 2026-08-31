@@ -3027,3 +3027,31 @@ Combined companion revision 81 carries the behavior with issue 9's guard API
 artifact-source, and shell checks pass. No receiver test has been run for this
 candidate, so prompt suppression,
 reboot survival, and actual invitation reinvocation remain unverified.
+
+### Explicit receiver-PIN candidate (2026-08-31)
+
+Local wpa_supplicant 2.12 source and its D-Bus API establish that
+`P2PDevice.Connect` accepts `wps_method=keypad` with a PIN entered from the
+receiver display. The same source emits `WpsFailed` on the selected P2P control
+object with bounded numeric message and configuration-error fields. That
+signal does not carry a peer object, so Omacast consumes it only during the
+explicit keypad attempt on the one control object already owned by the
+session; the existing peer-attributed `GONegotiationFailure` remains the
+stronger negotiation failure signal.
+
+The implementation deliberately avoids `gdbus call` for keypad Connect because
+that tool would put the credential in root's argument vector. The root broker
+imports the package-declared `python-dbus` dependency and makes the typed call
+in-process. Before that point the credential moves through bounded QML stdin,
+a sealed memfd named only by descriptor, a transient systemd credential,
+descriptor-anchored controller validation, an anonymous inherited pipe, and
+the protected per-session broker socket. No durable file or diagnostic field
+contains it. Exact scalar, checksum, request-shape, descriptor, symlink,
+special-file, subprocess-argument, D-Bus-error-redaction, wrong-PIN, and QML
+surface regressions cover the boundary.
+
+Production patch 55 exposes the inherited descriptor and engine contract API
+3. Guard API 16 and companion revision 82 prevent the updated plugin from
+running an old broker or engine. Offline focused tests and plugin validation
+pass; receiver-backed acceptance is deliberately deferred until the relevant
+displays are available.

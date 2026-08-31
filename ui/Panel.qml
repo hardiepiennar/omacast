@@ -49,6 +49,9 @@ Panel {
   readonly property int startStateTimeoutMs: 45000
   property bool doctorComplete: false
   property bool nerdMode: false
+  property string pendingPairingPin: ""
+  property bool pairingLaunch: false
+  property bool retryPairingAfterRecovery: false
 
   readonly property string phase: String(session.phase || "idle")
   readonly property bool sessionActive: ["checking", "discovering", "preparing", "connecting", "streaming", "stopping", "recovering"].indexOf(phase) >= 0
@@ -404,12 +407,46 @@ Panel {
     if (code === "authorization-timeout") return "Restore this session, then update the companion package before retrying."
     if (code === "guard-setup-failed") return "Restore this session, run Check again, and update the companion if setup is still unavailable."
     if (code === "dhcp-failed") return "The direct Wi-Fi link formed but received no address. Restore it, return the TV to Display Mirroring, and retry."
-    if (code === "pairing-method-unsupported") return "This display rejected push-button pairing and may require a PIN. Restore this session; PIN pairing is not supported yet."
+    if (code === "pairing-method-unsupported") return "This display rejected push-button pairing. Enter the eight-digit PIN shown by the display to restore and retry explicitly."
+    if (code === "pairing-pin-failed") return "The display rejected or timed out during PIN pairing. Check the displayed PIN, then restore and retry."
     if (code === "p2p-negotiation-failed") return "The direct Wi-Fi link could not form. Restore it, confirm Display Mirroring is open, and retry nearby."
     if (code === "receiver-negotiation-failed" || code === "receiver-negotiation-timeout") return "The TV did not finish Miracast setup. Restore this session, reopen Display Mirroring, and retry."
     if (code === "capture-failed") return "Desktop capture or encoding stopped. Restore this session, keep the selected display active, and run Check again."
     if (code === "engine-exited") return "The casting engine exited unexpectedly. Restore this session and check the bounded session log before retrying."
     return "The failed cast needs a clean local reset. Restore its session state, then try again."
+  }
+
+  function pairingRecoveryAvailable() {
+    var code = String(session.error && session.error.code || "")
+    return code === "pairing-method-unsupported" || code === "pairing-pin-failed"
+  }
+
+  function validPairingPin(pin) {
+    if (typeof pin !== "string" || !/^[0-9]{8}$/.test(pin)) return false
+    var value = parseInt(pin.slice(0, 7), 10)
+    var accumulator = 0
+    while (value > 0) {
+      accumulator += 3 * (value % 10)
+      value = Math.floor(value / 10)
+      accumulator += value % 10
+      value = Math.floor(value / 10)
+    }
+    return (10 - accumulator % 10) % 10 === parseInt(pin.charAt(7), 10)
+  }
+
+  function requestPinPairing(pin) {
+    if (!pairingRecoveryAvailable() || !receiverId) {
+      message = "Select the same display again before PIN pairing."
+      return
+    }
+    if (!validPairingPin(pin)) {
+      message = "Enter the valid eight-digit PIN shown by the display."
+      return
+    }
+    pendingPairingPin = pin
+    pinInput.text = ""
+    retryPairingAfterRecovery = true
+    requestRecovery()
   }
 
   function setupCommand() {
@@ -534,7 +571,9 @@ Panel {
 
   function restorePanelFocus() {
     if (opened) Qt.callLater(function() {
-      if (root.opened) keyCatcher.forceActiveFocus()
+      if (!root.opened) return
+      if (root.pairingRecoveryAvailable() && pinInput.visible) pinInput.forceActiveFocus()
+      else keyCatcher.forceActiveFocus()
     })
   }
 
@@ -566,7 +605,7 @@ Panel {
     }
   }
 
-  function startConnect() {
+  function startConnect(usePairingPin) {
     if (!receiverId) {
       message = "Choose a display first."
       return
@@ -575,7 +614,14 @@ Panel {
       message = readinessSummary()
       return
     }
+    if (usePairingPin === true && !validPairingPin(pendingPairingPin)) {
+      message = "The pairing PIN is no longer available. Enter it again."
+      pairingLaunch = false
+      pendingPairingPin = ""
+      return
+    }
     if (!connectProc.running) {
+      pairingLaunch = usePairingPin === true
       pendingReceiverId = receiverId
       message = "Connecting to " + receiverName + "…"
       cancelRequested = false
@@ -917,11 +963,19 @@ Panel {
   Process {
     id: connectProc
     command: [root.controllerPath, "start", "--peer", root.pendingReceiverId, "--mode", "mirror", "--profile", "safe"]
+      .concat(root.pairingLaunch ? ["--pairing-pin-stdin"] : [])
+    stdinEnabled: root.pairingLaunch
     stdout: BoundedCollector { id: connectOutput }
     stderr: DiscardCollector {}
     onRunningChanged: {
       root.connectRunning = running
       if (running) connectOutput.reset()
+    }
+    onStarted: {
+      if (root.pairingLaunch) {
+        write(root.pendingPairingPin + "\n")
+        root.pendingPairingPin = ""
+      }
     }
     onExited: function(exitCode) {
       var result = root.parseJsonObject(connectOutput.output, {})
@@ -943,6 +997,8 @@ Panel {
         }
       }
       if (root.cancelRequested && !stopProc.running) stopProc.running = true
+      root.pendingPairingPin = ""
+      root.pairingLaunch = false
       root.refresh()
     }
   }
@@ -980,7 +1036,11 @@ Panel {
     onExited: function(exitCode) {
       var result = root.parseJsonObject(recoverOutput.output, {})
       root.message = result.ok === true ? "Casting state restored" : root.boundedText(result.error && result.error.message, "Recovery failed", 512)
+      var retryPairing = result.ok === true && root.retryPairingAfterRecovery
+      root.retryPairingAfterRecovery = false
+      if (!retryPairing) root.pendingPairingPin = ""
       root.refresh()
+      if (retryPairing) Qt.callLater(function() { root.startConnect(true) })
     }
   }
 
@@ -1246,9 +1306,30 @@ Panel {
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.WordWrap
             }
+            TextField {
+              id: pinInput
+              visible: root.pairingRecoveryAvailable()
+              width: parent.width
+              placeholderText: "Eight-digit PIN shown by display"
+              maximumLength: 8
+              inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+              echoMode: TextInput.PasswordEchoOnEdit
+              font.family: root.fontFamily
+              onAccepted: root.requestPinPairing(text)
+            }
             Button {
               width: parent.width
-              text: root.recoverRunning ? "Restoring…" : "Restore casting state"
+              visible: root.pairingRecoveryAvailable()
+              text: root.recoverRunning ? "Restoring…" : "Restore and pair with PIN"
+              enabled: !root.recoverRunning && root.validPairingPin(pinInput.text)
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.requestPinPairing(pinInput.text)
+            }
+            Button {
+              width: parent.width
+              text: root.recoverRunning ? "Restoring…" : (root.pairingRecoveryAvailable() ? "Restore without pairing" : "Restore casting state")
               enabled: !root.recoverRunning
               bordered: true
               foreground: root.foreground

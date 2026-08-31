@@ -1317,3 +1317,30 @@ waiting in Display Mirroring and understands any temporary network change.
 Update this decision log whenever evidence changes an architectural choice.
 Do not erase contradictory experiment history; mark it superseded and explain
 why.
+
+### Receiver PIN provisioning candidate (2026-08-31)
+
+Issue 10 is implemented as an explicit recovery action after the selected
+receiver rejects the default push-button method. Omacast does not infer the
+method from discovery and does not silently retry. The panel accepts one exact
+eight-digit WPS-checksummed PIN, restores the failed session, and starts the
+same canonical receiver identity with the keypad method.
+
+The credential is never placed in a command argument, controller state,
+telemetry, or durable history. QML writes it to bounded controller stdin and
+clears its temporary value after process start. The controller passes a sealed
+memfd to systemd's per-service credential directory, reads that file through
+descriptor-anchored no-follow/nonblocking validation, and gives FluxCast an
+anonymous pipe descriptor. FluxCast validates and closes the descriptor before
+sending the PIN over the protected, session-bound broker socket. The root
+broker uses python-dbus in-process because a `gdbus call` would expose the PIN
+in the privileged process argument vector. Its request schema remains closed,
+and every error returned across the boundary is credential-free.
+
+Supplicant's control-object `WpsFailed` signal supplies an actionable wrong-PIN
+result during this explicitly owned keypad attempt; negotiation status 10 is
+still attributed to the selected peer. Companion revision 82, guard API 16,
+and engine API 3 make the incompatible boundary explicit. Offline controller,
+QML, broker, descriptor, and reconstructed-engine coverage passes. A real
+PIN-requiring receiver, wrong PIN, cancellation, timeout, and supported Fire TV
+PBC regression remain acceptance gates and are not claimed as passed.

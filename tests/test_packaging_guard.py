@@ -34,7 +34,7 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         version = subprocess.run(("bash", str(guard), "--version"), check=False, capture_output=True, text=True)
         self.assertEqual(version.returncode, 0, version.stderr)
-        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 15})
+        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 16})
         source = guard.read_text(encoding="utf-8")
         self.assertIn('[[ "$action" == prepare ]]', source)
         self.assertIn('[[ "$action" == reclaim ]]', source)
@@ -61,7 +61,7 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("systemd network runtime directory is unsafe", source)
         self.assertIn('restore_networkd_state', source)
         self.assertIn('runtime_dirs_created=false', source)
-        self.assertIn("api_revision=15", source)
+        self.assertIn("api_revision=16", source)
         self.assertIn('user_root="$session_root/user"', source)
         self.assertNotIn('user_root="/run/user/', source)
         self.assertIn('install -d -m711 "$session_root"', source)
@@ -578,7 +578,7 @@ network_manager_marker_valid
 
     def test_recipe_installs_the_immutable_privilege_boundary(self) -> None:
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
-        self.assertIn("pkgrel=81", recipe)
+        self.assertIn("pkgrel=82", recipe)
         self.assertIn('omarchy-cast-guard"', recipe)
         self.assertIn('omarchy-cast-guard-launch"', recipe)
         self.assertIn('omarchy-cast-guard-recover"', recipe)
@@ -590,7 +590,7 @@ network_manager_marker_valid
         self.assertIn("'python>=3.14'", depends)
         self.assertIn("'python<3.15'", depends)
         self.assertNotIn("'python'", depends)
-        for dependency in ("ffmpeg", "networkmanager", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2", "util-linux", "glib2"):
+        for dependency in ("ffmpeg", "networkmanager", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2", "util-linux", "glib2", "python-dbus"):
             self.assertIn(f"'{dependency}'", depends)
         for removed in (
             "gstreamer", "gst-plugin-pipewire", "gst-plugins-base-libs",
@@ -1027,11 +1027,11 @@ reclaim_orphan_interfaces
 
     def test_bootstrap_and_package_share_the_complete_patch_series(self) -> None:
         series = (ROOT / "patches" / "production" / "series").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(series), 48)
+        self.assertEqual(len(series), 49)
         expected_numbers = (
             [f"{number:04d}" for number in range(1, 7)]
             + [f"{number:04d}" for number in range(9, 23)]
-            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041", "0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054"]
+            + ["0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041", "0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054", "0055"]
         )
         self.assertEqual([name[:4] for name in series], expected_numbers)
         for name in series:

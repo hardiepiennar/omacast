@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -99,6 +100,80 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
                 peer_path=peer,
             )
 
+    def test_wps_failure_signal_is_control_scoped_and_bounded(self) -> None:
+        control = "/fi/w1/wpa_supplicant1/Interfaces/0"
+        signal_line = (
+            f"{control}: {broker_module.WPA_P2P}.WpsFailed "
+            "('fail', {'msg': <int32 18>, 'config_error': <int16 18>})"
+        )
+        self.assertEqual(
+            broker_module.wps_failure(signal_line, control_path=control), (18, 18)
+        )
+        self.assertIsNone(broker_module.wps_failure("unrelated", control_path=control))
+        with self.assertRaisesRegex(broker_module.BrokerError, "invalid WPS-failure"):
+            broker_module.wps_failure(signal_line.replace(control, "/foreign"), control_path=control)
+
+    def test_pairing_pin_validation_is_exact_and_checksum_aware(self) -> None:
+        self.assertEqual(broker_module.validate_pairing_pin("12345670"), "12345670")
+        for value in ("12345671", "1234567", "1234abcd", True, 12345670):
+            with self.subTest(value=value), self.assertRaises(broker_module.BrokerError):
+                broker_module.validate_pairing_pin(value)
+
+    def test_pin_connect_uses_in_process_dbus_and_never_a_subprocess_argument(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Interface:
+            def Connect(self, options, *, timeout):
+                captured["options"] = options
+                captured["timeout"] = timeout
+
+        class Bus:
+            def get_object(self, destination, path):
+                captured["object"] = (destination, path)
+                return object()
+
+        fake_dbus = SimpleNamespace(
+            Dictionary=lambda values, signature: dict(values),
+            ObjectPath=lambda value: value,
+            Boolean=lambda value: value,
+            Int32=lambda value: value,
+            String=lambda value: value,
+            Interface=lambda _object, dbus_interface: Interface(),
+            SystemBus=lambda: Bus(),
+        )
+        with mock.patch.dict(sys.modules, {"dbus": fake_dbus}), mock.patch.object(
+            broker_module, "run_bounded"
+        ) as subprocess_call:
+            broker_module.connect_with_pin("/selected-control", "/selected-peer", "12345670", 2437)
+        subprocess_call.assert_not_called()
+        self.assertEqual(captured["object"], (broker_module.WPA_DEST, "/selected-control"))
+        self.assertEqual(captured["timeout"], 15.0)
+        self.assertEqual(captured["options"], {
+            "peer": "/selected-peer", "persistent": True, "join": False,
+            "authorize_only": False, "go_intent": 0, "wps_method": "keypad",
+            "pin": "12345670", "frequency": 2437,
+        })
+
+    def test_pin_connect_sanitizes_dbus_failures(self) -> None:
+        class Interface:
+            def Connect(self, _options, *, timeout):
+                raise RuntimeError("secret was 12345670")
+
+        fake_dbus = SimpleNamespace(
+            Dictionary=lambda values, signature: dict(values),
+            ObjectPath=lambda value: value, Boolean=lambda value: value,
+            Int32=lambda value: value, String=lambda value: value,
+            Interface=lambda _object, dbus_interface: Interface(),
+            SystemBus=lambda: SimpleNamespace(get_object=lambda *_args: object()),
+        )
+        with mock.patch.dict(sys.modules, {"dbus": fake_dbus}), self.assertRaises(
+            broker_module.BrokerError
+        ) as caught:
+            broker_module.connect_with_pin(
+                "/selected-control", "/selected-peer", "12345670", 0
+            )
+        self.assertNotIn("12345670", str(caught.exception))
+
     def test_long_lived_monitor_drains_pressure_and_stops_a_child_that_never_exits(self) -> None:
         control = "/fi/w1/wpa_supplicant1/Interfaces/0"
         peer = "/fi/w1/wpa_supplicant1/Interfaces/0/Peers/selected"
@@ -184,9 +259,20 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
             response = self.exchange(broker, {"schemaVersion": 1, "op": "connect"})
         self.assertTrue(response["ok"])
 
+        broker = self.broker()
+        with mock.patch.object(broker, "connect", return_value={"group": {"interface": "p2p-wlan42-0", "role": "client"}}) as connect:
+            response = self.exchange(
+                broker, {"schemaVersion": 1, "op": "connect", "pin": "12345670"}
+            )
+        self.assertTrue(response["ok"])
+        connect.assert_called_once_with("12345670")
+
         for payload in (
             {"schemaVersion": 1, "op": "disconnect-other"},
             {"schemaVersion": 1, "op": "connect", "path": "/foreign"},
+            {"schemaVersion": 1, "op": "cleanup", "pin": "12345670"},
+            {"schemaVersion": 1, "op": "connect", "pin": "12345671"},
+            {"schemaVersion": 1, "op": "connect", "pin": True},
             {"schemaVersion": True, "op": "connect"},
             {"schemaVersion": 2, "op": "connect"},
             ["connect"],
@@ -294,6 +380,42 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
                 ):
                     broker.connect()
         monitor.return_value.close.assert_called_once_with()
+
+    def test_connect_uses_keypad_only_after_an_explicit_valid_pin(self) -> None:
+        broker = self.broker()
+        with tempfile.TemporaryDirectory() as directory:
+            broker.wfd_marker = Path(directory) / "owned"
+            with mock.patch.object(broker, "network_armed", return_value=True), mock.patch.object(
+                broker, "resolve_control", return_value="/selected-control"
+            ), mock.patch.object(
+                broker, "resolve_peer", return_value="/selected-peer"
+            ), mock.patch.object(
+                broker, "peer_groups", side_effect=(frozenset(), frozenset({"/new"}))
+            ), mock.patch.object(
+                broker, "group_candidate", return_value={"interface": "p2p-wlan42-0", "role": "client"}
+            ), mock.patch.object(
+                broker_module, "get_property", return_value="(<@ay []>,)"
+            ), mock.patch.object(
+                broker_module, "set_property"
+            ), mock.patch.object(
+                broker_module, "call"
+            ) as shell_call, mock.patch.object(
+                broker_module, "connect_with_pin"
+            ) as pin_call, mock.patch.object(
+                broker_module, "SupplicantSignalMonitor"
+            ) as monitor:
+                monitor.return_value.failure_status.return_value = None
+                monitor.return_value.pairing_failure.return_value = None
+                result = broker.connect("12345670")
+        self.assertEqual(result["group"]["role"], "client")
+        pin_call.assert_called_once_with(
+            "/selected-control", "/selected-peer", "12345670", 2437
+        )
+        shell_call.assert_not_called()
+        monitor.assert_called_once_with(
+            control_path="/selected-control", peer_path="/selected-peer",
+            watch_wps=True,
+        )
 
     def test_connect_refuses_preexisting_global_wfd_owner(self) -> None:
         broker = self.broker()

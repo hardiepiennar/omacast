@@ -36,6 +36,7 @@ WPA_GROUP = "fi.w1.wpa_supplicant1.Group"
 SESSION_RE = re.compile(r"^[a-f0-9]{32}$")
 INTERFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 PEER_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+PIN_RE = re.compile(r"^[0-9]{8}$")
 
 
 class BrokerError(RuntimeError):
@@ -190,6 +191,49 @@ def byte_variant(data: bytes) -> str:
     return "<@ay [" + ", ".join(f"byte 0x{value:02x}" for value in data) + "]>"
 
 
+def validate_pairing_pin(value: object) -> str:
+    if type(value) is not str or not PIN_RE.fullmatch(value):
+        raise BrokerError("pairing PIN must contain exactly eight digits")
+    accumulator = 0
+    prefix = int(value[:7])
+    while prefix:
+        accumulator += 3 * (prefix % 10)
+        prefix //= 10
+        accumulator += prefix % 10
+        prefix //= 10
+    if (10 - accumulator % 10) % 10 != int(value[7]):
+        raise BrokerError("pairing PIN checksum is invalid")
+    return value
+
+
+def connect_with_pin(control_path: str, peer_path: str, pin: str, frequency: int) -> None:
+    """Call supplicant in-process so the credential never appears in argv."""
+    validated = validate_pairing_pin(pin)
+    try:
+        import dbus
+
+        options = dbus.Dictionary({
+            "peer": dbus.ObjectPath(peer_path),
+            "persistent": dbus.Boolean(True),
+            "join": dbus.Boolean(False),
+            "authorize_only": dbus.Boolean(False),
+            "go_intent": dbus.Int32(0),
+            "wps_method": dbus.String("keypad"),
+            "pin": dbus.String(validated),
+        }, signature="sv")
+        if frequency:
+            options["frequency"] = dbus.Int32(frequency)
+        interface = dbus.Interface(
+            dbus.SystemBus().get_object(WPA_DEST, control_path),
+            dbus_interface=WPA_P2P,
+        )
+        interface.Connect(options, timeout=15.0)
+    except BrokerError:
+        raise
+    except Exception as exc:
+        raise BrokerError("supplicant PIN pairing request failed") from exc
+
+
 def go_negotiation_failure(line: str, *, control_path: str, peer_path: str) -> int | None:
     """Return an exactly attributed P2P status from one bounded gdbus line."""
     signal_name = f"{WPA_P2P}.GONegotiationFailure"
@@ -209,10 +253,27 @@ def go_negotiation_failure(line: str, *, control_path: str, peer_path: str) -> i
     return status
 
 
+def wps_failure(line: str, *, control_path: str) -> tuple[int, int] | None:
+    """Return the current control object's bounded WPS failure details."""
+    signal_name = f"{WPA_P2P}.WpsFailed"
+    if signal_name not in line:
+        return None
+    if len(line) > MAX_MONITOR_LINE or not line.startswith(f"{control_path}: {signal_name} "):
+        raise BrokerError("supplicant emitted an invalid WPS-failure signal")
+    message = re.search(r"['\"]msg['\"]:\s*<(?:int32\s+)?([0-9]{1,5})>", line)
+    config = re.search(r"['\"]config_error['\"]:\s*<(?:int16\s+)?([0-9]{1,5})>", line)
+    if message is None or config is None:
+        raise BrokerError("supplicant emitted an invalid WPS-failure signal")
+    values = (int(message.group(1)), int(config.group(1)))
+    if any(not 0 <= value <= 65_535 for value in values):
+        raise BrokerError("supplicant emitted an invalid WPS-failure value")
+    return values
+
+
 class SupplicantSignalMonitor:
     """Continuously drain a fixed gdbus monitor and retain only bounded state."""
 
-    def __init__(self, *, control_path: str, peer_path: str) -> None:
+    def __init__(self, *, control_path: str, peer_path: str, watch_wps: bool = False) -> None:
         self.control_path = control_path
         self.peer_path = peer_path
         self.process: subprocess.Popen[bytes] | None = None
@@ -221,6 +282,8 @@ class SupplicantSignalMonitor:
         self.lock = threading.Lock()
         self.error: str | None = None
         self.status: int | None = None
+        self.wps_failure: tuple[int, int] | None = None
+        self.watch_wps = watch_wps
         self.stderr = bytearray()
         self.closing = False
 
@@ -245,6 +308,17 @@ class SupplicantSignalMonitor:
             with self.lock:
                 if self.status is None:
                     self.status = status
+            return
+        if self.watch_wps:
+            try:
+                failure = wps_failure(line, control_path=self.control_path)
+            except BrokerError as exc:
+                self._set_error(str(exc))
+                return
+            if failure is not None:
+                with self.lock:
+                    if self.wps_failure is None:
+                        self.wps_failure = failure
 
     def _drain(self, stream: object, *, stdout: bool) -> None:
         descriptor = stream.fileno()  # type: ignore[attr-defined]
@@ -324,6 +398,12 @@ class SupplicantSignalMonitor:
                 raise BrokerError(detail[:512] or "supplicant signal monitor stopped unexpectedly")
             return self.status
 
+    def pairing_failure(self) -> tuple[int, int] | None:
+        with self.lock:
+            if self.error is not None:
+                raise BrokerError(self.error)
+            return self.wps_failure
+
     def close(self) -> None:
         with self.lock:
             self.closing = True
@@ -355,8 +435,13 @@ class SupplicantSignalMonitor:
                 process.stderr.close()
 
 
-def negotiation_failure_detail(status: int) -> str:
+def negotiation_failure_detail(status: int, *, keypad: bool = False) -> str:
     if status == 10:
+        if keypad:
+            return (
+                "receiver rejected PIN pairing (Wi-Fi Direct status 10: "
+                "incompatible provisioning method)"
+            )
         return (
             "receiver rejected push-button pairing (Wi-Fi Direct status 10: "
             "incompatible provisioning method); this display may require PIN pairing"
@@ -467,7 +552,7 @@ class SupplicantBroker:
             return {"interface": ifname, "role": role}
         return None
 
-    def connect(self) -> dict[str, object]:
+    def connect(self, pin: str | None = None) -> dict[str, object]:
         if self.connect_attempted:
             raise BrokerError("this session already consumed its connect operation")
         if not self.wait_for_network_arm():
@@ -482,6 +567,7 @@ class SupplicantBroker:
         os.close(marker)
         self.wfd_owned = True
         set_property(WPA_ROOT, WPA_DEST, "WFDIEs", byte_variant(source_wfd_ies()))
+        pairing_pin = validate_pairing_pin(pin) if pin is not None else None
         options = {
             "peer": f"<objectpath '{self.peer_path}'>",
             "persistent": "<true>",
@@ -493,21 +579,31 @@ class SupplicantBroker:
         if self.frequency:
             options["frequency"] = f"<int32 {self.frequency}>"
         encoded = "{" + ", ".join(f"'{key}': {value}" for key, value in options.items()) + "}"
-        monitor = SupplicantSignalMonitor(control_path=self.control_path, peer_path=self.peer_path)
+        monitor = SupplicantSignalMonitor(
+            control_path=self.control_path, peer_path=self.peer_path,
+            watch_wps=pairing_pin is not None,
+        )
         monitor.start()
         try:
             self.p2p_mutation_attempted = True
-            call([
-                "--dest", WPA_DEST,
-                "--object-path", self.control_path,
-                "--method", f"{WPA_P2P}.Connect",
-                encoded,
-            ], timeout=15.0)
+            if pairing_pin is None:
+                call([
+                    "--dest", WPA_DEST,
+                    "--object-path", self.control_path,
+                    "--method", f"{WPA_P2P}.Connect",
+                    encoded,
+                ], timeout=15.0)
+            else:
+                connect_with_pin(
+                    self.control_path, self.peer_path, pairing_pin, self.frequency
+                )
             deadline = time.monotonic() + 45
             while time.monotonic() < deadline and not self.stop.is_set():
                 failure = monitor.failure_status()
                 if failure is not None:
-                    raise BrokerError(negotiation_failure_detail(failure))
+                    raise BrokerError(negotiation_failure_detail(failure, keypad=pairing_pin is not None))
+                if pairing_pin is not None and monitor.pairing_failure() is not None:
+                    raise BrokerError("receiver rejected the pairing PIN; check the displayed digits and try again")
                 candidates: list[dict[str, str]] = []
                 for group_path in self.peer_groups(self.peer_path) - self.baseline_groups:
                     candidate = self.group_candidate(group_path)
@@ -518,12 +614,14 @@ class SupplicantBroker:
                 if candidates:
                     return {"group": candidates[0]}
                 self.stop.wait(0.1)
+            if pairing_pin is not None:
+                raise BrokerError("timed out waiting for receiver PIN pairing")
             raise BrokerError("timed out waiting for the selected receiver P2P group")
         finally:
             monitor.close()
             late_failure = monitor.failure_status()
             if late_failure is not None:
-                raise BrokerError(negotiation_failure_detail(late_failure))
+                raise BrokerError(negotiation_failure_detail(late_failure, keypad=pairing_pin is not None))
 
     def cleanup(self) -> bool:
         cleaned = True
@@ -574,14 +672,20 @@ class SupplicantBroker:
             validate_json_budget(payload)
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise BrokerError("broker request is not valid JSON") from exc
-        if not isinstance(payload, dict) or set(payload) != {"schemaVersion", "op"}:
+        if not isinstance(payload, dict) or set(payload) not in (
+            {"schemaVersion", "op"}, {"schemaVersion", "op", "pin"},
+        ):
             raise BrokerError("broker request has an unexpected shape")
         if type(payload.get("schemaVersion")) is not int or payload.get("schemaVersion") != SCHEMA_VERSION:
             raise BrokerError("broker request schema is unsupported")
         operation = payload.get("op")
         if operation == "connect":
-            result = self.connect()
+            result = self.connect(
+                validate_pairing_pin(payload["pin"]) if "pin" in payload else None
+            )
         elif operation == "cleanup":
+            if "pin" in payload:
+                raise BrokerError("a pairing PIN is accepted only for connection setup")
             cleaned = self.cleanup()
             self.stop.set()
             if not cleaned:
