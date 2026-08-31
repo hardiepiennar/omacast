@@ -170,8 +170,7 @@ class FluxCastReceiverDiscovery:
         self.interface = interface
         self._scanner = scanner
 
-    def list_receivers(self, *, timeout_seconds: float) -> list[Receiver]:
-        _validate_timeout(timeout_seconds)
+    def _scanner_or_raise(self) -> Callable[..., object]:
         scanner = self._scanner
         if scanner is None:
             try:
@@ -179,13 +178,10 @@ class FluxCastReceiverDiscovery:
             except ImportError as exc:
                 raise ReceiverDiscoveryUnavailable("the FluxCast companion engine is not installed") from exc
             scanner = active_scan
-        try:
-            # FluxCast's human diagnostics belong in its terminal UI. Keep this
-            # controller command strict JSON for the QML consumer.
-            with open(os.devnull, "w", encoding="utf-8") as discarded, redirect_stdout(discarded):
-                peers = scanner(interface=self.interface, timeout=int(timeout_seconds))
-        except Exception as exc:
-            raise ReceiverDiscoveryUnavailable(bounded_text(str(exc), limit=240, fallback="Wi-Fi Direct scan failed") or "Wi-Fi Direct scan failed") from exc
+        return scanner
+
+    @staticmethod
+    def _receivers_from_peers(peers: object) -> list[Receiver]:
         records: list[dict[str, object]] = []
         peer_count = 0
         try:
@@ -236,6 +232,46 @@ class FluxCastReceiverDiscovery:
             ) from exc
         return normalize_receivers(records)
 
+    def list_receivers(self, *, timeout_seconds: float) -> list[Receiver]:
+        _validate_timeout(timeout_seconds)
+        scanner = self._scanner_or_raise()
+        try:
+            # FluxCast's human diagnostics belong in its terminal UI. Keep this
+            # controller command strict JSON for the QML consumer.
+            with open(os.devnull, "w", encoding="utf-8") as discarded, redirect_stdout(discarded):
+                peers = scanner(interface=self.interface, timeout=int(timeout_seconds))
+            return self._receivers_from_peers(peers)
+        except ReceiverDiscoveryUnavailable:
+            raise
+        except Exception as exc:
+            raise ReceiverDiscoveryUnavailable(bounded_text(str(exc), limit=240, fallback="Wi-Fi Direct scan failed") or "Wi-Fi Direct scan failed") from exc
+
+    def watch_receivers(self, *, timeout_seconds: float, callback: Callable[[list[Receiver]], None]) -> list[Receiver]:
+        """Publish bounded snapshots from one companion-owned discovery run."""
+        _validate_timeout(timeout_seconds)
+        scanner = self._scanner_or_raise()
+        previous: list[Receiver] | None = None
+
+        def publish(peers: object) -> None:
+            nonlocal previous
+            receivers = self._receivers_from_peers(peers)
+            if receivers != previous:
+                callback(receivers)
+                previous = receivers
+
+        try:
+            peers = scanner(
+                interface=self.interface,
+                timeout=int(timeout_seconds),
+                snapshot_callback=publish,
+                quiet=True,
+            )
+            return self._receivers_from_peers(peers)
+        except ReceiverDiscoveryUnavailable:
+            raise
+        except Exception as exc:
+            raise ReceiverDiscoveryUnavailable(bounded_text(str(exc), limit=240, fallback="Wi-Fi Direct scan failed") or "Wi-Fi Direct scan failed") from exc
+
 
 class DisabledReceiverDiscovery:
     """A negative-test adapter that explicitly refuses live discovery."""
@@ -247,6 +283,10 @@ class DisabledReceiverDiscovery:
 
 def discovery_payload(discovery: ReceiverDiscovery, *, timeout_seconds: float = 8) -> dict[str, object]:
     receivers = discovery.list_receivers(timeout_seconds=timeout_seconds)
+    return receiver_payload(receivers)
+
+
+def receiver_payload(receivers: Iterable[Receiver]) -> dict[str, object]:
     return {
         "schemaVersion": 1,
         "readOnly": True,

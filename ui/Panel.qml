@@ -35,8 +35,10 @@ Panel {
   property int receiverCursor: -1
   property bool keyboardCursor: false
   property string message: "Put your TV in Display Mirroring, then choose it below."
-  property int scanStage: 0
-  property int scanTimeoutSeconds: 2
+  property bool scanRunning: false
+  property bool scanReceived: false
+  property bool scanFailed: false
+  property bool connectAfterScan: false
   property bool connectRunning: false
   property bool startPending: false
   property bool cancelRequested: false
@@ -52,7 +54,6 @@ Panel {
   readonly property bool streaming: phase === "streaming"
   readonly property bool needsRecovery: phase === "error"
   readonly property bool sessionBusy: sessionActive || connectRunning || startPending
-  readonly property bool scanRunning: scanStage !== 0
   readonly property bool visuallyBusy: scanRunning || sessionBusy
   readonly property color connectingColor: Qt.hsla(0.10, 0.72, 0.62, 1.0)
   readonly property color connectedColor: Qt.hsla(0.36, 0.55, 0.55, 1.0)
@@ -422,54 +423,50 @@ Panel {
   function activateKeyboardAction() {
     if (sessionBusy) return
     if (receiverCursor >= 0 && receiverCursor < receivers.length) {
-      selectReceiver(receivers[receiverCursor])
-      startConnect()
+      selectAndConnect(receivers[receiverCursor])
     } else if (!scanRunning) {
       startScan()
     }
   }
 
-  function mergeReceiverLists(fresh) {
-    var merged = []
-    var seen = ({})
-    for (var i = 0; i < fresh.length; i++) {
-      seen[fresh[i].id] = true
-      merged.push(fresh[i])
-    }
-    for (var j = 0; j < receivers.length; j++)
-      if (!seen[receivers[j].id]) merged.push(receivers[j])
-    return merged
-  }
-
-  function applyScan(text, mergeResults, finalResult) {
+  function applyScan(text) {
     // A receiver normally stops advertising after it joins the P2P group. A
     // late scan must not clear the selected display or replace active-session
     // progress with a misleading empty-discovery message.
     if (sessionBusy) return
     var result = parseJsonObject(text, {})
     if (result.ok === false) {
-      if (!mergeResults || !receivers.length) {
-        receivers = []
-        receiverId = ""
-        receiverName = ""
-        receiverCursor = -1
-        message = boundedText(result.error && result.error.message, "Could not scan for displays", 512)
-      }
+      scanFailed = true
+      receivers = []
+      receiverId = ""
+      receiverName = ""
+      receiverCursor = -1
+      message = boundedText(result.error && result.error.message, "Could not scan for displays", 512)
+      return
+    }
+    if (result.schemaVersion !== 1 || result.readOnly !== true
+        || result.kind !== "receiver-discovery" || !Array.isArray(result.receivers)) {
+      scanFailed = true
+      receivers = []
+      receiverId = ""
+      receiverName = ""
+      receiverCursor = -1
+      message = "Receiver scan returned invalid data"
+      if (scanProc.running) scanProc.running = false
       return
     }
     var items = normalizeReceivers(result.receivers)
-    if (mergeResults) items = mergeReceiverLists(items)
+    var cursorId = receiverCursor >= 0 && receiverCursor < receivers.length
+      ? String(receivers[receiverCursor].id || "") : ""
     receivers = items
     if (!selectedReceiverStillExists(items)) {
       receiverId = ""
       receiverName = ""
     }
-    receiverCursor = items.length ? 0 : -1
+    receiverCursor = cursorId ? receiverIndex(cursorId) : (items.length ? 0 : -1)
+    if (receiverCursor < 0 && items.length) receiverCursor = 0
     keyboardCursor = items.length > 0
-    message = !finalResult ? "Still looking for displays…"
-      : items.length
-      ? (items.length === 1 ? "Select " + items[0].name : "Choose a display")
-      : "No displays found. Check that the TV is in Display Mirroring."
+    message = items.length ? "Choose a display · still looking…" : "Looking for nearby displays…"
   }
 
   function selectReceiver(receiver) {
@@ -482,10 +479,13 @@ Panel {
 
   function selectAndConnect(receiver) {
     if (sessionBusy) return
-    scanStage = 0
-    if (scanProc.running) scanProc.running = false
     selectReceiver(receiver)
-    startConnect()
+    if (scanProc.running) {
+      connectAfterScan = true
+      scanProc.running = false
+    } else {
+      startConnect()
+    }
   }
 
   function requestPlan() {
@@ -503,12 +503,15 @@ Panel {
       return
     }
     if (!scanProc.running) {
+      receivers = []
       receiverId = ""
       receiverName = ""
       receiverCursor = -1
       message = "Looking for nearby displays…"
-      scanStage = 1
-      scanTimeoutSeconds = 2
+      scanReceived = false
+      scanFailed = false
+      connectAfterScan = false
+      scanRunning = true
       scanProc.running = true
     }
   }
@@ -810,23 +813,37 @@ Panel {
   }
   Process {
     id: scanProc
-    command: [root.controllerPath, "scan", "--timeout", String(root.scanTimeoutSeconds)]
-    stdout: BoundedCollector { id: scanOutput }
-    stderr: DiscardCollector {}
-    onRunningChanged: if (running) scanOutput.reset()
-    onExited: {
-      var completedStage = root.scanStage
-      if (completedStage === 0) return
-      root.applyScan(scanOutput.output, completedStage === 2, completedStage === 2)
-      if (completedStage === 1 && !root.sessionBusy) {
-        root.scanStage = 2
-        root.scanTimeoutSeconds = 8
-        Qt.callLater(function() {
-          if (root.scanStage === 2 && !scanProc.running) scanProc.running = true
-        })
-      } else {
-        root.scanStage = 0
+    command: [root.controllerPath, "scan", "--timeout", "8", "--stream"]
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) {
+        if (line.length > root.maxControllerResponseChars) {
+          root.scanFailed = true
+          root.message = "Receiver scan returned too much data"
+          scanProc.running = false
+          return
+        }
+        root.scanReceived = true
+        root.applyScan(line)
       }
+    }
+    stderr: DiscardCollector {}
+    onRunningChanged: root.scanRunning = running
+    onExited: function(exitCode) {
+      root.scanRunning = false
+      if (root.connectAfterScan) {
+        root.connectAfterScan = false
+        root.startConnect()
+        return
+      }
+      if (root.sessionBusy || root.scanFailed) return
+      if (exitCode !== 0 && !root.scanReceived) {
+        root.message = "Could not scan for displays"
+        return
+      }
+      root.message = root.receivers.length
+        ? (root.receivers.length === 1 ? "Select " + root.receivers[0].name : "Choose a display")
+        : "No displays found. Check that the TV is in Display Mirroring."
     }
   }
   Process {

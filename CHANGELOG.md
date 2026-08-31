@@ -7,10 +7,11 @@
   quality. The row uses compact role/network/rate/signal icons and keeps the
   expanded definitions in its tooltip. Production patch 53 carries the bounded
   NetworkManager metadata in companion revision 77; serial numbers remain private.
-- Return an initial two-second receiver list, then merge a quiet eight-second
-  follow-up scan, so nearby sinks appear promptly without losing devices that
-  advertise later. Manufacturer/model remains in the tooltip rather than
-  lengthening the compact icon row.
+- Publish changed receiver lists during one continuous Wi-Fi Direct discovery
+  session, so nearby sinks appear immediately without restarting discovery or
+  losing slower advertisements. Selecting a receiver cooperatively stops that
+  scan before connection. Companion revision 78 carries production patch 54
+  and requires engine contract API 2.
 - Preserve NetworkManager's advertised WFD device role in discovery results,
   so the controller can identify genuine sinks without inferring capability
   from an RTSP port. Companion revision 76 carries production patch 52.

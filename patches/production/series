@@ -45,3 +45,4 @@
 0051-Remove-dormant-transport-dump-analyzer.patch
 0052-Preserve-WFD-sink-role-in-NetworkManager-discovery.patch
 0053-Expose-bounded-WFD-peer-metadata.patch
+0054-Stream-Wi-Fi-Direct-discovery-snapshots.patch

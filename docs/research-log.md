@@ -2768,7 +2768,18 @@ can originate or receive a display session rather than implying a special sink
 quality tier.
 
 The batch scan originally withheld all results until its fixed eight-second
-window ended. The panel now runs a two-second first pass, renders that bounded
-result immediately, and merges an eight-second follow-up. Selecting an early
-receiver cancels the follow-up before connection. The compact row no longer
-repeats manufacturer/model; those remain available in its expanded tooltip.
+window ended. A two-second first pass plus an eight-second follow-up briefly
+improved perceived latency, but it restarted discovery, duplicated work, and
+encoded receiver timing guesses in the UI. That approach is superseded.
+
+Production patch 54 keeps one bounded `StartFind` session and publishes a new
+bounded snapshot only when its peer set or incomplete WFD metadata changes.
+The controller flushes each snapshot as one bounded JSON line, and the panel
+renders it immediately. Selecting a receiver sends cooperative termination;
+Python unwinding reaches the engine's `finally`, calls `StopFind` once, and the
+panel waits for scanner exit before starting P2P connection. The wpa_cli
+fallback follows the same progressive contract. Companion revision 78 and
+engine contract API 2 make the new callback capability explicit, so the plugin
+rejects revision 77 instead of failing at runtime. Guard API 14 is unchanged.
+The compact row no longer repeats manufacturer/model; those remain available
+in its expanded tooltip. No live receiver operation was run for this change.

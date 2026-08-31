@@ -165,7 +165,7 @@ GUARD_VERSION_CONTRACT = {
 ENGINE_CONTRACT = {
     "schemaVersion": 1,
     "kind": "omacast-engine-contract",
-    "apiRevision": 1,
+    "apiRevision": 2,
     "capture": "gpu-screen-recorder",
     "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
     "network": {
@@ -174,6 +174,7 @@ ENGINE_CONTRACT = {
         "guardedSessionRequired": True,
     },
     "telemetry": {"controllerDescriptorsRequired": True},
+    "discovery": {"progressiveSnapshots": True},
 }
 
 
@@ -230,7 +231,7 @@ def _engine_capabilities(runner: Runner) -> dict[str, object]:
         try:
             payload = json.loads(result.stdout)
             validate_json_budget(
-                payload, max_depth=4, max_nodes=24,
+                payload, max_depth=4, max_nodes=32,
                 max_collection_items=8, max_string_chars=64,
             )
         except (json.JSONDecodeError, BoundError, RecursionError):
@@ -240,7 +241,7 @@ def _engine_capabilities(runner: Runner) -> dict[str, object]:
         "schemaVersion": 1,
         "installed": result.returncode != 127,
         "compatible": compatible,
-        "apiRevision": 1 if compatible else None,
+        "apiRevision": ENGINE_CONTRACT["apiRevision"] if compatible else None,
     }
 
 

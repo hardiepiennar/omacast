@@ -117,6 +117,30 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(payload["receivers"][0]["name"], "Living room TV")
 
+    def test_streaming_scan_flushes_each_changed_receiver_snapshot(self) -> None:
+        receiver = FixtureReceiverDiscovery([
+            {"id": "AA:BB:CC:DD:EE:FF", "name": "Living room TV", "kind": "wfd-display", "capabilities": ["miracast"]}
+        ]).list_receivers(timeout_seconds=1)[0]
+
+        class ProgressiveDiscovery:
+            def watch_receivers(self, *, timeout_seconds, callback):
+                self.timeout_seconds = timeout_seconds
+                callback([])
+                callback([receiver])
+                return [receiver]
+
+        discovery = ProgressiveDiscovery()
+        output = io.StringIO()
+        with patch("omarchy_cast.cli.read_state", return_value={"phase": "idle"}), patch(
+            "omarchy_cast.cli.discover_host", return_value={"wifiLinks": []}
+        ), patch("omarchy_cast.cli.FluxCastReceiverDiscovery", return_value=discovery), redirect_stdout(output):
+            code = main(["scan", "--timeout", "4", "--stream"])
+
+        lines = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(code, 0)
+        self.assertEqual(discovery.timeout_seconds, 4)
+        self.assertEqual([len(line["receivers"]) for line in lines], [0, 1])
+
     def test_logs_is_empty_before_any_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict("os.environ", {"XDG_RUNTIME_DIR": temp, "XDG_STATE_HOME": temp}, clear=False):
             code, payload = self.invoke(["logs"])

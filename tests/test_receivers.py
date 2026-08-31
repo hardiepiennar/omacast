@@ -129,6 +129,28 @@ class ReceiverDiscoveryTest(unittest.TestCase):
         self.assertNotIn("02:00:00:00:00:03", [receiver["id"] for receiver in payload["receivers"]])
         self.assertNotIn("generic-receiver", [receiver["id"] for receiver in payload["receivers"]])
 
+    def test_progressive_scan_projects_changed_snapshots_from_one_engine_call(self) -> None:
+        calls = []
+        sink = SimpleNamespace(
+            address="02:00:00:00:00:01", name="Living Room Fire TV",
+            details="wfd_dev_info=0x00111c4400c8",
+        )
+
+        def scanner(*, interface, timeout, snapshot_callback, quiet):
+            calls.append((interface, timeout, quiet))
+            snapshot_callback([])
+            snapshot_callback([sink])
+            snapshot_callback([sink])
+            return [sink]
+
+        snapshots = []
+        discovery = FluxCastReceiverDiscovery(interface="wlan42", scanner=scanner)
+        final = discovery.watch_receivers(timeout_seconds=8, callback=snapshots.append)
+
+        self.assertEqual(calls, [("wlan42", 8, True)])
+        self.assertEqual([[receiver.id for receiver in snapshot] for snapshot in snapshots], [[], ["02:00:00:00:00:01"]])
+        self.assertEqual([receiver.id for receiver in final], ["02:00:00:00:00:01"])
+
     def test_fluxcast_adapter_rejects_peers_without_a_valid_sink_role(self) -> None:
         def scanner(*, interface: str | None, timeout: int) -> list[SimpleNamespace]:
             del interface, timeout

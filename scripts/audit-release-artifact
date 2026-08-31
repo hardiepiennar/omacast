@@ -189,11 +189,12 @@ actual = json.loads(sys.argv[1])
 expected = {
     "schemaVersion": 1,
     "kind": "omacast-engine-contract",
-    "apiRevision": 1,
+    "apiRevision": 2,
     "capture": "gpu-screen-recorder",
     "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
     "network": {"backend": "supplicant", "mode": "connect", "guardedSessionRequired": True},
     "telemetry": {"controllerDescriptorsRequired": True},
+    "discovery": {"progressiveSnapshots": True},
 }
 assert json.dumps(actual, sort_keys=True, separators=(",", ":")) == json.dumps(
     expected, sort_keys=True, separators=(",", ":")

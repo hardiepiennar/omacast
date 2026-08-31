@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 from uuid import uuid4
 
@@ -14,7 +15,7 @@ from .engine import LaunchPlanError, build_launch_plan
 from .guard import GuardError, GuardRequest, orphan_parent_interfaces, reclaim_orphan_interfaces
 from .identity import receiver_address
 from .media_probe import MediaProbeError, probe_media
-from .receivers import DEMO_FIRE_TV, FixtureReceiverDiscovery, FluxCastReceiverDiscovery, ReceiverDiscoveryUnavailable, ReceiverError, discovery_payload
+from .receivers import DEMO_FIRE_TV, FixtureReceiverDiscovery, FluxCastReceiverDiscovery, Receiver, ReceiverDiscoveryUnavailable, ReceiverError, discovery_payload, receiver_payload
 from .service import ServiceError, start_session_service, stop_pending_session_service
 from .session import DryRunSupervisor, SessionError, SimulatedSupervisor, TransportTestSupervisor, read_session_events, recover_stale_session, request_stop, session_history
 from .state import StateError, read_state, session_lock_is_held
@@ -32,6 +33,11 @@ def _emit(value: object) -> None:
             "error": {"code": "response-too-large", "message": "Controller response exceeded its bounded UI contract."},
         }, sort_keys=True, separators=(",", ":")) + "\n"
     sys.stdout.write(payload)
+    sys.stdout.flush()
+
+
+class _ScanCancelled(Exception):
+    """Turn SIGTERM into normal unwinding so discovery always calls StopFind."""
 
 
 def _error_message(exc: BaseException) -> str:
@@ -57,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser("status", help="read session state")
     scan = subcommands.add_parser("scan", help="scan for nearby Miracast receivers without connecting")
     scan.add_argument("--timeout", type=int, default=8, help="Wi-Fi Direct scan duration in seconds (1-30)")
+    scan.add_argument("--stream", action="store_true", help="emit each changed receiver snapshot as one JSON line")
     receivers = subcommands.add_parser("receivers", help="list nearby Miracast receivers")
     receivers.add_argument("--fixture", action="store_true", help="return the deterministic development Fire TV fixture")
     receivers.add_argument("--timeout", type=int, default=8, help="Wi-Fi Direct scan duration in seconds (1-30)")
@@ -143,7 +150,28 @@ def main(argv: list[str] | None = None) -> int:
             links = snapshot.get("wifiLinks", []) if isinstance(snapshot, dict) else []
             interface = next((link.get("interface") for link in links if isinstance(link, dict) and link.get("connected") and isinstance(link.get("interface"), str)), None)
             discovery = FixtureReceiverDiscovery(DEMO_FIRE_TV) if fixture else FluxCastReceiverDiscovery(interface=interface)
-            _emit(discovery_payload(discovery, timeout_seconds=args.timeout))
+            if args.command == "scan" and args.stream:
+                last_emitted: list[Receiver] | None = None
+
+                def publish(receivers: list[Receiver]) -> None:
+                    nonlocal last_emitted
+                    _emit(receiver_payload(receivers))
+                    last_emitted = receivers
+
+                def cancel_scan(_signum: int, _frame: object) -> None:
+                    raise _ScanCancelled()
+
+                previous_handler = signal.signal(signal.SIGTERM, cancel_scan)
+                try:
+                    final_receivers = discovery.watch_receivers(timeout_seconds=args.timeout, callback=publish)
+                    if final_receivers != last_emitted:
+                        _emit(receiver_payload(final_receivers))
+                finally:
+                    signal.signal(signal.SIGTERM, previous_handler)
+            else:
+                _emit(discovery_payload(discovery, timeout_seconds=args.timeout))
+        except _ScanCancelled:
+            return 0
         except (ReceiverError, ReceiverDiscoveryUnavailable, StateError) as exc:
             _emit({"schemaVersion": 1, "ok": False, "error": {"code": "receiver-scan-failed", "message": _error_message(exc)}})
             return 2

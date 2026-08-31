@@ -1,0 +1,415 @@
+From 0c292bb671ae51da85215b90341d1e54bd6dace4 Mon Sep 17 00:00:00 2001
+From: Omacast package build <packaging@localhost>
+Date: Mon, 31 Aug 2026 18:51:57 +1200
+Subject: [PATCH] Stream Wi-Fi Direct discovery snapshots
+
+---
+ src/main.py                    |   3 +-
+ src/wfd/p2p/peers.py           | 103 +++++++++++++++++++--------------
+ src/wfd/p2p/scan_nm.py         |  94 ++++++++++++++++++------------
+ tests/test_omacast_contract.py |   3 +-
+ tests/test_wfd_p2p_scan.py     |  74 +++++++++++++++++++++++
+ 5 files changed, 194 insertions(+), 83 deletions(-)
+
+diff --git a/src/main.py b/src/main.py
+index 2d21a12..f9c2de9 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -113,7 +113,7 @@ def main() -> None:
+         print(json.dumps({
+             "schemaVersion": 1,
+             "kind": "omacast-engine-contract",
+-            "apiRevision": 1,
++            "apiRevision": 2,
+             "capture": "gpu-screen-recorder",
+             "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
+             "network": {
+@@ -121,6 +121,7 @@ def main() -> None:
+                 "guardedSessionRequired": True,
+             },
+             "telemetry": {"controllerDescriptorsRequired": True},
++            "discovery": {"progressiveSnapshots": True},
+         }, sort_keys=True, separators=(",", ":")))
+         return
+     if args.doctor or args.doctor_json:
+diff --git a/src/wfd/p2p/peers.py b/src/wfd/p2p/peers.py
+index a2ef1ba..9191bf1 100644
+--- a/src/wfd/p2p/peers.py
++++ b/src/wfd/p2p/peers.py
+@@ -2,7 +2,7 @@ import re
+ import shutil
+ import subprocess
+ import time
+-from typing import Optional
++from typing import Callable, Optional
+ 
+ from ..config import WFDNotReady
+ from ..ie import WFDPeer
+@@ -94,6 +94,8 @@ def active_scan(
+     interface: Optional[str] = None,
+     timeout: int = 8,
+     selected_address: Optional[str] = None,
++    snapshot_callback: Optional[Callable[[list[WFDPeer]], None]] = None,
++    quiet: bool = False,
+ ) -> list[WFDPeer]:
+     """Run an active Wi-Fi Direct peer scan.
+     """
+@@ -102,9 +104,12 @@ def active_scan(
+             interface=interface,
+             timeout=timeout,
+             selected_address=selected_address,
++            snapshot_callback=snapshot_callback,
++            quiet=quiet,
+         )
+     except WFDNotReady as nm_error:
+-        print(f"[FluxCast WFD] NetworkManager scan unavailable: {nm_error}")
++        if not quiet:
++            print(f"[FluxCast WFD] NetworkManager scan unavailable: {nm_error}")
+ 
+     if not shutil.which("wpa_cli"):
+         raise WFDNotReady("wpa_cli is required for active Wi-Fi Direct scans.")
+@@ -113,7 +118,8 @@ def active_scan(
+     if not iface:
+         raise WFDNotReady("Could not detect a managed Wi-Fi interface for wpa_cli.")
+ 
+-    print(f"[FluxCast WFD] Starting Wi-Fi Direct scan on {iface} for {timeout}s...")
++    if not quiet:
++        print(f"[FluxCast WFD] Starting Wi-Fi Direct scan on {iface} for {timeout}s...")
+     try:
+         start = _run(["wpa_cli", "-i", iface, "p2p_find", str(timeout)], timeout=5.0)
+     except (OSError, subprocess.TimeoutExpired) as exc:
+@@ -129,54 +135,63 @@ def active_scan(
+         raise WFDNotReady(error)
+ 
+     try:
+-        if selected_address:
+-            deadline = time.monotonic() + max(1, timeout)
+-            while True:
+-                peers_result = _run(["wpa_cli", "-i", iface, "p2p_peers"], timeout=5.0)
+-                addresses = {
+-                    raw.strip().lower()
+-                    for raw in peers_result.stdout.splitlines()
+-                    if re.fullmatch(r"[0-9a-fA-F:]{17}", raw.strip())
+-                }
+-                if selected_address.lower() in addresses:
+-                    print("[FluxCast WFD] Selected receiver found; ending scan early.")
+-                    break
+-                remaining = deadline - time.monotonic()
+-                if remaining <= 0:
+-                    break
+-                time.sleep(min(0.5, remaining))
+-        else:
+-            time.sleep(max(1, timeout))
++        deadline = time.monotonic() + max(1, timeout)
++        peer_by_address: dict[str, WFDPeer] = {}
++        metadata_reads: dict[str, int] = {}
++        peers: list[WFDPeer] = []
++        previous_snapshot: list[WFDPeer] | None = None
++        while True:
+             peers_result = _run(["wpa_cli", "-i", iface, "p2p_peers"], timeout=5.0)
++            if peers_result.returncode != 0:
++                raise WFDNotReady((peers_result.stderr or peers_result.stdout).strip())
++            addresses = tuple(
++                raw.strip()
++                for raw in peers_result.stdout.splitlines()
++                if re.fullmatch(r"[0-9a-fA-F:]{17}", raw.strip())
++            )
++            active_addresses = set(addresses)
++            for stale_address in set(peer_by_address) - active_addresses:
++                peer_by_address.pop(stale_address, None)
++                metadata_reads.pop(stale_address, None)
++            for address in addresses:
++                peer = peer_by_address.get(address)
++                reads = metadata_reads.get(address, 0)
++                incomplete = peer is None or (
++                    "wfd_subelems" not in peer.details and "wfd_dev_info" not in peer.details
++                )
++                if incomplete and reads < 6:
++                    details = ""
++                    try:
++                        details_result = _run(["wpa_cli", "-i", iface, "p2p_peer", address], timeout=5.0)
++                        if details_result.returncode == 0:
++                            details = details_result.stdout.strip()
++                    except (OSError, subprocess.TimeoutExpired):
++                        pass
++                    peer_by_address[address] = WFDPeer(
++                        address=address,
++                        name=_parse_peer_name(details),
++                        details=details,
++                        source="wpa_cli",
++                    )
++                    metadata_reads[address] = reads + 1
++            peers = [peer_by_address[address] for address in addresses]
++            if snapshot_callback is not None and peers != previous_snapshot:
++                snapshot_callback(list(peers))
++                previous_snapshot = list(peers)
++            if selected_address and selected_address.lower() in {address.lower() for address in addresses}:
++                if not quiet:
++                    print("[FluxCast WFD] Selected receiver found; ending scan early.")
++                break
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                break
++            time.sleep(min(0.5, remaining))
+     finally:
+         try:
+             _run(["wpa_cli", "-i", iface, "p2p_stop_find"], timeout=3.0)
+         except Exception:
+             pass
+ 
+-    if peers_result.returncode != 0:
+-        raise WFDNotReady((peers_result.stderr or peers_result.stdout).strip())
+-
+-    peers = []
+-    for raw in peers_result.stdout.splitlines():
+-        address = raw.strip()
+-        if not re.fullmatch(r"[0-9a-fA-F:]{17}", address):
+-            continue
+-
+-        details = ""
+-        try:
+-            details_result = _run(["wpa_cli", "-i", iface, "p2p_peer", address], timeout=5.0)
+-            if details_result.returncode == 0:
+-                details = details_result.stdout.strip()
+-        except (OSError, subprocess.TimeoutExpired):
+-            pass
+-        peers.append(WFDPeer(
+-            address=address,
+-            name=_parse_peer_name(details),
+-            details=details,
+-            source="wpa_cli",
+-        ))
+-
+     return peers
+ 
+ def print_scan(peers: list[WFDPeer]) -> None:
+diff --git a/src/wfd/p2p/scan_nm.py b/src/wfd/p2p/scan_nm.py
+index 8358a43..a6dec55 100644
+--- a/src/wfd/p2p/scan_nm.py
++++ b/src/wfd/p2p/scan_nm.py
+@@ -1,7 +1,7 @@
+ """NetworkManager-backed receiver discovery without connection mutation APIs."""
+ 
+ import time
+-from typing import Optional
++from typing import Callable, Optional
+ 
+ from ..config import WFDNotReady
+ from ..constants import NM_DEST, NM_PATH
+@@ -55,51 +55,71 @@ def _peer_paths(path: str) -> list[str]:
+     return _object_paths(raw)[:256]
+ 
+ 
++def _read_peer(peer_path: str) -> WFDPeer:
++    peer_interface = "org.freedesktop.NetworkManager.WifiP2PPeer"
++    name = _nm_get_string(peer_path, peer_interface, "Name")[:256]
++    address = _nm_get_string(peer_path, peer_interface, "HwAddress")
++    manufacturer = _nm_get_string(peer_path, peer_interface, "Manufacturer")[:256]
++    model = _nm_get_string(peer_path, peer_interface, "Model")[:256]
++    strength = _variant_byte(_nm_get_property(peer_path, peer_interface, "Strength"))
++    if strength is not None and strength > 100:
++        strength = None
++    wfd_raw = _nm_get_property(peer_path, peer_interface, "WfdIEs")
++    if len(wfd_raw) > 65_536:
++        wfd_raw = ""
++    wfd_ies = _parse_gdbus_byte_array(wfd_raw)
++    sink_port = _parse_wfd_ies_rtsp_port(wfd_ies)
++    role_detail = _wfd_device_info_detail(wfd_ies)
++    details = "; ".join(filter(None, (role_detail, f"sink_rtsp_port={sink_port}")))
++    return WFDPeer(
++        address=address, name=name, details=details,
++        path=peer_path, source="NetworkManager", rtsp_port=sink_port,
++        manufacturer=manufacturer, model=model, strength_percent=strength,
++    )
++
++
+ def _nm_scan(interface: Optional[str], timeout: int,
+-             selected_address: Optional[str] = None) -> list[WFDPeer]:
++             selected_address: Optional[str] = None,
++             snapshot_callback: Optional[Callable[[list[WFDPeer]], None]] = None,
++             quiet: bool = False) -> list[WFDPeer]:
+     path = _p2p_device_path(interface)
+     if not path:
+         raise WFDNotReady("NetworkManager did not expose a Wi-Fi P2P device.")
+     iface = _nm_get_string(path, "org.freedesktop.NetworkManager.Device", "Interface") or path
+-    print(f"[FluxCast WFD] Starting NetworkManager Wi-Fi Direct scan on {iface} for {timeout}s...")
++    if not quiet:
++        print(f"[FluxCast WFD] Starting NetworkManager Wi-Fi Direct scan on {iface} for {timeout}s...")
+     _start_find(path, timeout)
++    peers: list[WFDPeer] = []
++    peer_by_path: dict[str, WFDPeer] = {}
++    metadata_reads: dict[str, int] = {}
++    previous_snapshot: list[WFDPeer] | None = None
+     try:
+         deadline = time.monotonic() + max(1, timeout)
+-        while selected_address and time.monotonic() < deadline:
+-            found = any(
+-                _nm_get_string(peer, "org.freedesktop.NetworkManager.WifiP2PPeer", "HwAddress").lower()
+-                == selected_address.lower()
+-                for peer in _peer_paths(path)
+-            )
+-            if found:
++        while True:
++            peer_paths = _peer_paths(path)
++            active_paths = set(peer_paths)
++            for stale_path in set(peer_by_path) - active_paths:
++                peer_by_path.pop(stale_path, None)
++                metadata_reads.pop(stale_path, None)
++            for peer_path in peer_paths:
++                peer = peer_by_path.get(peer_path)
++                reads = metadata_reads.get(peer_path, 0)
++                if peer is None or ("wfd_dev_info=" not in peer.details and reads < 6):
++                    peer_by_path[peer_path] = _read_peer(peer_path)
++                    metadata_reads[peer_path] = reads + 1
++            peers = [peer_by_path[peer_path] for peer_path in peer_paths]
++            if snapshot_callback is not None and peers != previous_snapshot:
++                snapshot_callback(list(peers))
++                previous_snapshot = list(peers)
++
++            if selected_address and any(
++                peer.address.lower() == selected_address.lower() for peer in peers
++            ):
+                 break
+-            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+-        if not selected_address:
+-            time.sleep(max(1, timeout))
+-        peer_paths = _peer_paths(path)
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                break
++            time.sleep(min(0.5, remaining))
+     finally:
+         _stop_find(path)
+-
+-    peers: list[WFDPeer] = []
+-    for peer_path in peer_paths:
+-        peer_interface = "org.freedesktop.NetworkManager.WifiP2PPeer"
+-        name = _nm_get_string(peer_path, peer_interface, "Name")[:256]
+-        address = _nm_get_string(peer_path, peer_interface, "HwAddress")
+-        manufacturer = _nm_get_string(peer_path, peer_interface, "Manufacturer")[:256]
+-        model = _nm_get_string(peer_path, peer_interface, "Model")[:256]
+-        strength = _variant_byte(_nm_get_property(peer_path, peer_interface, "Strength"))
+-        if strength is not None and strength > 100:
+-            strength = None
+-        wfd_raw = _nm_get_property(peer_path, peer_interface, "WfdIEs")
+-        if len(wfd_raw) > 65_536:
+-            wfd_raw = ""
+-        wfd_ies = _parse_gdbus_byte_array(wfd_raw)
+-        sink_port = _parse_wfd_ies_rtsp_port(wfd_ies)
+-        role_detail = _wfd_device_info_detail(wfd_ies)
+-        details = "; ".join(filter(None, (role_detail, f"sink_rtsp_port={sink_port}")))
+-        peers.append(WFDPeer(
+-            address=address, name=name, details=details,
+-            path=peer_path, source="NetworkManager", rtsp_port=sink_port,
+-            manufacturer=manufacturer, model=model, strength_percent=strength,
+-        ))
+     return peers
+diff --git a/tests/test_omacast_contract.py b/tests/test_omacast_contract.py
+index b4af13c..bbfc993 100644
+--- a/tests/test_omacast_contract.py
++++ b/tests/test_omacast_contract.py
+@@ -84,7 +84,7 @@ class GuardedLaunchContractTest(unittest.TestCase):
+         self.assertEqual(json.loads(output.getvalue()), {
+             "schemaVersion": 1,
+             "kind": "omacast-engine-contract",
+-            "apiRevision": 1,
++            "apiRevision": 2,
+             "capture": "gpu-screen-recorder",
+             "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
+             "network": {
+@@ -92,6 +92,7 @@ class GuardedLaunchContractTest(unittest.TestCase):
+                 "guardedSessionRequired": True,
+             },
+             "telemetry": {"controllerDescriptorsRequired": True},
++            "discovery": {"progressiveSnapshots": True},
+         })
+         start.assert_not_called()
+ 
+diff --git a/tests/test_wfd_p2p_scan.py b/tests/test_wfd_p2p_scan.py
+index d70c6e6..393edc1 100644
+--- a/tests/test_wfd_p2p_scan.py
++++ b/tests/test_wfd_p2p_scan.py
+@@ -113,6 +113,80 @@ class SelectedPeerScanTest(unittest.TestCase):
+         self.assertEqual(peers[0].details, "wfd_dev_info=0x00111c4400c8; sink_rtsp_port=7236")
+         self.assertEqual(peers[0].strength_percent, 75)
+ 
++    def test_networkmanager_scan_publishes_peer_without_restarting_discovery(self):
++        peer_path = "/org/freedesktop/NetworkManager/WifiP2PPeer/1"
++        peer_lists = iter(("(@ao [],)", f"([objectpath '{peer_path}'],)"))
++
++        def get_property(_path, _interface, name):
++            if name == "Peers":
++                return next(peer_lists)
++            if name == "WfdIEs":
++                return "<@ay [byte 0x00, 0x00, 0x06, 0x00, 0x11, 0x1c, 0x44, 0x00, 0xc8]>"
++            if name == "Strength":
++                return "(<byte 0x4b>,)"
++            raise AssertionError(name)
++
++        def get_string(path, _interface, name):
++            if name == "Interface":
++                return "p2p-dev-wlan0"
++            if name == "HwAddress":
++                return SELECTED if path == peer_path else ""
++            return {"Name": "TV", "Model": "", "Manufacturer": ""}[name]
++
++        snapshots = []
++        with mock.patch("wfd.p2p.scan_nm._p2p_device_path", return_value="/p2p"), mock.patch(
++            "wfd.p2p.scan_nm._start_find"
++        ) as start_find, mock.patch("wfd.p2p.scan_nm._stop_find") as stop_find, mock.patch(
++            "wfd.p2p.scan_nm._nm_get_property", side_effect=get_property
++        ), mock.patch("wfd.p2p.scan_nm._nm_get_string", side_effect=get_string), mock.patch(
++            "wfd.p2p.scan_nm.time.monotonic", side_effect=(0.0, 0.1, 1.0)
++        ), mock.patch("wfd.p2p.scan_nm.time.sleep"):
++            from wfd.p2p.scan_nm import _nm_scan as discovery_scan
++            peers = discovery_scan("wlan0", 1, snapshot_callback=snapshots.append, quiet=True)
++
++        self.assertEqual([[peer.address for peer in snapshot] for snapshot in snapshots], [[], [SELECTED]])
++        self.assertEqual([peer.address for peer in peers], [SELECTED])
++        start_find.assert_called_once_with("/p2p", 1)
++        stop_find.assert_called_once_with("/p2p")
++
++    def test_networkmanager_scan_stops_find_when_snapshot_consumer_cancels(self):
++        def get_property(_path, _interface, name):
++            if name == "Peers":
++                return "(@ao [],)"
++            raise AssertionError(name)
++
++        def cancel(_peers):
++            raise RuntimeError("cancelled")
++
++        with mock.patch("wfd.p2p.scan_nm._p2p_device_path", return_value="/p2p"), mock.patch(
++            "wfd.p2p.scan_nm._start_find"
++        ), mock.patch("wfd.p2p.scan_nm._stop_find") as stop_find, mock.patch(
++            "wfd.p2p.scan_nm._nm_get_property", side_effect=get_property
++        ), mock.patch("wfd.p2p.scan_nm._nm_get_string", return_value="p2p-dev-wlan0"):
++            from wfd.p2p.scan_nm import _nm_scan as discovery_scan
++            with self.assertRaisesRegex(RuntimeError, "cancelled"):
++                discovery_scan("wlan0", 8, snapshot_callback=cancel, quiet=True)
++
++        stop_find.assert_called_once_with("/p2p")
++
++    def test_networkmanager_incomplete_metadata_retries_are_bounded_per_peer(self):
++        peer_path = "/org/freedesktop/NetworkManager/WifiP2PPeer/1"
++        incomplete = WFDPeer(address=SELECTED, name="TV", path=peer_path)
++        with mock.patch("wfd.p2p.scan_nm._p2p_device_path", return_value="/p2p"), mock.patch(
++            "wfd.p2p.scan_nm._start_find"
++        ), mock.patch("wfd.p2p.scan_nm._stop_find"), mock.patch(
++            "wfd.p2p.scan_nm._peer_paths", return_value=[peer_path]
++        ), mock.patch("wfd.p2p.scan_nm._read_peer", return_value=incomplete) as read_peer, mock.patch(
++            "wfd.p2p.scan_nm._nm_get_string", return_value="p2p-dev-wlan0"
++        ), mock.patch(
++            "wfd.p2p.scan_nm.time.monotonic", side_effect=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 1.0)
++        ), mock.patch("wfd.p2p.scan_nm.time.sleep"):
++            from wfd.p2p.scan_nm import _nm_scan as discovery_scan
++            peers = discovery_scan("wlan0", 1, quiet=True)
++
++        self.assertEqual(peers, [incomplete])
++        self.assertEqual(read_peer.call_count, 6)
++
+     def test_wpa_cli_scan_returns_as_soon_as_selected_peer_appears(self):
+         peer_results = iter(("", SELECTED + "\n"))
+ 
+-- 
+2.55.0
+

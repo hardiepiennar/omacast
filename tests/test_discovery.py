@@ -200,7 +200,9 @@ class DiscoveryTest(unittest.TestCase):
                 "--omacast-session --wfd-p2p-backend --wfd-supplicant-mode "
                 "--wfd-video-encoder gpu-screen-recorder",
                 json.dumps({**ENGINE_CONTRACT, "unexpected": True}),
+                json.dumps({**ENGINE_CONTRACT, "apiRevision": 1}),
                 json.dumps({**ENGINE_CONTRACT, "apiRevision": True}),
+                json.dumps({key: value for key, value in ENGINE_CONTRACT.items() if key != "discovery"}),
                 json.dumps({
                     **ENGINE_CONTRACT,
                     "profile": {**ENGINE_CONTRACT["profile"], "fps": 60.0},
