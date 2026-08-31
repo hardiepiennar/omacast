@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.4 — 2026-08-31
+
 - Surface receiver-attributed Wi-Fi Direct negotiation failures immediately
   instead of waiting for the generic group timeout. Status 10 now explains
   that the display rejected push-button provisioning and may require PIN
@@ -31,8 +33,6 @@
 - Preserve NetworkManager's advertised WFD device role in discovery results,
   so the controller can identify genuine sinks without inferring capability
   from an RTSP port. Companion revision 76 carries production patch 52.
-
-## 0.1.4 — 2026-08-30
 
 - Fix the companion `fluxcast --doctor` import cycle and cover the shipped
   diagnostic import order in a fresh Python interpreter.
