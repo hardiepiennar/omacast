@@ -258,7 +258,7 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   path. Patch 49 budgets reconstructed-engine JSON contracts, and patch 50
   terminates the complete process group when a bounded engine command exceeds
   its output or time limit. Patch 51 removes the dormant MPEG-TS dump analyzer
-  from the installed engine. Companion revision 75 carries the resulting
+  from the installed engine. Companion revision 76 carries the resulting
   candidate; guard API 14 and engine contract API 1 are unchanged.
 - Direct-supplicant readiness no longer depends on dnsmasq. The supported
   laptop-as-P2P-client topology receives DHCP from the receiver; dnsmasq stays

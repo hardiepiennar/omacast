@@ -2722,3 +2722,20 @@ the production contract forbids transport dumps. Patch 51 deletes that dormant
 module and the artifact audit now rejects it. Companion revision 75 supersedes
 revision 74 as the candidate, so revision-74 build and lifecycle results do not
 validate the final payload.
+
+### NetworkManager receiver-role projection regression (2026-08-31)
+
+The installed revision-75 plugin returned no receivers while a live raw engine
+scan found both the Fire TV and a Samsung WFD display. The NetworkManager
+adapter had reduced each peer's WFD Device Information subelement to only
+`sink_rtsp_port=7236`; the controller therefore had no device-role evidence and
+correctly rejected both peers instead of treating a conventional port as proof
+that they were sinks.
+
+Production patch 52 parses the bounded six-byte WFD Device Information payload
+once and projects its complete normalized value alongside the RTSP port. Both
+NetworkManager discovery implementations retain the role, while malformed and
+source-only advertisements remain distinguishable and cannot become castable
+through a port inference. Companion revision 76 carries the correction; guard
+API 14 and engine contract API 1 remain unchanged. Revision-75 acceptance
+evidence predates this behavior and does not validate revision 76.

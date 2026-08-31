@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve NetworkManager's advertised WFD device role in discovery results,
+  so the controller can identify genuine sinks without inferring capability
+  from an RTSP port. Companion revision 76 carries production patch 52.
+
 ## 0.1.4 — 2026-08-30
 
 - Fix the companion `fluxcast --doctor` import cycle and cover the shipped

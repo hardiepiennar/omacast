@@ -1,0 +1,222 @@
+From 9ac2454b1966f1dab4792ec8c654f3a4ecde6340 Mon Sep 17 00:00:00 2001
+From: Omacast Maintainers <4540086+hardiepienaar@users.noreply.github.com>
+Date: Mon, 31 Aug 2026 18:11:18 +1200
+Subject: [PATCH] Preserve WFD sink role in NetworkManager discovery
+
+---
+ src/wfd/ie.py              | 50 +++++++++++++++++++++++++++++---------
+ src/wfd/p2p/nm.py          | 10 ++++++--
+ src/wfd/p2p/scan_nm.py     | 14 ++++++++---
+ tests/test_wfd_p2p_scan.py | 44 ++++++++++++++++++++++++++++++++-
+ 4 files changed, 100 insertions(+), 18 deletions(-)
+
+diff --git a/src/wfd/ie.py b/src/wfd/ie.py
+index eb29fa3..5253805 100644
+--- a/src/wfd/ie.py
++++ b/src/wfd/ie.py
+@@ -1,5 +1,6 @@
+ import re
+ from dataclasses import dataclass
++from typing import Optional
+ 
+ 
+ def _wfd_ie_device_info(rtsp_port: int) -> bytes:
+@@ -34,6 +35,40 @@ def _parse_gdbus_byte_array(raw: str) -> list[int]:
+     """
+     return [int(h, 16) for h in re.findall(r"0x([0-9a-fA-F]+)", raw)]
+ 
++def _parse_wfd_ies_device_info(
++    wfd_ies: list[int],
++) -> Optional[tuple[int, int, int]]:
++    """Return the Device Information word, RTSP port, and throughput.
++
++    NetworkManager exposes the WFD IE as bytes but does not project the peer's
++    source/sink role.  Preserve that role along with the port so callers do not
++    have to infer a receiver from the conventional port alone.
++    """
++    if not wfd_ies or any(type(value) is not int or not 0 <= value <= 0xff for value in wfd_ies):
++        return None
++
++    i = 0
++    while i + 3 <= len(wfd_ies):
++        sub_id = wfd_ies[i]
++        sub_len = (wfd_ies[i + 1] << 8) | wfd_ies[i + 2]
++        end = i + 3 + sub_len
++        if end > len(wfd_ies):
++            return None
++        if sub_id == 0 and sub_len >= 6:
++            device_info = (wfd_ies[i + 3] << 8) | wfd_ies[i + 4]
++            port = (wfd_ies[i + 5] << 8) | wfd_ies[i + 6]
++            throughput = (wfd_ies[i + 7] << 8) | wfd_ies[i + 8]
++            return device_info, port, throughput
++        i = end
++    return None
++
++def _wfd_device_info_detail(wfd_ies: list[int]) -> str:
++    parsed = _parse_wfd_ies_device_info(wfd_ies)
++    if parsed is None:
++        return ""
++    device_info, port, throughput = parsed
++    return f"wfd_dev_info=0x{device_info:04x}{port:04x}{throughput:04x}"
++
+ def _parse_wfd_ies_rtsp_port(wfd_ies: list[int]) -> int:
+     """
+     Parse the WFD Information Element bytes to find the Sink's RTSP port.
+@@ -41,16 +76,7 @@ def _parse_wfd_ies_rtsp_port(wfd_ies: list[int]) -> int:
+     Bytes 3-4 of the subelement (offset 3 and 4 after ID and Length) 
+     contain the RTSP port.
+     """
+-    if not wfd_ies or len(wfd_ies) < 6:
++    parsed = _parse_wfd_ies_device_info(wfd_ies)
++    if parsed is None:
+         return 7236
+-    
+-    i = 0
+-    while i + 3 <= len(wfd_ies):
+-        sub_id = wfd_ies[i]
+-        sub_len = (wfd_ies[i+1] << 8) | wfd_ies[i+2]
+-        if sub_id == 0 and sub_len >= 6 and i + 3 + sub_len <= len(wfd_ies):
+-            # Port is at index i + 3 + 2 and i + 3 + 3
+-            port = (wfd_ies[i+5] << 8) | wfd_ies[i+6]
+-            return port if port > 0 else 7236
+-        i += 3 + sub_len
+-    return 7236
++    return parsed[1] if parsed[1] > 0 else 7236
+diff --git a/src/wfd/p2p/nm.py b/src/wfd/p2p/nm.py
+index d8661da..f0102db 100644
+--- a/src/wfd/p2p/nm.py
++++ b/src/wfd/p2p/nm.py
+@@ -4,7 +4,12 @@ from typing import Optional
+ 
+ from ..config import WFDNotReady
+ from ..constants import NM_DEST, NM_PATH, WFD_RTSP_PORT
+-from ..ie import WFDPeer, _parse_gdbus_byte_array, _parse_wfd_ies_rtsp_port
++from ..ie import (
++    WFDPeer,
++    _parse_gdbus_byte_array,
++    _parse_wfd_ies_rtsp_port,
++    _wfd_device_info_detail,
++)
+ from .dbus import (
+     NM_ACTIVE_STATE_NAMES, NM_DEVICE_REASON_NAMES, NM_DEVICE_STATE_NAMES,
+     _gdbus_call, _nm_get_property, _nm_get_string, _object_paths,
+@@ -174,12 +179,13 @@ def _nm_scan(
+         # Parse it into a byte list, then extract the RTSP port from subelement 0.
+         wfd_ies_list = _parse_gdbus_byte_array(wfd_ies_raw)
+         sink_rtsp_port = _parse_wfd_ies_rtsp_port(wfd_ies_list)
++        role_detail = _wfd_device_info_detail(wfd_ies_list)
+ 
+         details = "; ".join(
+             part for part in [
+                 f"model={model}" if model else "",
+                 f"manufacturer={manufacturer}" if manufacturer else "",
+-                f"wfd_ies={wfd_ies_raw}" if wfd_ies_raw else "",
++                role_detail,
+                 f"sink_rtsp_port={sink_rtsp_port}",
+             ]
+             if part
+diff --git a/src/wfd/p2p/scan_nm.py b/src/wfd/p2p/scan_nm.py
+index 0b5f3c0..d92dbc3 100644
+--- a/src/wfd/p2p/scan_nm.py
++++ b/src/wfd/p2p/scan_nm.py
+@@ -5,7 +5,12 @@ from typing import Optional
+ 
+ from ..config import WFDNotReady
+ from ..constants import NM_DEST, NM_PATH
+-from ..ie import WFDPeer, _parse_gdbus_byte_array, _parse_wfd_ies_rtsp_port
++from ..ie import (
++    WFDPeer,
++    _parse_gdbus_byte_array,
++    _parse_wfd_ies_rtsp_port,
++    _wfd_device_info_detail,
++)
+ from .dbus import _gdbus_call, _nm_get_property, _nm_get_string, _object_paths
+ 
+ 
+@@ -82,9 +87,12 @@ def _nm_scan(interface: Optional[str], timeout: int,
+         wfd_raw = _nm_get_property(peer_path, "org.freedesktop.NetworkManager.WifiP2PPeer", "WfdIEs")
+         if len(wfd_raw) > 65_536:
+             wfd_raw = ""
+-        sink_port = _parse_wfd_ies_rtsp_port(_parse_gdbus_byte_array(wfd_raw))
++        wfd_ies = _parse_gdbus_byte_array(wfd_raw)
++        sink_port = _parse_wfd_ies_rtsp_port(wfd_ies)
++        role_detail = _wfd_device_info_detail(wfd_ies)
++        details = "; ".join(filter(None, (role_detail, f"sink_rtsp_port={sink_port}")))
+         peers.append(WFDPeer(
+-            address=address, name=name, details=f"sink_rtsp_port={sink_port}",
++            address=address, name=name, details=details,
+             path=peer_path, source="NetworkManager", rtsp_port=sink_port,
+         ))
+     return peers
+diff --git a/tests/test_wfd_p2p_scan.py b/tests/test_wfd_p2p_scan.py
+index 7adf4e5..81706e8 100644
+--- a/tests/test_wfd_p2p_scan.py
++++ b/tests/test_wfd_p2p_scan.py
+@@ -3,7 +3,7 @@ import unittest
+ from unittest import mock
+ 
+ from wfd.config import WFDNotReady
+-from wfd.ie import WFDPeer
++from wfd.ie import WFDPeer, _parse_wfd_ies_device_info, _wfd_device_info_detail
+ from wfd.p2p.nm import _nm_scan
+ from wfd.p2p.peers import _scan_and_select, active_scan
+ 
+@@ -12,6 +12,19 @@ SELECTED = "00:11:22:33:44:55"
+ 
+ 
+ class SelectedPeerScanTest(unittest.TestCase):
++    def test_device_information_preserves_primary_sink_role(self):
++        ies = [0x00, 0x00, 0x06, 0x00, 0x11, 0x1C, 0x44, 0x00, 0xC8]
++        self.assertEqual(_parse_wfd_ies_device_info(ies), (0x0011, 7236, 200))
++        self.assertEqual(_wfd_device_info_detail(ies), "wfd_dev_info=0x00111c4400c8")
++
++    def test_device_information_preserves_source_only_role(self):
++        ies = [0x00, 0x00, 0x06, 0x00, 0x10, 0x1C, 0x44, 0x00, 0xC8]
++        self.assertEqual(_wfd_device_info_detail(ies), "wfd_dev_info=0x00101c4400c8")
++
++    def test_device_information_rejects_truncated_or_non_byte_input(self):
++        self.assertIsNone(_parse_wfd_ies_device_info([0x00, 0x00, 0x06, 0x00]))
++        self.assertIsNone(_parse_wfd_ies_device_info([0x00, 0x00, 0x00, 0x100]))
++
+     def test_exact_selected_address_is_forwarded_to_active_scan(self):
+         peer = WFDPeer(address=SELECTED, name="TV")
+         with mock.patch("wfd.p2p.peers.active_scan", return_value=[peer]) as scan:
+@@ -59,6 +72,35 @@ class SelectedPeerScanTest(unittest.TestCase):
+         sleep.assert_called_once()
+         self.assertLessEqual(sleep.call_args.args[0], 0.5)
+ 
++    def test_networkmanager_scan_carries_sink_role_to_callers(self):
++        peer_path = "/org/freedesktop/NetworkManager/WifiP2PPeer/1"
++
++        def get_property(_path, _interface, name):
++            if name == "Peers":
++                return f"([objectpath '{peer_path}'],)"
++            if name == "WfdIEs":
++                return "<@ay [byte 0x00, 0x00, 0x06, 0x00, 0x11, 0x1c, 0x44, 0x00, 0xc8]>"
++            raise AssertionError(name)
++
++        def get_string(path, _interface, name):
++            if name == "Interface":
++                return "p2p-dev-wlan0"
++            if name == "HwAddress":
++                return SELECTED if path == peer_path else ""
++            return {"Name": "TV", "Model": "", "Manufacturer": ""}[name]
++
++        with mock.patch("wfd.p2p.scan_nm._p2p_device_path", return_value="/p2p"), mock.patch(
++            "wfd.p2p.scan_nm._start_find"
++        ), mock.patch("wfd.p2p.scan_nm._stop_find"), mock.patch(
++            "wfd.p2p.scan_nm._nm_get_property", side_effect=get_property
++        ), mock.patch("wfd.p2p.scan_nm._nm_get_string", side_effect=get_string), mock.patch(
++            "wfd.p2p.scan_nm.time.sleep"
++        ):
++            from wfd.p2p.scan_nm import _nm_scan as discovery_scan
++            peers = discovery_scan("wlan0", 1)
++
++        self.assertEqual(peers[0].details, "wfd_dev_info=0x00111c4400c8; sink_rtsp_port=7236")
++
+     def test_wpa_cli_scan_returns_as_soon_as_selected_peer_appears(self):
+         peer_results = iter(("", SELECTED + "\n"))
+ 
+-- 
+2.55.0
+

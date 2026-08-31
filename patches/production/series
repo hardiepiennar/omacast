@@ -43,3 +43,4 @@
 0049-Bound-engine-JSON-contracts.patch
 0050-Kill-bounded-command-process-groups.patch
 0051-Remove-dormant-transport-dump-analyzer.patch
+0052-Preserve-WFD-sink-role-in-NetworkManager-discovery.patch
