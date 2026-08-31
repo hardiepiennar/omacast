@@ -838,6 +838,39 @@ reclaim_orphan_interfaces
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["reclaimed"], 1)
 
+    def test_terminal_status_acknowledgment_accepts_and_removes_an_empty_marker(self) -> None:
+        scripts = (
+            (ROOT / "packaging" / "arch" / "omarchy-cast-guard", "guard"),
+            (ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover", "recovery"),
+        )
+        harness = r'''
+if [[ "$2" == guard ]]; then
+  source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+else
+  source <(sed -e '4d' -e '6,9d' -e '/^started="\$EPOCHSECONDS"/,$d' "$1")
+fi
+uid="$(id -u)"
+session_root="$3/session"
+root="$session_root"
+user_root="$session_root/user"
+ready_file="$session_root/status.json"
+status_ack_file="$user_root/status-ack"
+mkdir -m 700 -p "$user_root"
+: > "$ready_file"
+: > "$status_ack_file"
+chmod 600 "$status_ack_file"
+status_ack_valid
+finalize_status
+[[ ! -e "$status_ack_file" && ! -e "$ready_file" && ! -e "$user_root" && ! -e "$session_root" ]]
+'''
+        for script, script_kind in scripts:
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as temp:
+                result = subprocess.run(
+                    ("bash", "-euo", "pipefail", "-c", harness, "_", str(script), script_kind, temp),
+                    check=False, capture_output=True, text=True, timeout=2,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_detached_guard_reports_an_early_setup_failure_through_status_file(self) -> None:
         guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
         harness = r'''

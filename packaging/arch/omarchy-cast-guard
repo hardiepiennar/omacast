@@ -293,8 +293,8 @@ cleanup() {
 status_ack_valid() {
   local metadata
   [[ -f "$status_ack_file" && ! -L "$status_ack_file" ]] || return 1
-  metadata="$(stat -c '%F:%u:%a:%h:%s' "$status_ack_file" 2>/dev/null)" || return 1
-  [[ "$metadata" == "regular file:$uid:600:1:0" ]]
+  metadata="$(stat -c '%u:%a:%h:%s' "$status_ack_file" 2>/dev/null)" || return 1
+  [[ "$metadata" == "$uid:600:1:0" ]]
 }
 finalize_status() {
   local deadline=$((SECONDS + status_ack_timeout_seconds))
