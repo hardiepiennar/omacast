@@ -2933,3 +2933,39 @@ absent afterward, while NetworkManager remained active and infrastructure
 Wi-Fi connected. This closes the focused installed-panel scan/connect/Stop
 gate. Forced recovery and the canonical three-session soak remain explicitly
 deferred to the later reliability release.
+
+### Privileged service ownership candidate (2026-08-31)
+
+Issue 9 traced the root guard and recovery helpers into the transient user
+service's cgroup. Their renewable lease made cleanup bounded, but a user-unit
+stop could not signal those root processes and systemd emitted misleading
+`KillMode=mixed` warnings. The candidate at `e9bc52b` replaces that inherited
+lifetime with an explicit system-service boundary. The approved executable is
+now a short-lived, closed-argument launcher; it starts a session-named root
+guard unit without `--pipe` or `--wait`, and the guard arms a separate
+session-named recovery unit. No general D-Bus method or caller-selected unit,
+path, command, or environment is introduced.
+
+Because the launcher exits before setup completes, pipe output can no longer
+be the authoritative lifecycle channel. The guard atomically publishes a
+root-owned, mode-0644, closed status document under its protected session
+directory. The controller reads it with descriptor-anchored, no-follow,
+nonblocking opens and exact owner, mode, type, size, link-count, shape, and
+session checks. Terminal cleanup waits at most 15 seconds for a private,
+user-owned zero-byte acknowledgment, then removes the status and bounded
+session state. An early interface or host-readiness failure now creates the
+protected session identity first and publishes a generic error status instead
+of leaving the detached controller at its 90-second deadline. The controller
+also yields while a successfully detached launcher is waiting for worker
+status, preventing an EOF busy loop.
+
+Guard API 15 and package revision 80 make the incompatible companion boundary
+explicit. At exact commit `e9bc52b`, 273 repository tests and 125 reconstructed
+FluxCast tests pass, together with shell lint, staged plugin validation, exact
+clean-clone package construction, artifact audit, and disposable revision-79
+to revision-80 upgrade/removal. Adversarial coverage includes unsafe status
+objects, bounded status parsing, detached early failure, terminal
+acknowledgment, Stop during startup, partial initialization, owner lease loss,
+and recovery cleanup. No live receiver or installed system-service acceptance
+has been run for this candidate; normal Stop and forced owner-death remain the
+next gates and are not claimed as passed.

@@ -1038,6 +1038,22 @@ a panel scan/connect/Stop smoke test in addition to the clean offline and
 distribution gates. The deferred reliability matrix remains deferred and must
 not be reported as passed by this release.
 
+Issue 9's candidate architecture moves the privileged lifetime out of the
+transient user-service cgroup. The existing `prepare` Polkit action now runs a
+short-lived, package-owned launcher which validates the closed request and
+starts a session-named root system service. That service owns the guard and a
+separate session-named recovery system service; the user unit owns only the
+controller and media processes. A root-owned, atomically replaced status file
+is the authoritative readiness and terminal-cleanup channel. The controller
+opens it through validated directory descriptors and acknowledges a terminal
+status through a private user-owned marker, after which the root service
+removes the status and session directory within a fixed bound. Early detached
+worker failures publish the same closed error status. This changes the helper
+contract to guard API 15 and companion revision 80. Offline reconstruction,
+artifact, upgrade/removal, failure-path, and regression gates pass at
+`e9bc52b`; installed Stop and owner-death acceptance remain outstanding and
+must postdate the exact installed candidate.
+
 The first supported release is complete only when all are true:
 
 - install, validation, enable, update, disable, and removal work through

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Move the privileged guard and independent recovery worker into explicit,
+  session-scoped system services so the transient user service owns no root
+  process. A descriptor-safe root status and private acknowledgment protocol
+  reports readiness, failure, and final cleanup; require companion revision 80
+  and guard API 15.
+
 ## 0.1.5 — 2026-08-31
 
 - Bound progressive receiver discovery at both ends of the controller/QML
