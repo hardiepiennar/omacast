@@ -1060,6 +1060,17 @@ absent at 75 seconds, infrastructure Wi-Fi was restored, and the ordinary
 Recover action returned the panel to idle. These results close issue 9's
 installed Stop and owner-death acceptance gates.
 
+Issue 5's isolated candidate keeps the existing selected-peer, PBC, direct-
+supplicant path and changes only its group request from disposable to
+persistent. Normal cleanup still performs session-scoped Cancel and Disconnect
+without removing persistent groups. This allows a receiver to remember an
+accepted pairing but does not implement or claim supplicant's separate
+`Invite` operation for fast group reinvocation. Combined companion revision 81
+carries the behavior with issue 9's guard API 15. Offline tests must prove the
+exact request and absence of broad persistent-group removal; receiver acceptance
+must separately verify the first prompt, a prompt-free second cast, normal
+Stop, and cleanup. Reboot persistence remains unclaimed until measured.
+
 The first supported release is complete only when all are true:
 
 - install, validation, enable, update, disable, and removal work through

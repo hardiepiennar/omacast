@@ -6,7 +6,7 @@
 
 pkgname=fluxcast-omarchy-cast
 pkgver=0.1.5.r3.omarchy
-pkgrel=80
+pkgrel=81
 pkgdesc='Pinned FluxCast WFD engine with Omacast compatibility patches'
 arch=('any')
 url='https://github.com/hardiepiennar/omacast'

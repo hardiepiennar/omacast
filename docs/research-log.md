@@ -3001,3 +3001,29 @@ connected to its original profile. The controller reported
 `session-owner-lost`, and its ordinary Recover action returned the panel to
 idle without reclaiming an interface. This closes issue 9's installed normal
 Stop and forced owner-death gates for `ae76e8e`.
+
+### Persistent receiver-pairing candidate (2026-08-31)
+
+Issue 5 correctly identified that the production broker always requested a
+non-persistent P2P group. Its proposed mechanism was only partly correct.
+Supplicant's documented `Connect` `persistent` field asks it to form and store
+a persistent group, while the separate `Invite` method reinvokes an existing
+one ([D-Bus API](https://w1.fi/wpa_supplicant/devel/dbus.html)). The upstream
+P2P guide likewise describes `persistent` as a formation request and
+`p2p_invite` as the reinvocation operation
+([README-P2P](https://git.w1.fi/cgit/hostap/plain/wpa_supplicant/README-P2P)).
+The reporter's prompt-free repeated casts may therefore be valid receiver
+behavior, but `persistent=true` alone does not justify a product claim of fast
+invitation-based reinvocation or persistence across supplicant restarts.
+
+The isolated candidate at `f9fe776` makes the narrow change supported by that
+evidence: the existing authenticated, selected-peer PBC `Connect` asks for a
+persistent group. It adds no path, peer, provisioning method, retry, or broad
+supplicant operation. Normal cleanup remains exactly Cancel followed by
+Disconnect and never calls `RemovePersistentGroup` or
+`RemoveAllPersistentGroups`, so Stop cannot erase unrelated pairings.
+Combined companion revision 81 carries the behavior with issue 9's guard API
+15; engine API 2 is unchanged. Focused broker, package-contract,
+artifact-source, and shell checks pass. No receiver test has been run for this
+candidate, so prompt suppression,
+reboot survival, and actual invitation reinvocation remain unverified.

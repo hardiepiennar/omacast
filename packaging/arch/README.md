@@ -46,8 +46,10 @@ volatile
 `/run/systemd/network` directory is absent after boot, the helper creates it
 with fixed root ownership and removes it again only if Omacast created it. No
 persistent network, D-Bus, or firewall rule or workstation-specific setting is
-installed. The package-owned Polkit action is declarative and is removed with
-the package.
+installed by the package. A receiver-approved cast requests a supplicant-owned
+persistent P2P group so the receiver can remember the pairing; normal session
+cleanup preserves that pairing. The package-owned Polkit action is declarative
+and is removed with the package.
 
 The primary helper exposes an unprivileged JSON `--version` probe. Omacast
 requires guard API revision 15 and the matching FluxCast capability set before
