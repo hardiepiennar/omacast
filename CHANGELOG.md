@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep Q and the Cancel button active while a selected receiver waits for
+  progressive discovery to stop, cancel that queued handoff without starting
+  a session, and restore keyboard focus across connection state changes. Stop
+  requests are now recorded in bounded session history without making cleanup
+  depend on history availability.
 - Show objective sink metadata in receiver rows: WFD role, RTSP port,
   advertised throughput, manufacturer/model when supplied, and current signal
   quality. The row uses compact role/network/rate/signal icons and keeps the

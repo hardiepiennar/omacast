@@ -342,6 +342,12 @@ def request_stop(environ: Mapping[str, str] | None = None) -> dict[str, object]:
         except FileNotFoundError:
             pass
         os.close(directory_descriptor)
+    # Cancellation must not depend on the bounded history lock being available.
+    # Record the request when possible, after its durable marker is installed.
+    try:
+        append_event(session_id, "stop-requested", environ, previousPhase=state["phase"])
+    except SessionError:
+        pass
     return {"schemaVersion": 1, "ok": True, "sessionId": session_id, "phase": state["phase"]}
 
 

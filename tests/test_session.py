@@ -275,6 +275,18 @@ class SessionTest(unittest.TestCase):
             self.assertEqual((runtime / "stop-request.json").stat().st_mode & 0o777, 0o600)
             self.assertEqual(list(runtime.glob(".stop-request-*.tmp")), [])
             self.assertTrue(_stop_requested(session_id, environment))
+            events = read_session_events(session_id, environ=environment)["events"]
+            self.assertEqual(events[-1]["event"], "stop-requested")
+            self.assertEqual(events[-1]["previousPhase"], "checking")
+
+    def test_stop_request_does_not_depend_on_session_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            environment = self.environment(temp)
+            session_id = "d" * 32
+            write_state(transition(idle_state(), "checking", sessionId=session_id), environment)
+            with patch("omarchy_cast.session.append_event", side_effect=SessionError("history is busy")):
+                self.assertTrue(request_stop(environment)["ok"])
+            self.assertTrue(_stop_requested(session_id, environment))
 
     def test_stop_reader_rejects_fifo_links_hardlinks_and_unexpected_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

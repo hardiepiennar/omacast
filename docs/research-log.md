@@ -2783,3 +2783,15 @@ engine contract API 2 make the new callback capability explicit, so the plugin
 rejects revision 77 instead of failing at runtime. Guard API 14 is unchanged.
 The compact row no longer repeats manufacturer/model; those remain available
 in its expanded tooltip. No live receiver operation was run for this change.
+
+The first installed progressive-discovery exercise exposed a cancellation gap:
+after receiver selection, `connectAfterScan` could own the queued connection
+while `sessionBusy` was still false. Q and the Cancel button therefore had a
+brief no-op window, and the disappearing receiver button could leave keyboard
+focus outside the panel catcher. The panel now treats that handoff as busy,
+cancels it without launching the session, and restores panel focus after
+selection, cancellation, and session updates. A durable Stop marker remains
+the cancellation authority; a best-effort bounded `stop-requested` history
+event adds timing evidence without allowing a busy history lock to block Stop.
+The source/sink receiver's separate P2P failures are not reclassified by this
+UI correction. No live receiver operation was run for the fix.

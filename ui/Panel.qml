@@ -53,7 +53,7 @@ Panel {
   readonly property bool sessionActive: ["checking", "discovering", "preparing", "connecting", "streaming", "stopping", "recovering"].indexOf(phase) >= 0
   readonly property bool streaming: phase === "streaming"
   readonly property bool needsRecovery: phase === "error"
-  readonly property bool sessionBusy: sessionActive || connectRunning || startPending
+  readonly property bool sessionBusy: sessionActive || connectRunning || startPending || connectAfterScan
   readonly property bool visuallyBusy: scanRunning || sessionBusy
   readonly property color connectingColor: Qt.hsla(0.10, 0.72, 0.62, 1.0)
   readonly property color connectedColor: Qt.hsla(0.36, 0.55, 0.55, 1.0)
@@ -486,6 +486,13 @@ Panel {
     } else {
       startConnect()
     }
+    restorePanelFocus()
+  }
+
+  function restorePanelFocus() {
+    if (opened) Qt.callLater(function() {
+      if (root.opened) keyCatcher.forceActiveFocus()
+    })
   }
 
   function requestPlan() {
@@ -536,6 +543,15 @@ Panel {
   }
 
   function requestStop() {
+    if (connectAfterScan) {
+      connectAfterScan = false
+      scanFailed = true
+      if (scanProc.running) scanProc.running = false
+      pendingReceiverId = ""
+      message = "Connection cancelled"
+      restorePanelFocus()
+      return
+    }
     if (sessionBusy && !stopProc.running) {
       cancelRequested = true
       stopAwaitingIdle = true
@@ -543,6 +559,7 @@ Panel {
       startDeadline.stop()
       message = sessionActive ? "Stopping the cast safely…" : "Cancelling the connection…"
       stopProc.running = true
+      restorePanelFocus()
     }
   }
 
@@ -554,6 +571,7 @@ Panel {
   }
 
   function updateSession(value) {
+    var previousPhase = phase
     session = normalizeSession(value)
     if (phase !== "idle") {
       startPending = false
@@ -572,6 +590,7 @@ Panel {
       message = boundedText(problem, "The cast did not start cleanly", 512)
     }
     maybeAutoScan()
+    if (phase !== previousPhase) restorePanelFocus()
   }
 
   function qualityStatus() {
