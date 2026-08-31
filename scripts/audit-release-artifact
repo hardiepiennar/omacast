@@ -147,6 +147,9 @@ grep -Fq 'omarchy-cast-recovery-$session_id.service' "$guard" || die "guard does
 grep -Fq 'set(payload) != {"schemaVersion", "op"}' "$broker" || die "broker request shape is not closed"
 grep -Fq 'operation == "connect"' "$broker" || die "broker lacks its fixed connect operation"
 grep -Fq 'operation == "cleanup"' "$broker" || die "broker lacks its fixed cleanup operation"
+grep -Fq '"persistent": "<true>"' "$broker" || die "broker does not request receiver pairing persistence"
+! grep -Fq '"persistent": "<false>"' "$broker" || die "broker still requests disposable receiver pairing"
+! grep -Fq 'RemoveAllPersistentGroups' "$broker" || die "broker cleanup can erase unrelated persistent groups"
 for removed_surface in qos.pid qos_file apply_media_qos renice; do
   ! grep -Fq "$removed_surface" "$guard" || die "guard retains removed privileged QoS surface: $removed_surface"
   ! grep -Fq "$removed_surface" "$recovery" || die "recovery retains removed privileged QoS surface: $removed_surface"

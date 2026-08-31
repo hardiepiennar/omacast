@@ -484,7 +484,7 @@ class SupplicantBroker:
         set_property(WPA_ROOT, WPA_DEST, "WFDIEs", byte_variant(source_wfd_ies()))
         options = {
             "peer": f"<objectpath '{self.peer_path}'>",
-            "persistent": "<false>",
+            "persistent": "<true>",
             "join": "<false>",
             "authorize_only": "<false>",
             "go_intent": "<int32 0>",

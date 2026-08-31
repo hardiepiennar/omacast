@@ -261,6 +261,8 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
         self.assertIn(f"{broker_module.WPA_P2P}.Connect", connect)
         options = connect[-1]
         self.assertIn("objectpath '/selected-peer'", options)
+        self.assertIn("'persistent': <true>", options)
+        self.assertNotIn("'persistent': <false>", options)
         self.assertIn("'frequency': <int32 2437>", options)
         self.assertIn("'go_intent': <int32 0>", options)
         self.assertNotIn("wlan43", options)
@@ -390,6 +392,11 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
         control_calls = [entry.args[0] for entry in call.call_args_list]
         self.assertEqual(len(control_calls), 2)
         self.assertTrue(all("/selected-control" in arguments for arguments in control_calls))
+        self.assertEqual(
+            [arguments[-1] for arguments in control_calls],
+            [f"{broker_module.WPA_P2P}.Cancel", f"{broker_module.WPA_P2P}.Disconnect"],
+        )
+        self.assertTrue(all("PersistentGroup" not in " ".join(arguments) for arguments in control_calls))
         set_property.assert_called_once_with(
             broker_module.WPA_ROOT,
             broker_module.WPA_DEST,
