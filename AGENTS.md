@@ -40,6 +40,12 @@ Rules for future work:
 - Keep marketplace and review comments terse and human: state the relevant
   change, exact commit, and requested action. Do not add test-result recitals,
   promotional detail, or release-summary prose unless the reviewer requires it.
+- Never create, edit, close, reopen, label, or comment on a marketplace issue,
+  submission, verification request, or review thread without the maintainer's
+  explicit approval for that specific external action and its final text. A
+  general instruction to continue, publish, prepare, or handle a review is not
+  approval to post. Draft the proposed marketplace change locally, show it to
+  the maintainer, and wait for an unambiguous go-ahead before sending it.
 - For an unpublished submission under review, update the existing submission
   issue body to name the full current remote HEAD while preserving its required
   headings and checked checklist. Once the plugin is published, do not reuse
