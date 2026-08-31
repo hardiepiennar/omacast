@@ -578,9 +578,9 @@
       persistent state children. Companion behavior remains revision 79 / guard
       API 14 / engine API 2. The exact clean build, artifact/lifecycle audit,
       installed readiness check, and panel scan/connect/Stop smoke passed.
-      Runtime acceptance used commit `df664f5`; the subsequent acceptance-note
-      commit changes documentation only and passed proportionate exact-HEAD
-      offline validation before release.
+      Runtime acceptance used commit `df664f5`; the subsequent acceptance and
+      release-metadata commits change documentation only and passed
+      proportionate exact-HEAD offline validation before release.
 - [ ] Exercise forced recovery and complete the canonical three consecutive
       30-minute acceptance sessions. Revision 60's short run and pre-broker
       20.5-minute soak do not satisfy these gates.

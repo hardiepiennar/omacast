@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.5 — Unreleased
+## 0.1.5 — 2026-08-31
 
 - Bound progressive receiver discovery at both ends of the controller/QML
   stream, including changed-snapshot count and unterminated-line retention.
