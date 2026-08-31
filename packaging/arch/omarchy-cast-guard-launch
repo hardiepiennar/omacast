@@ -11,17 +11,19 @@ valid_interface() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; }
 valid_peer() { [[ "$1" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; }
 valid_frequency() { [[ "$1" =~ ^[0-9]{1,4}$ ]] && { (( $1 == 0 )) || (( $1 >= 2300 && $1 <= 7125 )); }; }
 valid_duration() { [[ "$1" =~ ^[0-9]{2,4}$ ]] && (( $1 >= 60 && $1 <= 1800 )); }
+valid_backend() { [[ "$1" == direct || "$1" == networkmanager ]]; }
 
 [[ ${EUID} -eq 0 ]] || die 'administrator approval is required'
-[[ $# -eq 15 && "$1" == prepare && "$2" == --schema-version && "$3" == 1 && "$4" == --session && "$6" == --uid && "$8" == --interface && "${10}" == --peer && "${12}" == --frequency && "${14}" == --duration ]] \
+[[ $# -eq 17 && "$1" == prepare && "$2" == --schema-version && "$3" == 1 && "$4" == --session && "$6" == --uid && "$8" == --interface && "${10}" == --peer && "${12}" == --frequency && "${14}" == --duration && "${16}" == --backend ]] \
   || die 'invalid guarded session request'
-session="$5"; uid="$7"; interface="$9"; peer="${11}"; frequency="${13}"; duration="${15}"
+session="$5"; uid="$7"; interface="$9"; peer="${11}"; frequency="${13}"; duration="${15}"; backend="${17}"
 valid_session "$session" || die 'invalid session identifier'
 valid_uid "$uid" || die 'invalid user identifier'
 valid_interface "$interface" || die 'invalid Wi-Fi interface'
 valid_peer "$peer" || die 'invalid receiver address'
 valid_frequency "$frequency" || die 'invalid P2P frequency'
 valid_duration "$duration" || die 'invalid session duration'
+valid_backend "$backend" || die 'invalid network backend'
 [[ ${PKEXEC_UID:-} == "$uid" ]] || die 'requested user does not match the Polkit caller'
 getent passwd "$uid" >/dev/null || die 'requested user does not exist'
 [[ -x "$helper" && ! -L "$helper" && "$(stat -c '%u:%a' "$helper")" == '0:755' ]] || die 'installed guard is unsafe'

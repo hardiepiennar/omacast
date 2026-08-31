@@ -52,6 +52,7 @@ Panel {
   property string pendingPairingPin: ""
   property bool pairingLaunch: false
   property bool retryPairingAfterRecovery: false
+  property string networkBackend: "direct"
 
   readonly property string phase: String(session.phase || "idle")
   readonly property bool sessionActive: ["checking", "discovering", "preparing", "connecting", "streaming", "stopping", "recovering"].indexOf(phase) >= 0
@@ -409,6 +410,7 @@ Panel {
     if (code === "dhcp-failed") return "The direct Wi-Fi link formed but received no address. Restore it, return the TV to Display Mirroring, and retry."
     if (code === "pairing-method-unsupported") return "This display rejected push-button pairing. Enter the eight-digit PIN shown by the display to restore and retry explicitly."
     if (code === "pairing-pin-failed") return "The display rejected or timed out during PIN pairing. Check the displayed PIN, then restore and retry."
+    if (code === "network-backend-unavailable") return "NetworkManager compatibility could not create its Wi-Fi Direct group. Restore it and use Direct unless this adapter specifically requires Compatibility."
     if (code === "p2p-negotiation-failed") return "The direct Wi-Fi link could not form. Restore it, confirm Display Mirroring is open, and retry nearby."
     if (code === "receiver-negotiation-failed" || code === "receiver-negotiation-timeout") return "The TV did not finish Miracast setup. Restore this session, reopen Display Mirroring, and retry."
     if (code === "capture-failed") return "Desktop capture or encoding stopped. Restore this session, keep the selected display active, and run Check again."
@@ -507,6 +509,15 @@ Panel {
     } else if (!scanRunning) {
       startScan()
     }
+  }
+
+  function toggleNetworkBackend() {
+    if (sessionBusy || needsRecovery) return
+    networkBackend = networkBackend === "direct" ? "networkmanager" : "direct"
+    message = networkBackend === "direct"
+      ? "Direct mode selected · the display owns the Wi-Fi Direct group."
+      : "Compatibility mode selected · NetworkManager makes this computer the group owner."
+    requestPlan()
   }
 
   function applyScan(text) {
@@ -910,7 +921,7 @@ Panel {
   }
   Process {
     id: planProc
-    command: [root.controllerPath, "plan", "--peer", root.receiverId, "--mode", "mirror", "--profile", "safe"]
+    command: [root.controllerPath, "plan", "--peer", root.receiverId, "--mode", "mirror", "--profile", "safe", "--backend", root.networkBackend]
     stdout: BoundedCollector { id: planOutput }
     stderr: DiscardCollector {}
     onRunningChanged: if (running) planOutput.reset()
@@ -962,7 +973,7 @@ Panel {
   }
   Process {
     id: connectProc
-    command: [root.controllerPath, "start", "--peer", root.pendingReceiverId, "--mode", "mirror", "--profile", "safe"]
+    command: [root.controllerPath, "start", "--peer", root.pendingReceiverId, "--mode", "mirror", "--profile", "safe", "--backend", root.networkBackend]
       .concat(root.pairingLaunch ? ["--pairing-pin-stdin"] : [])
     stdinEnabled: root.pairingLaunch
     stdout: BoundedCollector { id: connectOutput }
@@ -1117,6 +1128,8 @@ Panel {
         }
         if ((text === "r" || text === "R") && !root.sessionActive)
           root.systemReady() ? root.startScan() : root.refresh()
+        if ((text === "b" || text === "B") && !root.sessionBusy && !root.needsRecovery)
+          root.toggleNetworkBackend()
       }
 
       Flickable {
@@ -1169,6 +1182,21 @@ Panel {
 
             InfoPair { label: "Source"; value: root.sourceSummary() }
             InfoPair { label: "System"; value: root.readinessSummary() }
+
+            Button {
+              width: parent.width
+              text: (root.networkBackend === "direct" ? "󰖩 Direct" : "󰌷 Compatibility")
+                + " <span style=\"color:" + root.muted + "\">(B)</span>"
+              tooltipText: root.networkBackend === "direct"
+                ? "Default · the display is group owner and supplies DHCP"
+                : "Compatibility · this computer is group owner; use only when Direct fails"
+              enabled: !root.sessionBusy
+              bordered: true
+              selected: root.networkBackend === "networkmanager"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.toggleNetworkBackend()
+            }
 
             Row {
               width: parent.width

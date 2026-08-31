@@ -156,7 +156,7 @@ REQUIRED_COMMANDS = (
 )
 COMPANION_COMMANDS = frozenset(name for name in REQUIRED_COMMANDS if name != "hyprctl")
 HELPER_NAMES = ("omarchy-cast-guard", "omarchy-cast-guard-launch", "omarchy-cast-guard-recover", "omarchy-cast-supplicant-broker")
-GUARD_API_REVISION = 16
+GUARD_API_REVISION = 17
 GUARD_VERSION_CONTRACT = {
     "schemaVersion": 1,
     "kind": "omarchy-cast-guard-version",

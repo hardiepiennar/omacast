@@ -28,6 +28,22 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(plan["selection"]["p2pFrequencyMhz"], 2412)
         self.assertEqual(plan["warnings"], [])
         self.assertEqual(plan["selection"]["peer"], "AA:BB:CC:DD:EE:FF")
+        self.assertEqual(plan["selection"]["networkBackend"], "direct")
+
+    def test_networkmanager_backend_is_explicit_and_keeps_the_brokered_engine_contract(self) -> None:
+        plan = build_launch_plan(
+            snapshot(), peer="AA:BB:CC:DD:EE:FF", mode="mirror",
+            profile="safe", backend="networkmanager",
+        )
+        self.assertEqual(plan["selection"]["networkBackend"], "networkmanager")
+        self.assertIn("group owner through NetworkManager", plan["warnings"][-1])
+        backend_flag = plan["command"].index("--wfd-p2p-backend")
+        self.assertEqual(plan["command"][backend_flag + 1], "supplicant")
+        with self.assertRaisesRegex(LaunchPlanError, "backend"):
+            build_launch_plan(
+                snapshot(), peer="AA:BB:CC:DD:EE:FF", mode="mirror",
+                profile="safe", backend="auto",
+            )
 
     def test_plan_leaves_5ghz_and_dfs_p2p_channel_selection_automatic(self) -> None:
         for station_frequency in (5180, 5500, 5745, 5955):

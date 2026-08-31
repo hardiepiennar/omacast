@@ -30,7 +30,7 @@ class ServiceTest(unittest.TestCase):
             "systemd-inhibit", "--what=idle:sleep", "--who=Omacast",
             f"--why={INHIBIT_REASON}", "--mode=block",
         ))
-        self.assertEqual(command[-9:], ("connect", "--peer", "AA:BB:CC:DD:EE:FF", "--mode", "mirror", "--profile", "safe", "--duration", "300"))
+        self.assertEqual(command[-11:], ("connect", "--peer", "AA:BB:CC:DD:EE:FF", "--mode", "mirror", "--profile", "safe", "--duration", "300", "--backend", "direct"))
         self.assertNotIn("sh", command)
 
     def test_start_reports_only_after_systemd_accepts_the_unit(self) -> None:
@@ -56,6 +56,23 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["unit"], UNIT_NAME)
+
+    def test_networkmanager_backend_is_explicit_in_the_supervised_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            launcher = Path(temp) / "omacast"
+            launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+            command = session_service_command(
+                executable=str(launcher), peer="AA:BB:CC:DD:EE:FF",
+                mode="mirror", profile="safe", duration=300,
+                backend="networkmanager",
+            )
+            self.assertEqual(command[-2:], ("--backend", "networkmanager"))
+            with self.assertRaises(ServiceError):
+                session_service_command(
+                    executable=str(launcher), peer="AA:BB:CC:DD:EE:FF",
+                    mode="mirror", profile="safe", duration=300,
+                    backend="auto",
+                )
 
     def test_pairing_pin_crosses_only_a_transient_credential_descriptor(self) -> None:
         observed_path = ""

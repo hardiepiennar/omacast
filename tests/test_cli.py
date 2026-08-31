@@ -235,7 +235,18 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload, started)
         self.assertEqual(launch.call_args.kwargs["mode"], "mirror")
         self.assertEqual(launch.call_args.kwargs["profile"], "safe")
+        self.assertEqual(launch.call_args.kwargs["backend"], "direct")
         self.assertNotIn("source", launch.call_args.kwargs)
+
+        with patch("omarchy_cast.cli.read_state", return_value={"phase": "idle"}), patch(
+            "omarchy_cast.cli.start_session_service", return_value=started
+        ) as compatibility_launch:
+            code, _payload = self.invoke([
+                "start", "--peer", "AA:BB:CC:DD:EE:FF",
+                "--backend", "networkmanager",
+            ])
+        self.assertEqual(code, 0)
+        self.assertEqual(compatibility_launch.call_args.kwargs["backend"], "networkmanager")
 
     def test_start_reads_pairing_pin_from_stdin_not_arguments(self) -> None:
         from types import SimpleNamespace

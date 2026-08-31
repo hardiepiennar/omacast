@@ -42,6 +42,7 @@ class GuardRequest:
     peer: str
     frequency_mhz: int
     duration_seconds: int
+    backend: str = "direct"
 
     def validate(self) -> "GuardRequest":
         if type(self.schema_version) is not int or self.schema_version != 1:
@@ -62,6 +63,8 @@ class GuardRequest:
             raise GuardError("guard P2P frequency is invalid")
         if type(self.duration_seconds) is not int or not 60 <= self.duration_seconds <= 1800:
             raise GuardError("guard duration must be between 60 and 1800 seconds")
+        if self.backend not in {"direct", "networkmanager"}:
+            raise GuardError("guard network backend is unsupported")
         return self
 
 
@@ -80,6 +83,7 @@ def prepare_command(request: GuardRequest, *, helper_path: str = HELPER_PATH) ->
         "--peer", request.peer,
         "--frequency", str(request.frequency_mhz),
         "--duration", str(request.duration_seconds),
+        "--backend", request.backend,
     )
 
 

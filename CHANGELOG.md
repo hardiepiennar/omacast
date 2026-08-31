@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add an explicit NetworkManager compatibility backend for adapters that reject
+  the receiver-owned direct-supplicant topology. The user selects it before
+  casting; it is never a blind retry. NetworkManager owns one volatile
+  computer-as-group-owner connection, shared DHCP, and its firewall zone,
+  while the root broker records exact device, peer, connection, and active
+  identities for normal and lease-loss cleanup. Require companion revision 83
+  and guard API 17. Receiver acceptance remains pending.
 - Add an explicit receiver-PIN retry after an attributed provisioning-method
   rejection. The PIN is validated with the WPS checksum and crosses the panel,
   transient service, engine, and privileged broker only through bounded stdin,

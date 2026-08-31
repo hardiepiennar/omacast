@@ -84,6 +84,9 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("onClicked: root.selectAndConnect(modelData)", panel)
         self.assertIn('(text === "n" || text === "N") && root.sessionActive', panel)
         self.assertIn('(text === "q" || text === "Q") && root.sessionBusy', panel)
+        self.assertIn('(text === "b" || text === "B") && !root.sessionBusy && !root.needsRecovery', panel)
+        self.assertIn("function toggleNetworkBackend()", panel)
+        self.assertIn('"--backend", root.networkBackend', panel)
         self.assertIn("if (connectAfterScan) {", panel)
         self.assertIn('message = "Connection cancelled"', panel)
         self.assertIn("function restorePanelFocus()", panel)
@@ -148,7 +151,7 @@ class ManifestTest(unittest.TestCase):
         self.assertIn('readonly property bool visuallyBusy: scanRunning || sessionBusy', panel)
         self.assertIn('active: root.visuallyBusy || root.needsRecovery', panel)
         self.assertIn('tooltipText: root.iconTooltip()', panel)
-        for code in ("authorization-cancelled", "authorization-timeout", "guard-setup-failed", "dhcp-failed", "pairing-method-unsupported", "pairing-pin-failed", "p2p-negotiation-failed", "receiver-negotiation-failed", "receiver-negotiation-timeout", "capture-failed", "engine-exited"):
+        for code in ("authorization-cancelled", "authorization-timeout", "guard-setup-failed", "dhcp-failed", "pairing-method-unsupported", "pairing-pin-failed", "network-backend-unavailable", "p2p-negotiation-failed", "receiver-negotiation-failed", "receiver-negotiation-timeout", "capture-failed", "engine-exited"):
             self.assertIn('code === "' + code + '"', panel)
         self.assertIn('"--pairing-pin-stdin"', panel)
         self.assertIn("stdinEnabled: root.pairingLaunch", panel)

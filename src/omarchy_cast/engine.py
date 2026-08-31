@@ -48,7 +48,7 @@ def _select_monitor(snapshot: dict[str, Any], requested: str | None) -> dict[str
 
 def build_launch_plan(
     snapshot: dict[str, Any], *, peer: str, mode: str, profile: str,
-    monitor: str | None = None, source: str = "display",
+    monitor: str | None = None, source: str = "display", backend: str = "direct",
 ) -> dict[str, object]:
     """Create a JSON-safe command preview, without touching hardware or a peer."""
     if type(snapshot.get("schemaVersion")) is not int or snapshot.get("schemaVersion") != 1:
@@ -63,6 +63,8 @@ def build_launch_plan(
         raise LaunchPlanError("unsupported quality profile")
     if source not in SOURCES:
         raise LaunchPlanError("unsupported capture source")
+    if backend not in {"direct", "networkmanager"}:
+        raise LaunchPlanError("unsupported Wi-Fi Direct backend")
     _required_tools(snapshot)
     wifi = _select_wifi(snapshot)
     output = _select_monitor(snapshot, monitor)
@@ -81,6 +83,8 @@ def build_launch_plan(
     supplicant_frequency = frequency if type(frequency) is int and 2400 <= frequency <= 2500 else 0
     if not vaapi:
         warnings.append("No render node detected; this session would use software H.264 encoding.")
+    if backend == "networkmanager":
+        warnings.append("Compatibility mode makes this computer the Wi-Fi Direct group owner through NetworkManager.")
 
     command = [
         "fluxcast", "--protocol", "wfd", "--output-res", f"{selected_profile['width']}x{selected_profile['height']}",
@@ -102,6 +106,7 @@ def build_launch_plan(
         "profile": selected_profile,
         "selection": {
             "peer": peer, "mode": mode, "source": source, "wifiInterface": wifi["interface"],
+            "networkBackend": backend,
             "wifiFrequencyMhz": frequency, "p2pFrequencyMhz": supplicant_frequency,
             "monitor": output["name"], "audioSource": sink + ".monitor",
             "videoEncoder": encoder,

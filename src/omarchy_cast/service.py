@@ -28,10 +28,13 @@ def session_service_command(
     duration: int,
     simulate: bool = False,
     pairing_credential_path: str | None = None,
+    backend: str = "direct",
 ) -> tuple[str, ...]:
     launcher = Path(executable).resolve()
     if not launcher.is_file():
         raise ServiceError("Omacast launcher is unavailable")
+    if backend not in {"direct", "networkmanager"}:
+        raise ServiceError("The Wi-Fi Direct backend is unsupported")
     if not simulate:
         try:
             peer = receiver_address(peer)
@@ -68,6 +71,8 @@ def session_service_command(
         profile,
         "--duration",
         str(duration),
+        "--backend",
+        backend,
     ])
     if pairing_credential_path is not None:
         command.append("--pairing-pin-credential")
@@ -85,6 +90,7 @@ def start_session_service(
     duration: int,
     simulate: bool = False,
     pairing_pin: bytes | None = None,
+    backend: str = "direct",
     runner: Runner = run_command,
 ) -> dict[str, object]:
     try:
@@ -92,6 +98,7 @@ def start_session_service(
             command = session_service_command(
                 executable=executable, peer=peer, mode=mode, profile=profile,
                 duration=duration, simulate=simulate,
+                backend=backend,
             )
             result = runner(command, timeout=10)
         else:
@@ -103,6 +110,7 @@ def start_session_service(
                     executable=executable, peer=peer, mode=mode, profile=profile,
                     duration=duration, simulate=False,
                     pairing_credential_path=credential_path,
+                    backend=backend,
                 )
                 result = runner(command, timeout=10)
     except (OSError, ValueError) as exc:

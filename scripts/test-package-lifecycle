@@ -81,7 +81,7 @@ fakeroot pacman "${pacman_args[@]}" -dd -U "$candidate"
 fakeroot pacman "${pacman_args[@]}" -Qkk "$candidate_name" | grep -Fq '0 altered files' || die "candidate integrity check failed"
 
 guard="$lifecycle_root/usr/lib/omarchy-cast/omarchy-cast-guard"
-[[ "$($guard --version)" == '{"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":15}' ]] || die "upgraded helper contract is incompatible"
+[[ "$($guard --version)" == '{"schemaVersion":1,"kind":"omarchy-cast-guard-version","apiRevision":17}' ]] || die "upgraded helper contract is incompatible"
 broker="$lifecycle_root/usr/lib/omarchy-cast/omarchy-cast-supplicant-broker"
 [[ -f "$broker" && ! -L "$broker" && -x "$broker" ]] || die "installed supplicant broker is missing or unsafe"
 policy="$lifecycle_root/usr/share/polkit-1/actions/com.omacast.guard.policy"
@@ -98,6 +98,19 @@ for removed_backend in portal wf-recorder x11grab gst-x11; do
 done
 grep -Fq -- '--wfd-capture-backend {gpu-screen-recorder}' "$lifecycle_root/fluxcast-help.txt" \
   || die "installed engine does not expose the exact supported capture selector"
+engine_contract="$(PYTHONPATH="$site_packages" "$engine" --omacast-contract-json)"
+python3 - "$engine_contract" <<'PY' || die "installed engine contract is incompatible"
+import json
+import sys
+
+value = json.loads(sys.argv[1])
+assert type(value) is dict
+assert type(value.get("apiRevision")) is int and value["apiRevision"] == 3
+assert value.get("pairing") == {"receiverPinDescriptor": True}
+assert value.get("network") == {
+    "backend": "supplicant", "mode": "connect", "guardedSessionRequired": True,
+}
+PY
 PYTHONPATH="$site_packages" "$engine" --doctor-json > "$lifecycle_root/fluxcast-doctor.json"
 python3 - "$lifecycle_root/fluxcast-doctor.json" <<'PY' \
   || die "installed engine returned an invalid diagnostic report"

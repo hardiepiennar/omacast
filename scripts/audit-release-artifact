@@ -69,7 +69,7 @@ done
 package_info="$(bsdtar -xOf "$package" .PKGINFO)"
 grep -Fxq 'pkgname = fluxcast-omarchy-cast' <<<"$package_info" || die "unexpected package name"
 grep -Fxq "pkgver = $expected_version" <<<"$package_info" || die "package metadata does not match its filename"
-for dependency in 'python>=3.14' 'python<3.15' gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw libpulse polkit systemd iproute2 util-linux glib2; do
+for dependency in 'python>=3.14' 'python<3.15' gpu-screen-recorder ffmpeg networkmanager dnsmasq wpa_supplicant iw libpulse polkit systemd iproute2 util-linux glib2 python-dbus; do
   grep -Fxq "depend = $dependency" <<<"$package_info" || die "missing runtime dependency: $dependency"
 done
 for dependency in python-pillow python-pystray python-pychromecast python-upnpclient; do
@@ -126,7 +126,7 @@ assert module.source_wfd_ies() == bytes.fromhex("00000600101c4400c8")
 PY
 
 guard_version="$($guard --version)"
-python3 - "$guard_version" <<'PY' || die "guard API contract does not match revision 15"
+python3 - "$guard_version" <<'PY' || die "guard API contract does not match revision 17"
 import json
 import sys
 
@@ -135,7 +135,7 @@ assert type(value) is dict
 assert set(value) == {"schemaVersion", "kind", "apiRevision"}
 assert type(value["schemaVersion"]) is int and value["schemaVersion"] == 1
 assert type(value["kind"]) is str and value["kind"] == "omarchy-cast-guard-version"
-assert type(value["apiRevision"]) is int and value["apiRevision"] == 15
+assert type(value["apiRevision"]) is int and value["apiRevision"] == 17
 PY
 ! grep -Fq '/etc/dbus-1/system.d' "$guard" || die "guard still writes a temporary system-bus policy"
 grep -Fq 'omarchy-cast-supplicant-broker' "$guard" || die "guard does not start the session-scoped supplicant broker"
@@ -144,12 +144,21 @@ grep -Fq 'omarchy-cast-guard-$session.service' "$launcher" || die "launcher does
 ! grep -Eq -- '--(pipe|wait)([ =]|$)' "$launcher" || die "launcher retains a long-lived system-service attachment"
 grep -Fq 'omarchy-cast-recovery-$session_id.service' "$guard" || die "guard does not isolate independent recovery in the system manager"
 ! grep -Fq 'RuntimeMaxSec' "$guard" || die "guard imposes a fixed wall-clock lifetime on a healthy broker"
-grep -Fq 'set(payload) != {"schemaVersion", "op"}' "$broker" || die "broker request shape is not closed"
+grep -Fq 'set(payload) not in (' "$broker" || die "broker request shape is not closed"
+grep -Fq '{"schemaVersion", "op", "pin"}' "$broker" || die "broker request lacks its closed PIN shape"
 grep -Fq 'operation == "connect"' "$broker" || die "broker lacks its fixed connect operation"
 grep -Fq 'operation == "cleanup"' "$broker" || die "broker lacks its fixed cleanup operation"
 grep -Fq '"persistent": "<true>"' "$broker" || die "broker does not request receiver pairing persistence"
 ! grep -Fq '"persistent": "<false>"' "$broker" || die "broker still requests disposable receiver pairing"
 ! grep -Fq 'RemoveAllPersistentGroups' "$broker" || die "broker cleanup can erase unrelated persistent groups"
+grep -Fq 'AddAndActivateConnection2' "$broker" || die "broker lacks the explicit NetworkManager compatibility activation"
+grep -Fq "{'persist': <'volatile'>}" "$broker" || die "NetworkManager compatibility connection is not volatile"
+grep -Fq 'networkmanager-active' "$broker" || die "broker lacks protected NetworkManager ownership state"
+grep -Fq 'os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC' "$broker" || die "broker does not safely open NetworkManager ownership state"
+for helper in "$guard" "$recovery"; do
+  grep -Fq -- '--recover-networkmanager' "$helper" || die "helper lacks bounded NetworkManager recovery"
+  ! grep -Fq 'nmcli connection delete' "$helper" || die "helper can delete an unverified NetworkManager connection"
+done
 for removed_surface in qos.pid qos_file apply_media_qos renice; do
   ! grep -Fq "$removed_surface" "$guard" || die "guard retains removed privileged QoS surface: $removed_surface"
   ! grep -Fq "$removed_surface" "$recovery" || die "recovery retains removed privileged QoS surface: $removed_surface"
@@ -198,12 +207,13 @@ actual = json.loads(sys.argv[1])
 expected = {
     "schemaVersion": 1,
     "kind": "omacast-engine-contract",
-    "apiRevision": 2,
+    "apiRevision": 3,
     "capture": "gpu-screen-recorder",
     "profile": {"width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
     "network": {"backend": "supplicant", "mode": "connect", "guardedSessionRequired": True},
     "telemetry": {"controllerDescriptorsRequired": True},
     "discovery": {"progressiveSnapshots": True},
+    "pairing": {"receiverPinDescriptor": True},
 }
 assert json.dumps(actual, sort_keys=True, separators=(",", ":")) == json.dumps(
     expected, sort_keys=True, separators=(",", ":")

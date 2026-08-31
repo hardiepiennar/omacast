@@ -3055,3 +3055,42 @@ Production patch 55 exposes the inherited descriptor and engine contract API
 running an old broker or engine. Offline focused tests and plugin validation
 pass; receiver-backed acceptance is deliberately deferred until the relevant
 displays are available.
+
+### Explicit NetworkManager compatibility backend (2026-08-31)
+
+Issue 8's alternate topology is now isolated behind a user-selected `direct`
+or `networkmanager` value carried from QML through the controller, transient
+service, closed launch plan, guard request, and root broker. The default direct
+path and its FluxCast command are unchanged. Compatibility mode continues to
+use the protected broker protocol, but the broker asks NetworkManager for one
+volatile `wifi-p2p` activation with the selected peer, source WFD IE, shared
+IPv4, and explicit `192.168.49.1/24` address. `dnsmasq` is a package dependency
+because NetworkManager's shared mode requires it.
+
+The first implementation review found a kill window between the mutating
+`AddAndActivateConnection2` request and retention of its returned object paths.
+The broker now atomically writes a root-owned, descriptor-anchored intent with
+the exact device and peer before that call. Recovery resolves at most one
+active connection with the session label, then independently verifies its
+connection, device list, specific peer object, receiver MAC, and P2P interface
+before deactivation. Once D-Bus returns, the protected record is replaced with
+the exact connection and active paths. Every command stream and wait remains
+bounded; unsafe or ambiguous ownership leaves the record and lease evidence
+for recovery instead of touching a guessed connection.
+
+The guard does not pause NetworkManager or start systemd-networkd in this mode.
+UFW remains scoped to the session's P2P interface pattern; an active firewalld
+host receives one runtime `nm-shared` TCP 7236 rule with a protected marker.
+Normal and independent cleanup remove only their marked rule and exact owned
+activation. PIN pairing is explicitly rejected in compatibility mode rather
+than silently changing provisioning behavior.
+
+Companion revision 83 / guard API 17 carries this plugin-and-helper change;
+engine API 3 and the 55-patch FluxCast series are unchanged. Offline tests
+cover selection threading, exact plan/guard agreement, no NetworkManager
+pause, pre-mutation intent, output pressure, identity replacement and
+ambiguity, descriptor record safety, cleanup, and independent recovery. No
+package install, network mutation, or receiver run was performed in this
+development session. The affected adapter and second-sink acceptance matrix
+is intentionally deferred until the user is available for visible hardware
+testing.

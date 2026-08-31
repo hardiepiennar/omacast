@@ -1263,7 +1263,9 @@ waiting in Display Mirroring and understands any temporary network change.
   path. Portal/window capture is a superseded research artifact.
 - **Encoding:** H.264/AAC through the accepted GSR/FFmpeg display pipeline.
 - **P2P role:** Fire TV as group owner; laptop as client via direct supplicant
-  backend on the proven hardware.
+  backend on the proven hardware. An explicitly selected, separately gated
+  NetworkManager compatibility mode makes the laptop group owner; it is never
+  an automatic fallback.
 - **P2P frequency:** retain a connected 2.4 GHz station frequency only as the
   proven coexistence hint; use automatic selection otherwise. The launch plan
   records raw station frequency separately from the canonical P2P value, and
@@ -1344,3 +1346,29 @@ and engine API 3 make the incompatible boundary explicit. Offline controller,
 QML, broker, descriptor, and reconstructed-engine coverage passes. A real
 PIN-requiring receiver, wrong PIN, cancellation, timeout, and supported Fire TV
 PBC regression remain acceptance gates and are not claimed as passed.
+
+### NetworkManager compatibility candidate (2026-08-31)
+
+Issue 8 is implemented as an explicit pre-cast backend choice. Direct remains
+the default and no failure silently retries with a different topology.
+Compatibility mode leaves NetworkManager active and asks it to create one
+volatile Wi-Fi P2P connection for the exact selected adapter and receiver. The
+laptop becomes group owner at `192.168.49.1/24`; NetworkManager owns shared
+DHCP/dnsmasq and its `nm-shared` policy. Omacast adds only a session-marked TCP
+7236 exception when the active host firewall requires one.
+
+The privileged broker resolves one exact NetworkManager P2P device and peer,
+writes a protected activation intent before the mutating D-Bus request, and
+then records the returned connection and active-connection object paths.
+Cleanup reconstructs no caller-selected command and acts only after checking
+the session label, device, peer object, receiver MAC, connection, and active
+identity. The independent renewable-lease recovery invokes the same bounded
+broker cleanup. An ambiguous, replaced, malformed, linked, public, or special
+record fails closed and retains recovery ownership.
+
+Companion revision 83 and guard API 17 make this incompatible boundary
+explicit. Offline controller, QML, service, guard, broker, output-bound,
+identity-change, partial-mutation, normal-cleanup, and forced-recovery coverage
+passes. The affected adapter, infrastructure-Wi-Fi coexistence, normal Stop,
+forced lease recovery, and a second receiver remain hardware acceptance gates
+for the next user-attended test; none are claimed as passed.

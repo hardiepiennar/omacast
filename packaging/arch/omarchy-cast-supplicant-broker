@@ -33,10 +33,21 @@ WPA_IFACE = "fi.w1.wpa_supplicant1.Interface"
 WPA_P2P = f"{WPA_IFACE}.P2PDevice"
 WPA_PEER = "fi.w1.wpa_supplicant1.Peer"
 WPA_GROUP = "fi.w1.wpa_supplicant1.Group"
+NM_DEST = "org.freedesktop.NetworkManager"
+NM_ROOT = "/org/freedesktop/NetworkManager"
+NM_IFACE = "org.freedesktop.NetworkManager"
+NM_DEVICE = "org.freedesktop.NetworkManager.Device"
+NM_P2P = "org.freedesktop.NetworkManager.Device.WifiP2P"
+NM_PEER = "org.freedesktop.NetworkManager.WifiP2PPeer"
+NM_ACTIVE = "org.freedesktop.NetworkManager.Connection.Active"
 SESSION_RE = re.compile(r"^[a-f0-9]{32}$")
 INTERFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 PEER_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 PIN_RE = re.compile(r"^[0-9]{8}$")
+NM_DEVICE_PATH_RE = re.compile(r"^/org/freedesktop/NetworkManager/Devices/[0-9]{1,10}$")
+NM_PEER_PATH_RE = re.compile(r"^/org/freedesktop/NetworkManager/WifiP2PPeer/[0-9]{1,10}$")
+NM_ACTIVE_PATH_RE = re.compile(r"^/org/freedesktop/NetworkManager/ActiveConnection/[0-9]{1,10}$")
+NM_CONNECTION_PATH_RE = re.compile(r"^/org/freedesktop/NetworkManager/Settings/[0-9]{1,10}$")
 
 
 class BrokerError(RuntimeError):
@@ -171,6 +182,33 @@ def get_property(path: str, interface: str, name: str) -> str:
         "--method", "org.freedesktop.DBus.Properties.Get",
         interface, name,
     ])
+
+
+def bus_property(destination: str, path: str, interface: str, name: str) -> str:
+    return call([
+        "--dest", destination,
+        "--object-path", path,
+        "--method", "org.freedesktop.DBus.Properties.Get",
+        interface, name,
+    ])
+
+
+def variant_string(text: str) -> str:
+    match = re.search(r"<['\"]([^'\"]{0,512})['\"]>", text)
+    return match.group(1) if match else ""
+
+
+def variant_uint(text: str) -> int | None:
+    match = re.search(r"<(?:uint32\s+)?([0-9]{1,10})>", text)
+    if match is None:
+        return None
+    value = int(match.group(1))
+    return value if 0 <= value <= 4_294_967_295 else None
+
+
+def variant_object_path(text: str) -> str:
+    paths = object_paths(text)
+    return paths[0] if len(paths) == 1 else ""
 
 
 def set_property(path: str, interface: str, name: str, value: str) -> None:
@@ -451,18 +489,35 @@ def negotiation_failure_detail(status: int, *, keypad: bool = False) -> str:
     return f"receiver rejected Wi-Fi Direct group negotiation (status {status})"
 
 
+def networkmanager_settings(session: str, peer: str) -> tuple[str, str]:
+    """Return the one closed volatile group-owner request accepted in production."""
+    if not SESSION_RE.fullmatch(session) or not PEER_RE.fullmatch(peer):
+        raise BrokerError("NetworkManager activation identity is invalid")
+    settings = (
+        "{"
+        f"'connection': {{'id': <'Omacast {session}'>, 'type': <'wifi-p2p'>, 'autoconnect': <false>}}, "
+        f"'wifi-p2p': {{'peer': <'{peer.lower()}'>, 'wfd-ies': <{byte_variant(source_wfd_ies())[1:-1]}>}}, "
+        "'ipv4': {'method': <'shared'>, 'address-data': <[{'address': <'192.168.49.1'>, 'prefix': <uint32 24>}]>, 'never-default': <true>}, "
+        "'ipv6': {'method': <'disabled'>, 'never-default': <true>}"
+        "}"
+    )
+    return settings, "{'persist': <'volatile'>}"
+
+
 class SupplicantBroker:
-    def __init__(self, *, session: str, uid: int, interface: str, peer: str, frequency: int) -> None:
+    def __init__(self, *, session: str, uid: int, interface: str, peer: str, frequency: int, backend: str = "direct") -> None:
         self.session = session
         self.uid = uid
         self.interface = interface
         self.peer = peer.lower()
         self.frequency = frequency
+        self.backend = backend
         self.root = Path("/run/omarchy-cast") / session
         self.user_root = self.root / "user"
         self.socket_path = self.root / "supplicant.sock"
         self.wfd_marker = self.root / "supplicant-wfd-owned"
         self.armed_marker = self.root / "p2p-armed"
+        self.nm_record = self.root / "networkmanager-active"
         self.stop = threading.Event()
         self.control_path: str | None = None
         self.peer_path: str | None = None
@@ -470,8 +525,23 @@ class SupplicantBroker:
         self.wfd_owned = False
         self.connect_attempted = False
         self.p2p_mutation_attempted = False
+        self.nm_active_path: str | None = None
+        self.nm_connection_path: str | None = None
+        self.nm_device_path: str | None = None
+        self.nm_peer_path: str | None = None
 
     def validate_session(self) -> None:
+        if os.geteuid() != 0:
+            raise BrokerError("broker must run as root")
+        self.validate_session_directories()
+        if self.socket_path.exists() or self.socket_path.is_symlink():
+            raise BrokerError("broker socket already exists")
+        if self.wfd_marker.exists() or self.wfd_marker.is_symlink():
+            raise BrokerError("broker ownership marker already exists")
+        if self.nm_record.exists() or self.nm_record.is_symlink():
+            raise BrokerError("NetworkManager ownership record already exists")
+
+    def validate_session_directories(self) -> None:
         if os.geteuid() != 0:
             raise BrokerError("broker must run as root")
         root = self.root.stat(follow_symlinks=False)
@@ -480,10 +550,6 @@ class SupplicantBroker:
             raise BrokerError("protected session directory is unsafe")
         if not stat.S_ISDIR(user.st_mode) or user.st_uid != self.uid or stat.S_IMODE(user.st_mode) != 0o700:
             raise BrokerError("session user directory is unsafe")
-        if self.socket_path.exists() or self.socket_path.is_symlink():
-            raise BrokerError("broker socket already exists")
-        if self.wfd_marker.exists() or self.wfd_marker.is_symlink():
-            raise BrokerError("broker ownership marker already exists")
 
     def resolve_control(self) -> str:
         interfaces = object_paths(get_property(WPA_ROOT, WPA_DEST, "Interfaces"))
@@ -552,7 +618,299 @@ class SupplicantBroker:
             return {"interface": ifname, "role": role}
         return None
 
+    def _session_descriptor(self) -> int:
+        descriptor = os.open(
+            self.root, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != 0
+            or stat.S_IMODE(metadata.st_mode) != 0o711
+        ):
+            os.close(descriptor)
+            raise BrokerError("protected session directory is unsafe")
+        return descriptor
+
+    @staticmethod
+    def _nm_record_payload(active: str, connection: str, device: str, peer: str) -> bytes:
+        if (
+            active != "/" and not NM_ACTIVE_PATH_RE.fullmatch(active)
+        ) or (
+            connection != "/" and not NM_CONNECTION_PATH_RE.fullmatch(connection)
+        ) or (
+            not NM_DEVICE_PATH_RE.fullmatch(device)
+            or not NM_PEER_PATH_RE.fullmatch(peer)
+        ):
+            raise BrokerError("NetworkManager returned an unsafe ownership path")
+        return f"active={active}\nconnection={connection}\ndevice={device}\npeer={peer}\n".encode("ascii")
+
+    def _write_nm_record(self, active: str, connection: str, device: str, peer: str) -> None:
+        payload = self._nm_record_payload(active, connection, device, peer)
+        directory = self._session_descriptor()
+        temporary = f".networkmanager-active.{os.getpid()}"
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=directory,
+            )
+            if os.write(descriptor, payload) != len(payload):
+                raise BrokerError("NetworkManager ownership record could not be written")
+            os.fsync(descriptor)
+            os.replace(temporary, "networkmanager-active", src_dir_fd=directory, dst_dir_fd=directory)
+        except FileExistsError as exc:
+            raise BrokerError("NetworkManager ownership record already exists") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            os.close(directory)
+
+    def _read_nm_record(self) -> tuple[str, str, str, str] | None:
+        directory = self._session_descriptor()
+        descriptor: int | None = None
+        try:
+            try:
+                descriptor = os.open(
+                    "networkmanager-active",
+                    os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=directory,
+                )
+            except FileNotFoundError:
+                return None
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != 0
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_nlink != 1
+                or not 1 <= metadata.st_size <= 1_024
+            ):
+                raise BrokerError("NetworkManager ownership record is unsafe")
+            raw = os.read(descriptor, 1_025)
+            if len(raw) != metadata.st_size:
+                raise BrokerError("NetworkManager ownership record is incomplete")
+            try:
+                lines = raw.decode("ascii").splitlines()
+            except UnicodeDecodeError as exc:
+                raise BrokerError("NetworkManager ownership record is invalid") from exc
+            if len(lines) != 4:
+                raise BrokerError("NetworkManager ownership record is invalid")
+            values: dict[str, str] = {}
+            for line in lines:
+                key, separator, value = line.partition("=")
+                if not separator or key in values:
+                    raise BrokerError("NetworkManager ownership record is invalid")
+                values[key] = value
+            if set(values) != {"active", "connection", "device", "peer"}:
+                raise BrokerError("NetworkManager ownership record is invalid")
+            self._nm_record_payload(
+                values["active"], values["connection"], values["device"], values["peer"]
+            )
+            return values["active"], values["connection"], values["device"], values["peer"]
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(directory)
+
+    def _remove_nm_record(self) -> None:
+        directory = self._session_descriptor()
+        try:
+            os.unlink("networkmanager-active", dir_fd=directory)
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(directory)
+
+    def resolve_nm_device(self) -> str:
+        paths = object_paths(call([
+            "--dest", NM_DEST, "--object-path", NM_ROOT,
+            "--method", f"{NM_IFACE}.GetAllDevices",
+        ]))
+        matches: list[str] = []
+        for path in paths:
+            if not NM_DEVICE_PATH_RE.fullmatch(path):
+                continue
+            name = variant_string(bus_property(NM_DEST, path, NM_DEVICE, "Interface"))
+            if name == f"p2p-dev-{self.interface}":
+                matches.append(path)
+        if len(matches) != 1:
+            raise BrokerError("selected adapter has no unique NetworkManager P2P device")
+        active = variant_object_path(
+            bus_property(NM_DEST, matches[0], NM_DEVICE, "ActiveConnection")
+        )
+        if active not in {"", "/"}:
+            raise BrokerError("selected NetworkManager P2P device is already active")
+        return matches[0]
+
+    def resolve_nm_peer(self, device_path: str) -> str:
+        matches: list[str] = []
+        for path in object_paths(bus_property(NM_DEST, device_path, NM_P2P, "Peers")):
+            if not NM_PEER_PATH_RE.fullmatch(path):
+                continue
+            address = variant_string(bus_property(NM_DEST, path, NM_PEER, "HwAddress"))
+            if address.lower() == self.peer:
+                matches.append(path)
+        if len(matches) != 1:
+            raise BrokerError("selected receiver has no unique NetworkManager peer object")
+        return matches[0]
+
+    def _nm_owned(self, active: str, connection: str, device: str, peer: str) -> bool:
+        if not NM_ACTIVE_PATH_RE.fullmatch(active) or not NM_CONNECTION_PATH_RE.fullmatch(connection):
+            raise BrokerError("NetworkManager ownership record is incomplete")
+        active_paths = object_paths(bus_property(NM_DEST, NM_ROOT, NM_IFACE, "ActiveConnections"))
+        if active not in active_paths:
+            return False
+        if variant_object_path(bus_property(NM_DEST, active, NM_ACTIVE, "Connection")) != connection:
+            raise BrokerError("NetworkManager active connection ownership changed")
+        if object_paths(bus_property(NM_DEST, active, NM_ACTIVE, "Devices")) != [device]:
+            raise BrokerError("NetworkManager active device ownership changed")
+        if variant_object_path(bus_property(NM_DEST, active, NM_ACTIVE, "SpecificObject")) != peer:
+            raise BrokerError("NetworkManager active peer ownership changed")
+        if variant_string(bus_property(NM_DEST, active, NM_ACTIVE, "Id")) != f"Omacast {self.session}":
+            raise BrokerError("NetworkManager active connection identity changed")
+        if variant_string(bus_property(NM_DEST, peer, NM_PEER, "HwAddress")).lower() != self.peer:
+            raise BrokerError("NetworkManager peer identity changed")
+        if variant_string(bus_property(NM_DEST, device, NM_DEVICE, "Interface")) != f"p2p-dev-{self.interface}":
+            raise BrokerError("NetworkManager P2P device identity changed")
+        return True
+
+    def _find_nm_owned_active(self, device: str, peer: str) -> tuple[str, str] | None:
+        """Resolve a pre-mutation intent to one exact session-owned activation."""
+        matches: list[tuple[str, str]] = []
+        for active in object_paths(
+            bus_property(NM_DEST, NM_ROOT, NM_IFACE, "ActiveConnections")
+        ):
+            if not NM_ACTIVE_PATH_RE.fullmatch(active):
+                continue
+            if variant_string(bus_property(NM_DEST, active, NM_ACTIVE, "Id")) != f"Omacast {self.session}":
+                continue
+            connection = variant_object_path(
+                bus_property(NM_DEST, active, NM_ACTIVE, "Connection")
+            )
+            if not NM_CONNECTION_PATH_RE.fullmatch(connection):
+                raise BrokerError("NetworkManager active connection path is unsafe")
+            if object_paths(bus_property(NM_DEST, active, NM_ACTIVE, "Devices")) != [device]:
+                raise BrokerError("NetworkManager active device ownership changed")
+            if variant_object_path(bus_property(NM_DEST, active, NM_ACTIVE, "SpecificObject")) != peer:
+                raise BrokerError("NetworkManager active peer ownership changed")
+            matches.append((active, connection))
+        if len(matches) > 1:
+            raise BrokerError("NetworkManager activation ownership is ambiguous")
+        if not matches:
+            return None
+        if variant_string(bus_property(NM_DEST, peer, NM_PEER, "HwAddress")).lower() != self.peer:
+            raise BrokerError("NetworkManager peer identity changed")
+        if variant_string(bus_property(NM_DEST, device, NM_DEVICE, "Interface")) != f"p2p-dev-{self.interface}":
+            raise BrokerError("NetworkManager P2P device identity changed")
+        return matches[0]
+
+    def connect_networkmanager(self) -> dict[str, object]:
+        if self.connect_attempted:
+            raise BrokerError("this session already consumed its connect operation")
+        if not self.wait_for_network_arm():
+            raise BrokerError("guarded networking is not active for this session")
+        self.connect_attempted = True
+        device = self.resolve_nm_device()
+        peer = self.resolve_nm_peer(device)
+        self.p2p_mutation_attempted = True
+        # Publish the exact device/peer intent before the mutating call.  If
+        # this broker dies after NetworkManager accepts the request but before
+        # gdbus returns, independent recovery can still resolve at most one
+        # session-labelled active connection and verify all four identities.
+        self._write_nm_record("/", "/", device, peer)
+        settings, options = networkmanager_settings(self.session, self.peer)
+        response = call([
+            "--dest", NM_DEST, "--object-path", NM_ROOT,
+            "--method", f"{NM_IFACE}.AddAndActivateConnection2",
+            settings, device, peer, options,
+        ], timeout=30.0)
+        paths = object_paths(response)
+        connections = [path for path in paths if NM_CONNECTION_PATH_RE.fullmatch(path)]
+        actives = [path for path in paths if NM_ACTIVE_PATH_RE.fullmatch(path)]
+        if len(connections) != 1 or len(actives) != 1:
+            raise BrokerError("NetworkManager returned ambiguous activation ownership")
+        connection, active = connections[0], actives[0]
+        self._write_nm_record(active, connection, device, peer)
+        self.nm_active_path, self.nm_connection_path = active, connection
+        self.nm_device_path, self.nm_peer_path = device, peer
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline and not self.stop.is_set():
+            state = variant_uint(bus_property(NM_DEST, active, NM_ACTIVE, "State"))
+            if state == 2:
+                if not self._nm_owned(active, connection, device, peer):
+                    raise BrokerError("NetworkManager activation disappeared before use")
+                interface = variant_string(bus_property(NM_DEST, device, NM_DEVICE, "IpInterface"))
+                if not INTERFACE_RE.fullmatch(interface) or not interface.startswith(f"p2p-{self.interface}-"):
+                    raise BrokerError("NetworkManager returned an unsafe P2P group interface")
+                ip_config = variant_object_path(bus_property(NM_DEST, device, NM_DEVICE, "Ip4Config"))
+                if not ip_config or ip_config == "/":
+                    raise BrokerError("NetworkManager shared IPv4 did not become ready")
+                addresses = bus_property(
+                    NM_DEST, ip_config, "org.freedesktop.NetworkManager.IP4Config", "AddressData"
+                )
+                address_values = re.findall(
+                    r"['\"]address['\"]:\s*<['\"]([^'\"]{1,64})['\"]>", addresses
+                )
+                prefix_values = re.findall(
+                    r"['\"]prefix['\"]:\s*<uint32 ([0-9]{1,3})>", addresses
+                )
+                if address_values != ["192.168.49.1"] or prefix_values != ["24"]:
+                    raise BrokerError("NetworkManager shared IPv4 address is unexpected")
+                return {"group": {"interface": interface, "role": "GO"}}
+            if state == 4:
+                raise BrokerError("NetworkManager deactivated the Wi-Fi Direct connection")
+            self.stop.wait(0.1)
+        raise BrokerError("timed out waiting for NetworkManager Wi-Fi Direct activation")
+
+    def cleanup_networkmanager(self) -> bool:
+        record = self._read_nm_record()
+        if record is None:
+            return True
+        active, connection, device, peer = record
+        try:
+            if active == "/" or connection == "/":
+                resolved = self._find_nm_owned_active(device, peer)
+                if resolved is None:
+                    self._remove_nm_record()
+                    return True
+                active, connection = resolved
+                self._write_nm_record(active, connection, device, peer)
+            if self._nm_owned(active, connection, device, peer):
+                try:
+                    call([
+                        "--dest", NM_DEST, "--object-path", NM_ROOT,
+                        "--method", f"{NM_IFACE}.DeactivateConnection", active,
+                    ], timeout=10.0)
+                except BrokerError:
+                    # Normal guard cleanup and lease recovery can converge on
+                    # the same owned activation. A failed call is successful
+                    # idempotence only when the exact activation is now gone.
+                    if self._nm_owned(active, connection, device, peer):
+                        raise
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if not self._nm_owned(active, connection, device, peer):
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise BrokerError("NetworkManager did not release the owned connection")
+            self._remove_nm_record()
+            return True
+        except Exception:
+            return False
+
     def connect(self, pin: str | None = None) -> dict[str, object]:
+        if self.backend == "networkmanager":
+            if pin is not None:
+                raise BrokerError("PIN pairing is not supported by NetworkManager compatibility mode")
+            return self.connect_networkmanager()
         if self.connect_attempted:
             raise BrokerError("this session already consumed its connect operation")
         if not self.wait_for_network_arm():
@@ -624,6 +982,8 @@ class SupplicantBroker:
                 raise BrokerError(negotiation_failure_detail(late_failure, keypad=pairing_pin is not None))
 
     def cleanup(self) -> bool:
+        if self.backend == "networkmanager":
+            return self.cleanup_networkmanager()
         cleaned = True
         if self.control_path is not None and self.p2p_mutation_attempted:
             for member in ("Cancel", "Disconnect"):
@@ -741,6 +1101,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interface", required=True)
     parser.add_argument("--peer", required=True)
     parser.add_argument("--frequency", required=True, type=lambda value: decimal(value, name="frequency", minimum=0, maximum=7125, width=4))
+    parser.add_argument("--backend", required=True, choices=("direct", "networkmanager"))
+    parser.add_argument("--recover-networkmanager", action="store_true")
     args = parser.parse_args()
     if not SESSION_RE.fullmatch(args.session):
         raise BrokerError("invalid session")
@@ -762,7 +1124,13 @@ def main() -> int:
             interface=args.interface,
             peer=args.peer,
             frequency=args.frequency,
+            backend=args.backend,
         )
+        if args.recover_networkmanager:
+            if args.backend != "networkmanager":
+                raise BrokerError("NetworkManager recovery requires its exact backend")
+            broker.validate_session_directories()
+            return 0 if broker.cleanup_networkmanager() else 1
         signal.signal(signal.SIGTERM, lambda _signum, _frame: broker.stop.set())
         signal.signal(signal.SIGINT, lambda _signum, _frame: broker.stop.set())
         broker.serve()

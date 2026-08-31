@@ -19,7 +19,7 @@ commit under `dist/`. The tagged GitHub release workflow runs that builder in a
 fresh Arch Linux container and attests the package provenance.
 
 Arch dependencies include FFmpeg,
-GPU Screen Recorder, NetworkManager, wpa_supplicant, iw, PipeWire's PulseAudio
+GPU Screen Recorder, NetworkManager, dnsmasq, wpa_supplicant, iw, PipeWire's PulseAudio
 client, polkit, systemd, iproute2, and util-linux. The packaged command exposes only the
 Miracast/WFD engine. Unused tray, Chromecast, DLNA, and LAN streaming modules
 and their Python dependencies are excluded from the wheel.
@@ -35,8 +35,9 @@ authenticated caller. The controller supplies a controller-issued session ID,
 a discovered interface, the calling UID, and a 60-second renewable safety lease. A healthy controller
 renews that lease while the cast runs; a missed lease triggers the independent
 cleanup path, so normal sessions can run until explicitly stopped without
-making privileged network state unbounded. The guard generates a per-session
-runtime DHCP match, opens only P2P TCP 7236 if UFW is active, and starts a
+making privileged network state unbounded. In default direct mode, the guard
+generates a per-session DHCP-client match, opens only P2P TCP 7236 if UFW is
+active, and starts a
 root-owned broker whose user-accessible socket accepts only fixed `connect` and
 `cleanup` operations for the selected adapter, receiver, and frequency. It
 does not grant the desktop user's UID general wpa_supplicant D-Bus access. The
@@ -51,13 +52,24 @@ persistent P2P group so the receiver can remember the pairing; normal session
 cleanup preserves that pairing. The package-owned Polkit action is declarative
 and is removed with the package.
 
+The explicitly selected compatibility mode leaves NetworkManager running and
+asks it to create one volatile Wi-Fi P2P group-owner connection with shared
+IPv4 at `192.168.49.1/24`. NetworkManager owns DHCP and its transient
+`nm-shared` firewall policy; Omacast records the exact D-Bus device, peer,
+connection, and active-connection identities before use. Normal cleanup and
+independent lease recovery deactivate only that verified activation and remove
+only the session-marked RTSP exception. The mode never runs as an automatic
+retry and does not currently accept PIN pairing.
+
 The primary helper exposes an unprivileged JSON `--version` probe. Omacast
-requires guard API revision 15 and the matching FluxCast capability set before
+requires guard API revision 17 and the matching FluxCast capability set before
 enabling discovery or Cast, so independently updated marketplace UI cannot
 cross an older privileged-helper contract.
 
-API revision 15 retains API revision 14's protected-session and reclaim
-contract while moving the long-lived guard and independent recovery workers
+API revision 17 retains API revision 16's protected-session, receiver-PIN, and
+reclaim contract while adding the closed backend selection and exact
+NetworkManager activation recovery. The earlier API revision 15 moved the
+long-lived guard and independent recovery workers
 into separate session-scoped system services. Independent
 recovery validates that identity and publishes a root-owned readiness marker;
 the primary helper refuses to create temporary network state or start the

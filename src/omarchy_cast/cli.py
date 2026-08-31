@@ -84,16 +84,19 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     plan.add_argument("--mode", choices=("mirror",), default="mirror")
     plan.add_argument("--profile", choices=("safe",), default="safe")
+    plan.add_argument("--backend", choices=("direct", "networkmanager"), default="direct")
     plan.add_argument("--monitor", help="Hyprland output name; uses the focused output by default")
     dry_run = subcommands.add_parser("dry-run", help="exercise guarded supervision without an engine or network")
     dry_run.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     dry_run.add_argument("--mode", choices=("mirror",), default="mirror")
     dry_run.add_argument("--profile", choices=("safe",), default="safe")
+    dry_run.add_argument("--backend", choices=("direct", "networkmanager"), default="direct")
     dry_run.add_argument("--monitor", help="Hyprland output name; uses the focused output by default")
     transport_test = subcommands.add_parser("transport-test", help="exercise fake transport ownership; never invokes FluxCast")
     transport_test.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     transport_test.add_argument("--mode", choices=("mirror",), default="mirror")
     transport_test.add_argument("--profile", choices=("safe",), default="safe")
+    transport_test.add_argument("--backend", choices=("direct", "networkmanager"), default="direct")
     transport_test.add_argument("--monitor", help="Hyprland output name; uses the focused output by default")
     transport_test.add_argument("--scenario", choices=("success", "timeout", "failure", "cancelled"), default="success")
     protocol_test = subcommands.add_parser("protocol-test", help="run offline recorded-style WFD negotiation fixtures")
@@ -104,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     start.add_argument("--mode", choices=("mirror",), default="mirror")
     start.add_argument("--profile", choices=("safe",), default="safe")
+    start.add_argument("--backend", choices=("direct", "networkmanager"), default="direct")
     start.add_argument("--duration", type=_SESSION_DURATION, default=0, help="optional acceptance-test duration in seconds; 0 casts until stopped")
     start.add_argument("--simulate", action="store_true", help=argparse.SUPPRESS)
     start.add_argument("--pairing-pin-stdin", action="store_true", help="read one receiver-displayed WPS PIN from stdin")
@@ -111,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     connect.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     connect.add_argument("--mode", choices=("mirror",), default="mirror")
     connect.add_argument("--profile", choices=("safe",), default="safe")
+    connect.add_argument("--backend", choices=("direct", "networkmanager"), default="direct")
     connect.add_argument("--simulate", action="store_true", help="exercise lifecycle only; never touches hardware")
     connect.add_argument("--duration", type=_SESSION_DURATION, default=0, help="optional acceptance-test duration in seconds; 0 casts until stopped")
     connect.add_argument("--pairing-pin-credential", action="store_true", help=argparse.SUPPRESS)
@@ -197,14 +202,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "plan":
         try:
-            _emit(build_launch_plan(discover_host(), peer=args.peer, mode=args.mode, profile=args.profile, monitor=args.monitor))
+            _emit(build_launch_plan(discover_host(), peer=args.peer, mode=args.mode, profile=args.profile, monitor=args.monitor, backend=args.backend))
         except LaunchPlanError as exc:
             _emit({"schemaVersion": 1, "ok": False, "error": {"code": "launch-plan-invalid", "message": _error_message(exc)}})
             return 1
         return 0
     if args.command == "dry-run":
         try:
-            plan = build_launch_plan(discover_host(), peer=args.peer, mode=args.mode, profile=args.profile, monitor=args.monitor)
+            plan = build_launch_plan(discover_host(), peer=args.peer, mode=args.mode, profile=args.profile, monitor=args.monitor, backend=args.backend)
             _emit(DryRunSupervisor().run(peer=args.peer, mode=args.mode, profile=args.profile, plan=plan))
         except (LaunchPlanError, SessionError, StateError) as exc:
             _emit({"schemaVersion": 1, "ok": False, "error": {"code": "dry-run-failed", "message": _error_message(exc)}})
@@ -212,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "transport-test":
         try:
-            plan = build_launch_plan(discover_host(), peer=args.peer, mode=args.mode, profile=args.profile, monitor=args.monitor)
+            plan = build_launch_plan(discover_host(), peer=args.peer, mode=args.mode, profile=args.profile, monitor=args.monitor, backend=args.backend)
             result = TransportTestSupervisor(FakeTransportAdapter(args.scenario)).run(peer=args.peer, mode=args.mode, profile=args.profile, plan=plan)
             _emit(result)
             return 0 if result["ok"] else 1
@@ -259,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
                 duration=duration,
                 simulate=args.simulate,
                 pairing_pin=pairing_pin,
+                backend=args.backend,
             ))
             return 0
         except (ServiceError, SessionError, StateError, ValueError) as exc:
@@ -298,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
             mode = args.mode
             profile = args.profile
             peer = receiver_address(args.peer)
-            preview = build_launch_plan(discover_host(), peer=peer, mode=mode, profile=profile)
+            preview = build_launch_plan(discover_host(), peer=peer, mode=mode, profile=profile, backend=args.backend)
             selection = preview["selection"]
             if not isinstance(selection, dict) or not isinstance(selection.get("wifiInterface"), str):
                 raise SessionError("host discovery did not provide a safe Wi-Fi interface")
@@ -316,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
                 peer,
                 p2p_frequency,
                 GUARD_LEASE_SECONDS,
+                args.backend,
             )
             pairing_pin = read_pairing_credential(os.environ) if args.pairing_pin_credential else None
             result = TransportTestSupervisor(GuardedTransportAdapter(request, pairing_pin=pairing_pin)).run(peer=peer, mode=mode, profile=profile, plan=executable_plan(preview), timeout_seconds=args.duration or None, session_id=session_id, executable=True, production=True)

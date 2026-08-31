@@ -34,7 +34,7 @@ class PackagingGuardTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         version = subprocess.run(("bash", str(guard), "--version"), check=False, capture_output=True, text=True)
         self.assertEqual(version.returncode, 0, version.stderr)
-        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 16})
+        self.assertEqual(json.loads(version.stdout), {"schemaVersion": 1, "kind": "omarchy-cast-guard-version", "apiRevision": 17})
         source = guard.read_text(encoding="utf-8")
         self.assertIn('[[ "$action" == prepare ]]', source)
         self.assertIn('[[ "$action" == reclaim ]]', source)
@@ -61,7 +61,7 @@ class PackagingGuardTest(unittest.TestCase):
         self.assertIn("systemd network runtime directory is unsafe", source)
         self.assertIn('restore_networkd_state', source)
         self.assertIn('runtime_dirs_created=false', source)
-        self.assertIn("api_revision=16", source)
+        self.assertIn("api_revision=17", source)
         self.assertIn('user_root="$session_root/user"', source)
         self.assertNotIn('user_root="/run/user/', source)
         self.assertIn('install -d -m711 "$session_root"', source)
@@ -293,6 +293,7 @@ calls="$3"
 phase="$4"
 session=deadbeef
 interface=wlan0
+backend=direct
 token_file="$root/token"
 ready_file="$root/ready.json"
 trigger_file="$user_root/trigger"
@@ -309,6 +310,8 @@ recovery_ready_file="$root/recovery-ready"
 broker_unit="omarchy-cast-supplicant-$session.service"
 broker_socket="$root/supplicant.sock"
 broker_wfd_file="$root/supplicant-wfd-owned"
+nm_active_file="$root/networkmanager-active"
+firewalld_marker="$root/firewalld-port-opened"
 recovery_cleanup_ok=true
 mkdir -p "$user_root" "$network_root"
 touch "$token_file" "$recovery_ready_file"
@@ -408,6 +411,7 @@ network_root="$2/network"
 calls="$3"
 session=deadbeef
 interface=wlan0
+backend=direct
 token_file="$root/token"
 ready_file="$root/ready.json"
 trigger_file="$user_root/trigger"
@@ -424,6 +428,8 @@ recovery_ready_file="$root/recovery-ready"
 broker_unit="omarchy-cast-supplicant-$session.service"
 broker_socket="$root/supplicant.sock"
 broker_wfd_file="$root/supplicant-wfd-owned"
+nm_active_file="$root/networkmanager-active"
+firewalld_marker="$root/firewalld-port-opened"
 recovery_cleanup_ok=true
 mkdir -p "$user_root" "$network_root" "$user_root/$4"
 touch "$token_file" "$ready_file" "$network_file" "$networkd_state_file" "$interfaces_file"
@@ -498,16 +504,52 @@ if pause_network_manager; then exit 4; fi
                 ],
             )
 
+    def test_networkmanager_backend_never_pauses_networkmanager_or_starts_networkd(self) -> None:
+        guard = ROOT / "packaging" / "arch" / "omarchy-cast-guard"
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+backend=networkmanager
+interface=wlan42
+session_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+interfaces_armed_file="$2/p2p-armed"
+firewalld_marker="$2/firewalld-port-opened"
+calls="$3"
+command() { [[ "$1" == -v && "$2" == dnsmasq ]]; }
+systemctl() { printf '%s\n' "$*" >> "$calls"; [[ "$1" == is-active && "$3" == NetworkManager.service ]]; }
+pause_network_manager() { printf '%s\n' pause-networkmanager >> "$calls"; return 1; }
+activate_network
+[[ -f "$interfaces_armed_file" ]]
+! grep -Fq pause-networkmanager "$calls"
+! grep -Fq systemd-networkd "$calls"
+grep -Fxq 'is-active --quiet NetworkManager.service' "$calls"
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            calls = Path(temp) / "calls"
+            result = subprocess.run(
+                ("bash", "-euo", "pipefail", "-c", harness, "_", str(guard), temp, str(calls)),
+                check=False, capture_output=True, text=True, timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_networkmanager_recovery_is_exact_and_bounded(self) -> None:
+        guard = (ROOT / "packaging" / "arch" / "omarchy-cast-guard").read_text(encoding="utf-8")
+        recovery = (ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover").read_text(encoding="utf-8")
+        for source in (guard, recovery):
+            self.assertIn("--recover-networkmanager", source)
+            self.assertIn('timeout --signal=KILL 25s', source)
+            self.assertIn('--peer "$peer" --frequency 0 --backend networkmanager', source)
+            self.assertNotIn("nmcli connection delete", source)
+
     def test_recovery_preserves_broker_ownership_if_unit_cannot_stop(self) -> None:
         recovery = ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover"
         harness = r'''
 source <(sed -n '/^record_session_interfaces()/,/^publish_recovery_ready ||/p' "$1" | sed '$d')
 root="$2/session"; user_root="$root/user"; network_root="$2/network"; calls="$3"
-session=deadbeef; interface=wlan0; uid="$4"
+session=deadbeef; interface=wlan0; uid="$4"; backend=direct
 token_file="$root/token"; ready_file="$root/ready.json"; trigger_file="$user_root/trigger"; heartbeat_file="$user_root/heartbeat"; stop_file="$user_root/stop"
 network_file="$network_root/session.network"; networkd_state_file="$root/networkd-units"; networkd_state_pending_file="$root/networkd-units.pending"; network_root_marker="$root/network-root-created"
 interfaces_file="$root/p2p-interfaces"; interfaces_armed_file="$root/p2p-armed"; network_manager_resume_file="$root/network-manager-resume-required"; recovery_ready_file="$root/recovery-ready"
-broker_unit="omarchy-cast-supplicant-$session.service"; broker_socket="$root/supplicant.sock"; broker_wfd_file="$root/supplicant-wfd-owned"; recovery_cleanup_ok=true
+broker_unit="omarchy-cast-supplicant-$session.service"; broker_socket="$root/supplicant.sock"; broker_wfd_file="$root/supplicant-wfd-owned"; nm_active_file="$root/networkmanager-active"; firewalld_marker="$root/firewalld-port-opened"; recovery_cleanup_ok=true
 mkdir -p "$user_root" "$network_root"; touch "$token_file" "$network_file" "$networkd_state_file" "$interfaces_file" "$broker_wfd_file"; chmod 600 "$broker_wfd_file"
 resume_network_manager() { printf '%s\n' resume >> "$calls"; return 0; }
 restore_networkd_state() { printf '%s\n' restore-networkd >> "$calls"; return 0; }
@@ -578,7 +620,7 @@ network_manager_marker_valid
 
     def test_recipe_installs_the_immutable_privilege_boundary(self) -> None:
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
-        self.assertIn("pkgrel=82", recipe)
+        self.assertIn("pkgrel=83", recipe)
         self.assertIn('omarchy-cast-guard"', recipe)
         self.assertIn('omarchy-cast-guard-launch"', recipe)
         self.assertIn('omarchy-cast-guard-recover"', recipe)
@@ -590,7 +632,7 @@ network_manager_marker_valid
         self.assertIn("'python>=3.14'", depends)
         self.assertIn("'python<3.15'", depends)
         self.assertNotIn("'python'", depends)
-        for dependency in ("ffmpeg", "networkmanager", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2", "util-linux", "glib2", "python-dbus"):
+        for dependency in ("ffmpeg", "networkmanager", "dnsmasq", "wpa_supplicant", "iw", "libpulse", "polkit", "systemd", "iproute2", "util-linux", "glib2", "python-dbus"):
             self.assertIn(f"'{dependency}'", depends)
         for removed in (
             "gstreamer", "gst-plugin-pipewire", "gst-plugins-base-libs",
@@ -847,7 +889,8 @@ reclaim_orphan_interfaces
 if [[ "$2" == guard ]]; then
   source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
 else
-  source <(sed -e '4d' -e '6,9d' -e '/^started="\$EPOCHSECONDS"/,$d' "$1")
+  source <(sed -n '/^publish_status()/,/^started="\$EPOCHSECONDS"/p' "$1" | sed '$d')
+  status_ack_timeout_seconds=1
 fi
 uid="$(id -u)"
 session_root="$3/session"
@@ -1180,7 +1223,8 @@ reclaim_orphan_interfaces
         self.assertIn("wfd/ts_probe.py", audit)
         self.assertIn("packaged engine retains UIBC input surface", audit)
         self.assertIn("package retains legacy integration payload", audit)
-        self.assertIn("for dependency in 'python>=3.14' 'python<3.15' gpu-screen-recorder ffmpeg networkmanager wpa_supplicant iw libpulse", audit)
+        self.assertIn("for dependency in 'python>=3.14' 'python<3.15' gpu-screen-recorder ffmpeg networkmanager dnsmasq wpa_supplicant iw libpulse", audit)
+        self.assertIn("glib2 python-dbus", audit)
         self.assertIn("packaged engine retains unbounded subprocess capture", audit)
         self.assertIn("packaged engine lacks bounded subprocess capture", audit)
         self.assertIn("packaged engine commands do not own an isolated process group", audit)
@@ -1189,6 +1233,12 @@ reclaim_orphan_interfaces
         self.assertIn("packaged engine drops bounded WFD peer metadata", audit)
         self.assertIn("packaged engine lacks the shared JSON shape budget", audit)
         self.assertIn("packaged engine broker client lacks a JSON shape budget", audit)
+        self.assertIn("guard API contract does not match revision 17", audit)
+        self.assertIn('value["apiRevision"] == 17', audit)
+        self.assertIn('"apiRevision": 3', audit)
+        self.assertIn('"pairing": {"receiverPinDescriptor": True}', audit)
+        self.assertIn("AddAndActivateConnection2", audit)
+        self.assertIn("NetworkManager compatibility connection is not volatile", audit)
         self.assertIn("--omacast-contract-json", audit)
         self.assertIn("packaged engine contract is incompatible", audit)
         self.assertIn("packaged engine lacks receiver port range validation", audit)
@@ -1242,6 +1292,9 @@ reclaim_orphan_interfaces
         self.assertIn('"$engine" --doctor', lifecycle)
         self.assertIn('"$engine" --doctor-json', lifecycle)
         self.assertIn('report.get("checks")', lifecycle)
+        self.assertIn('"apiRevision":17', lifecycle)
+        self.assertIn('value["apiRevision"] == 3', lifecycle)
+        self.assertIn('value.get("pairing") == {"receiverPinDescriptor": True}', lifecycle)
         self.assertNotIn("sudo", lifecycle)
         self.assertIn("--trusted-local-artifact", lifecycle)
         refused = subprocess.run(
@@ -1275,7 +1328,7 @@ reclaim_orphan_interfaces
             self.assertNotIn(removed, workflow)
         self.assertIn("BUILD-ENVIRONMENT.txt", workflow)
         self.assertIn("RELEASE-BUILDER.txt", workflow)
-        for dependency in ("ffmpeg", "iproute2", "iw", "libpulse", "networkmanager", "polkit", "systemd", "util-linux", "wpa_supplicant"):
+        for dependency in ("dnsmasq", "ffmpeg", "iproute2", "iw", "libpulse", "networkmanager", "polkit", "python-dbus", "systemd", "util-linux", "wpa_supplicant"):
             self.assertIn(dependency, workflow)
 
     def test_pull_request_workflow_reconstructs_and_tests_companion_patches(self) -> None:

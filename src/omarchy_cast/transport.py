@@ -306,7 +306,7 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
         for key, value in expected_profile.items()
     ):
         raise TransportError("transport plan has an unsupported profile")
-    expected_selection = {"peer", "mode", "source", "wifiInterface", "wifiFrequencyMhz", "p2pFrequencyMhz", "monitor", "audioSource", "videoEncoder"}
+    expected_selection = {"peer", "mode", "source", "networkBackend", "wifiInterface", "wifiFrequencyMhz", "p2pFrequencyMhz", "monitor", "audioSource", "videoEncoder"}
     if not isinstance(selection, Mapping) or set(selection) != expected_selection:
         raise TransportError("transport plan has an unexpected selection")
     try:
@@ -319,8 +319,11 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
     encoder = selection.get("videoEncoder")
     frequency = selection.get("wifiFrequencyMhz")
     p2p_frequency = selection.get("p2pFrequencyMhz")
+    backend = selection.get("networkBackend")
     if selection.get("mode") != "mirror" or selection.get("source") != "display":
         raise TransportError("transport plan has an unsupported source selection")
+    if backend not in {"direct", "networkmanager"}:
+        raise TransportError("transport plan has an unsupported network backend")
     if not isinstance(interface, str) or not _INTERFACE.fullmatch(interface):
         raise TransportError("transport plan Wi-Fi interface is invalid")
     if not isinstance(monitor, str) or not _DISPLAY_NAME.fullmatch(monitor):
@@ -505,6 +508,8 @@ class GuardedTransportAdapter:
             return "p2p-negotiation-failed"
         if "dhcp" in lowered or "ip address" in lowered:
             return "dhcp-failed"
+        if "networkmanager" in lowered:
+            return "network-backend-unavailable"
         if "p2p" in lowered or "group formation" in lowered or "supplicant" in lowered:
             return "p2p-negotiation-failed"
         if "rtsp" in lowered or "miracast negotiation" in lowered:
@@ -601,6 +606,9 @@ class GuardedTransportAdapter:
 
     def run(self, plan: Mapping[str, Any], *, timeout_seconds: float | None, cancelled: CancelCheck, stage: StageCallback) -> TransportResult:
         validate_transport_plan(plan, executable=True)
+        selection = plan.get("selection")
+        if not isinstance(selection, Mapping) or selection.get("networkBackend") != self.request.backend:
+            raise TransportError("the guarded backend does not match the reviewed selection")
         if timeout_seconds is not None and not 60 <= timeout_seconds <= 86_400:
             raise TransportError("a bounded guarded transport must run between 60 seconds and 24 hours")
         helper: subprocess.Popen[str] | None = None

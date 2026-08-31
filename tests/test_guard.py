@@ -24,12 +24,16 @@ class GuardContractTest(unittest.TestCase):
         self.assertEqual(command[command.index("--frequency") + 1], "2437")
         self.assertNotIn(";", " ".join(command))
 
+        compatibility = prepare_command(self.request(backend="networkmanager"))
+        self.assertEqual(compatibility[-2:], ("--backend", "networkmanager"))
+
     def test_rejects_untrusted_arguments_or_helper_path(self) -> None:
         for request in (
             self.request(schema_version=True), self.request(session_id="receiver-name"),
             self.request(interface="wlan0;id"), self.request(peer="receiver"),
             self.request(frequency_mhz=9999), self.request(frequency_mhz=False),
             self.request(duration_seconds=30), self.request(duration_seconds=True),
+            self.request(backend="auto"), self.request(backend=True),
             self.request(uid=0), self.request(uid=True),
         ):
             with self.assertRaises(GuardError):

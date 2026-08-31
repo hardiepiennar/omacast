@@ -37,7 +37,7 @@ def plan() -> dict[str, object]:
         "schemaVersion": 1, "kind": "launch-plan", "readOnly": True,
         "execution": {"allowed": False, "reason": "read-only launch preview"},
         "profile": {"label": "Safe", "width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7},
-        "selection": {"peer": "00:11:22:33:44:55", "mode": "mirror", "source": "display", "wifiInterface": "wlan42", "wifiFrequencyMhz": 2412, "p2pFrequencyMhz": 2412, "monitor": "eDP-1", "audioSource": "sink.monitor", "videoEncoder": "vaapi"},
+        "selection": {"peer": "00:11:22:33:44:55", "mode": "mirror", "source": "display", "networkBackend": "direct", "wifiInterface": "wlan42", "wifiFrequencyMhz": 2412, "p2pFrequencyMhz": 2412, "monitor": "eDP-1", "audioSource": "sink.monitor", "videoEncoder": "vaapi"},
         "command": ["fluxcast", "--protocol", "wfd", "--output-res", "1280x720", "--fps", "60", "--bitrate", "7M", "--wfd-video-encoder", "vaapi", "--wfd-p2p-backend", "supplicant", "--wfd-supplicant-mode", "connect", "--wfd-peer", "00:11:22:33:44:55", "--wfd-interface", "wlan42", "--wfd-timeout", "15", "--wfd-supplicant-frequency", "2412", "--wfd-no-firewall", "--monitor", "eDP-1", "--wfd-capture-backend", "gpu-screen-recorder", "--wfd-audio-device", "sink.monitor"],
         "warnings": [],
     }
@@ -579,6 +579,8 @@ class TransportTest(unittest.TestCase):
             "receiver rejected the pairing PIN; check the displayed digits and try again": "pairing-pin-failed",
             "wpa_supplicant P2P group formation failed": "p2p-negotiation-failed",
             "Waiting for DHCP before timed out waiting for a direct supplicant P2P group": "p2p-negotiation-failed",
+            "selected adapter has no unique NetworkManager P2P device": "network-backend-unavailable",
+            "NetworkManager deactivated the Wi-Fi Direct connection": "network-backend-unavailable",
             "RTSP Miracast negotiation refused": "receiver-negotiation-failed",
             "GPU Screen Recorder capture encoder failed": "capture-failed",
             "FluxCast exited with status 1": "engine-exited",

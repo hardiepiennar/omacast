@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -549,6 +550,173 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
         broker.connect_attempted = True
         with self.assertRaisesRegex(broker_module.BrokerError, "already consumed"):
             broker.connect()
+
+    def networkmanager_broker(self):
+        return broker_module.SupplicantBroker(
+            session="a" * 32, uid=1000, interface="wlan42",
+            peer="00:11:22:33:44:55", frequency=0,
+            backend="networkmanager",
+        )
+
+    def test_networkmanager_connect_records_intent_before_mutation(self) -> None:
+        broker = self.networkmanager_broker()
+        device = "/org/freedesktop/NetworkManager/Devices/42"
+        peer = "/org/freedesktop/NetworkManager/WifiP2PPeer/7"
+        connection = "/org/freedesktop/NetworkManager/Settings/9"
+        active = "/org/freedesktop/NetworkManager/ActiveConnection/11"
+
+        def property_value(_dest: str, _path: str, _interface: str, name: str) -> str:
+            return {
+                "State": "(<uint32 2>,)",
+                "IpInterface": "(<'p2p-wlan42-0'>,)",
+                "Ip4Config": "(<objectpath '/org/freedesktop/NetworkManager/IP4Config/3'>,)",
+                "AddressData": "(<[{'address': <'192.168.49.1'>, 'prefix': <uint32 24>}]>,)",
+            }[name]
+
+        writes: list[tuple[str, str, str, str]] = []
+        with mock.patch.object(broker, "wait_for_network_arm", return_value=True), mock.patch.object(
+            broker, "resolve_nm_device", return_value=device
+        ), mock.patch.object(
+            broker, "resolve_nm_peer", return_value=peer
+        ), mock.patch.object(
+            broker, "_write_nm_record", side_effect=lambda *values: writes.append(values)
+        ), mock.patch.object(
+            broker, "_nm_owned", return_value=True
+        ), mock.patch.object(
+            broker_module, "bus_property", side_effect=property_value
+        ), mock.patch.object(
+            broker_module, "call",
+            return_value=f"(objectpath '{connection}', objectpath '{active}', @a{{sv}} {{}})",
+        ) as call:
+            result = broker.connect()
+
+        self.assertEqual(result, {"group": {"interface": "p2p-wlan42-0", "role": "GO"}})
+        self.assertEqual(writes, [
+            ("/", "/", device, peer),
+            (active, connection, device, peer),
+        ])
+        mutation = call.call_args.args[0]
+        self.assertIn(f"{broker_module.NM_IFACE}.AddAndActivateConnection2", mutation)
+        self.assertIn("'method': <'shared'>", mutation[-4])
+        self.assertIn("'address': <'192.168.49.1'>", mutation[-4])
+        self.assertIn("'persist': <'volatile'>", mutation[-1])
+
+    def test_networkmanager_failed_mutation_retains_recovery_intent(self) -> None:
+        broker = self.networkmanager_broker()
+        device = "/org/freedesktop/NetworkManager/Devices/42"
+        peer = "/org/freedesktop/NetworkManager/WifiP2PPeer/7"
+        writes: list[tuple[str, str, str, str]] = []
+        with mock.patch.object(broker, "wait_for_network_arm", return_value=True), mock.patch.object(
+            broker, "resolve_nm_device", return_value=device
+        ), mock.patch.object(
+            broker, "resolve_nm_peer", return_value=peer
+        ), mock.patch.object(
+            broker, "_write_nm_record", side_effect=lambda *values: writes.append(values)
+        ), mock.patch.object(
+            broker_module, "call", side_effect=broker_module.BrokerError("activation failed")
+        ), self.assertRaisesRegex(broker_module.BrokerError, "activation failed"):
+            broker.connect()
+        self.assertEqual(writes, [("/", "/", device, peer)])
+
+    def test_networkmanager_recovery_resolves_intent_and_deactivates_only_owned_path(self) -> None:
+        broker = self.networkmanager_broker()
+        device = "/org/freedesktop/NetworkManager/Devices/42"
+        peer = "/org/freedesktop/NetworkManager/WifiP2PPeer/7"
+        connection = "/org/freedesktop/NetworkManager/Settings/9"
+        active = "/org/freedesktop/NetworkManager/ActiveConnection/11"
+        with mock.patch.object(
+            broker, "_read_nm_record", return_value=("/", "/", device, peer)
+        ), mock.patch.object(
+            broker, "_find_nm_owned_active", return_value=(active, connection)
+        ), mock.patch.object(
+            broker, "_write_nm_record"
+        ) as write_record, mock.patch.object(
+            broker, "_nm_owned", side_effect=(True, False)
+        ), mock.patch.object(
+            broker, "_remove_nm_record"
+        ) as remove_record, mock.patch.object(
+            broker_module, "call", return_value="()"
+        ) as call:
+            self.assertTrue(broker.cleanup_networkmanager())
+        write_record.assert_called_once_with(active, connection, device, peer)
+        self.assertIn(f"{broker_module.NM_IFACE}.DeactivateConnection", call.call_args.args[0])
+        self.assertIn(active, call.call_args.args[0])
+        remove_record.assert_called_once_with()
+
+    def test_networkmanager_intent_resolution_rejects_ambiguous_or_changed_identity(self) -> None:
+        broker = self.networkmanager_broker()
+        device = "/org/freedesktop/NetworkManager/Devices/42"
+        peer = "/org/freedesktop/NetworkManager/WifiP2PPeer/7"
+        actives = (
+            "/org/freedesktop/NetworkManager/ActiveConnection/11",
+            "/org/freedesktop/NetworkManager/ActiveConnection/12",
+        )
+
+        def property_value(_dest: str, path: str, _interface: str, name: str) -> str:
+            if name == "ActiveConnections":
+                return "([" + ", ".join(f"objectpath '{item}'" for item in actives) + "],)"
+            if name == "Id":
+                return f"(<'Omacast {broker.session}'>,)"
+            if name == "Connection":
+                return f"(<objectpath '/org/freedesktop/NetworkManager/Settings/{11 if path.endswith('11') else 12}'>,)"
+            if name == "Devices":
+                return f"([objectpath '{device}'],)"
+            if name == "SpecificObject":
+                return f"(<objectpath '{peer}'>,)"
+            raise AssertionError((path, name))
+
+        with mock.patch.object(
+            broker_module, "bus_property", side_effect=property_value
+        ), self.assertRaisesRegex(broker_module.BrokerError, "ambiguous"):
+            broker._find_nm_owned_active(device, peer)
+
+        def changed_property(_dest: str, path: str, _interface: str, name: str) -> str:
+            if name == "ActiveConnections":
+                return f"([objectpath '{actives[0]}'],)"
+            if name == "Id":
+                return f"(<'Omacast {broker.session}'>,)"
+            if name == "Connection":
+                return "(<objectpath '/org/freedesktop/NetworkManager/Settings/11'>,)"
+            if name == "Devices":
+                return f"([objectpath '{device}'],)"
+            if name == "SpecificObject":
+                return "(<objectpath '/org/freedesktop/NetworkManager/WifiP2PPeer/99'>,)"
+            raise AssertionError((path, name))
+
+        with mock.patch.object(
+            broker_module, "bus_property", side_effect=changed_property
+        ), self.assertRaisesRegex(broker_module.BrokerError, "peer ownership changed"):
+            broker._find_nm_owned_active(device, peer)
+
+    def test_networkmanager_record_paths_are_closed_and_special_records_fail_without_blocking(self) -> None:
+        broker = self.networkmanager_broker()
+        valid = (
+            "/", "/", "/org/freedesktop/NetworkManager/Devices/42",
+            "/org/freedesktop/NetworkManager/WifiP2PPeer/7",
+        )
+        self.assertIn(b"active=/\n", broker._nm_record_payload(*valid))
+        for values in (
+            ("relative", *valid[1:]),
+            (valid[0], "/tmp/foreign", *valid[2:]),
+            (*valid[:2], "/foreign/device", valid[3]),
+            (*valid[:3], "/foreign/peer"),
+        ):
+            with self.subTest(values=values), self.assertRaises(broker_module.BrokerError):
+                broker._nm_record_payload(*values)
+
+        with tempfile.TemporaryDirectory() as directory:
+            record = Path(directory) / "networkmanager-active"
+            os.mkfifo(record, mode=0o600)
+            descriptor = os.open(directory, os.O_PATH | os.O_DIRECTORY)
+            with mock.patch.object(broker, "_session_descriptor", return_value=descriptor):
+                started = time.monotonic()
+                with self.assertRaises(broker_module.BrokerError):
+                    broker._read_nm_record()
+                self.assertLess(time.monotonic() - started, 1)
+
+    def test_networkmanager_mode_refuses_pin_pairing(self) -> None:
+        with self.assertRaisesRegex(broker_module.BrokerError, "not supported"):
+            self.networkmanager_broker().connect("12345670")
 
 
 if __name__ == "__main__":

@@ -39,8 +39,8 @@ jobs:
             bash -euo pipefail -c '
               printf "%s\n" "Server = https://archive.archlinux.org/repos/2026/08/24/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
               pacman -Syu --needed --noconfirm \
-                fakeroot ffmpeg git gpu-screen-recorder iproute2 iw libpulse \
-                networkmanager polkit python python-build python-dbus-next \
+                dnsmasq fakeroot ffmpeg git gpu-screen-recorder iproute2 iw libpulse \
+                networkmanager polkit python python-build python-dbus python-dbus-next \
                 python-gobject python-hatchling python-installer shellcheck \
                 systemd util-linux wpa_supplicant
               useradd --create-home builder
