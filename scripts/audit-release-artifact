@@ -158,6 +158,12 @@ grep -Fq 'os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC' "$broker" 
 for helper in "$guard" "$recovery"; do
   grep -Fq -- '--recover-networkmanager' "$helper" || die "helper lacks bounded NetworkManager recovery"
   ! grep -Fq 'nmcli connection delete' "$helper" || die "helper can delete an unverified NetworkManager connection"
+  grep -Fq 'timeout --signal=KILL 5s gdbus call' "$helper" \
+    || die "helper fallback WFD cleanup lacks a command deadline"
+  grep -Fq 'head -c $((max_privileged_command_output_bytes + 1))' "$helper" \
+    || die "helper fallback WFD cleanup lacks an output bound"
+  grep -Fq '${#raw} <= max_privileged_command_output_bytes' "$helper" \
+    || die "helper fallback WFD cleanup does not reject output overflow"
 done
 for removed_surface in qos.pid qos_file apply_media_qos renice; do
   ! grep -Fq "$removed_surface" "$guard" || die "guard retains removed privileged QoS surface: $removed_surface"
