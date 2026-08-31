@@ -562,10 +562,14 @@
       revision-61 upgrade/removal gates, installed with 160 unaltered files,
       and completed both shipped doctor entry points. The matching installed
       plugin reports `Casting support ready` with no readiness issues.
-- [ ] Version 0.1.4 / companion revision 79 / guard API 14 / engine API 2 is the scoped
-      compatibility candidate. Complete the exact clean build, artifact audit,
-      revision-61 upgrade/removal, installed readiness, and one normal Fire TV
-      connect/stream/Stop cleanup run before tagging it.
+- [x] Version 0.1.4 / companion revision 79 / guard API 14 / engine API 2 is the scoped
+      compatibility candidate. Implementation commit `a07e43a` passed the exact
+      clean build, artifact audit, fresh lifecycle, revision-61 upgrade/removal,
+      installed readiness, and a normal Fire TV connect/stream/Stop cleanup run.
+      The installed path negotiated 1280x720p60, stabilized healthy around 60
+      fps with zero FFmpeg drops or duplicates, produced normal picture and
+      audio by user confirmation, and left no P2P group, media process,
+      transient service, or runtime-session residue after cooperative Stop.
 - [ ] Exercise forced recovery and complete the canonical three consecutive
       30-minute acceptance sessions. Revision 60's short run and pre-broker
       20.5-minute soak do not satisfy these gates.

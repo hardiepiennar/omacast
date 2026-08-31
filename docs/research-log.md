@@ -2863,3 +2863,20 @@ regressions cover the new path. Guard API 14 and engine contract API 2 are
 unchanged. Because this modifies the privileged companion after the prior
 hardware run, the revision-79 exact package and normal Fire TV acceptance gate
 remain required before release.
+
+The revision-79 acceptance gate then passed through the exact installed plugin
+and controller at implementation commit `a07e43a`. Discovery selected the
+waiting Fire TV by its validated MAC identity. PBC group formation succeeded
+with the new signal monitor active, DHCP and RTSP completed, and the session
+negotiated 1280x720p60. After startup, repeated telemetry snapshots were
+healthy at approximately 60 fps and realtime ratio 1.00, with zero FFmpeg
+drops or duplicates, zero radio failures or retries, and zero transport drops
+or errors. The user confirmed normal picture and audio.
+
+Cooperative controller Stop returned the session to `idle`. The P2P group
+interface, engine, capture, mux, KMS helper, protected broker, transient user
+and system units, and protected runtime session were absent afterward; the
+managed Wi-Fi interface remained connected to its original profile. This
+validates that attributed failure monitoring did not regress the supported
+Fire TV PBC or cleanup path. Interactive PIN provisioning remains outside this
+release and is tracked in GitHub issue 10.
