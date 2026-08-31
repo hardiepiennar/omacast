@@ -572,13 +572,15 @@
       fps with zero FFmpeg drops or duplicates, produced normal picture and
       audio by user confirmation, and left no P2P group, media process,
       transient service, or runtime-session residue after cooperative Stop.
-- [ ] Version 0.1.5 is the post-review boundary-hardening candidate. It caps the
+- [x] Version 0.1.5 is the post-review boundary-hardening candidate. It caps the
       progressive scan stream end to end, closes QML runtime/telemetry
       projection, applies lexical CLI-number bounds, and descriptor-anchors
       persistent state children. Companion behavior remains revision 79 / guard
-      API 14 / engine API 2. Complete one exact clean build, artifact/lifecycle
-      audit, installed readiness check, and panel scan/connect/Stop smoke test
-      against the final commit before retargeting marketplace issue #3770.
+      API 14 / engine API 2. The exact clean build, artifact/lifecycle audit,
+      installed readiness check, and panel scan/connect/Stop smoke passed.
+      Runtime acceptance used commit `df664f5`; the subsequent acceptance-note
+      commit changes documentation only and passed proportionate exact-HEAD
+      offline validation before release.
 - [ ] Exercise forced recovery and complete the canonical three consecutive
       30-minute acceptance sessions. Revision 60's short run and pre-broker
       20.5-minute soak do not satisfy these gates.

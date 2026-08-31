@@ -2918,3 +2918,18 @@ issue 4 was already closed by PR 6. Issues 5, 8, 9, and 10 remain open and are
 not claimed. Marketplace issue 3770 still targets the 0.1.4 SHA, so it must be
 retargeted to the exact 0.1.5 release commit after the remaining candidate
 gates rather than receiving an early summary for a moving tree.
+
+The version-0.1.5 installed-panel gate then ran at exact runtime commit
+`df664f57dfe816049918675b6859674b62f34bcd`. The installed plugin passed
+readiness with guard API 14 and engine API 2, reloaded without a QML error,
+and discovered the waiting Fire TV through the real panel. Selecting it moved
+the controller through connecting to streaming at 1280x720p60. The session
+held approximately 60 fps with zero reported drops or duplicates and no radio
+or transport error; the user accepted the picture and audio.
+
+Keyboard Stop returned the controller to idle. The transient service, P2P
+group, engine, capture, mux, helper, broker, and protected session runtime were
+absent afterward, while NetworkManager remained active and infrastructure
+Wi-Fi connected. This closes the focused installed-panel scan/connect/Stop
+gate. Forced recovery and the canonical three-session soak remain explicitly
+deferred to the later reliability release.
