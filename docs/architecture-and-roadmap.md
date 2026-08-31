@@ -1243,6 +1243,11 @@ waiting in Display Mirroring and understands any temporary network change.
 - **Startup latency:** wait on owned readiness evidence instead of fixed sleeps,
   and end discovery early only for the exact validated receiver address. Keep
   every wait bounded and record only identifier-free timing milestones.
+- **Receiver compatibility:** an advertised primary-sink role remains the
+  discovery criterion. Do not infer incompatibility from a dual source/sink
+  role, brand, or setup-method advertisement. Surface an attributed P2P
+  negotiation status when the receiver rejects a connection; support PIN
+  provisioning only through an explicit bounded user-consent flow.
 - **Runtime bounds:** bound every retained command stream, protocol integer,
   periodic pending request, and live journal before parsing or accumulation.
 - **Companion scope:** ship only the WFD engine and its owned networking

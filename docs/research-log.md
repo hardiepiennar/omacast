@@ -2815,5 +2815,35 @@ value. Validation independently reconstructs the policy: 2400–2500 MHz may be
 retained as the proven coexistence hint and every other station frequency must
 map to `0`. A CLI-boundary regression proves both 2412-to-2412 and 5745-to-0 at
 the actual `GuardRequest`, in addition to command and transport-plan coverage.
-This correction does not yet prove Samsung compatibility; one installed
-automatic-channel receiver test remains required.
+An installed automatic-channel retry then proved that the correction reached
+the complete privileged path. With the infrastructure station on 5745 MHz,
+the exact installed controller passed frequency `0` to both the guard and the
+session broker. Supplicant no longer reported `ConnectChannelUnsupported`.
+Instead it immediately emitted `P2P-GO-NEG-FAILURE status=10`, while the broker
+continued polling until its generic 45-second group timeout. Status 10 is the
+Wi-Fi Direct `P2P_SC_FAIL_INCOMPATIBLE_PROV_METHOD` result.
+The status and signal contract are documented by wpa_supplicant's
+[`ieee802_11_defs.h`](https://w1.fi/wpa_supplicant/devel/ieee802__11__defs_8h.html)
+and [D-Bus API](https://w1.fi/wpa_supplicant/devel/dbus.html).
+
+The Samsung advertised `config_methods=0x188`: display (`0x0008`), push button
+(`0x0080`), and keypad (`0x0100`). That advertisement makes the peer a valid
+sink and even claims support for the broker's current push-button choice, so
+it would be incorrect to hide or pre-label the receiver as incompatible during
+discovery. Samsung's PC mirroring documentation also describes models that
+display a PIN for entry on the PC ([Samsung's laptop mirroring
+guide](https://www.samsung.com/uk/support/tv-audio-video/how-to-screen-mirror-laptop-to-tv/)).
+Omacast currently hard-codes `wps_method`
+to `pbc`, discards the `Connect` method's generated-PIN return, and does not
+consume the documented `GONegotiationFailure` signal. The evidence therefore
+identifies two product gaps: no interactive PIN provisioning path and loss of
+the receiver's immediate failure reason. It does not yet establish that PIN
+support alone makes this exact TV stream successfully.
+
+The failed session was recovered to controller `idle`. The normal Wi-Fi
+profile was restored, no P2P group interface, media process, or transient
+Omacast system unit remained, and the protected broker reported an incomplete
+supplicant cleanup because `Cancel`/`Disconnect` followed a negotiation that
+had already terminated. A future pairing implementation must retain bounded
+signal draining and exact peer attribution at the privileged boundary rather
+than scraping global logs.

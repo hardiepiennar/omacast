@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Record the installed automatic-channel Samsung test: the frequency fix
+  reached the privileged broker, after which the receiver rejected Omacast's
+  hard-coded push-button provisioning with Wi-Fi Direct status 10. Keep the
+  valid sink visible and track attributed negotiation errors and interactive
+  PIN provisioning as follow-up work.
 - Make automatic P2P channel selection reach the privileged supplicant broker,
   not only the FluxCast command. The closed launch plan now carries one
   canonical P2P frequency, with a regression proving that a 5745 MHz station
