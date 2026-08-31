@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
 
 from omarchy_cast.command import CommandResult
-from omarchy_cast.guard import GuardError, GuardRequest, HELPER_PATH, orphan_parent_interfaces, prepare_command, reclaim_command, reclaim_orphan_interfaces, validate_helper_result, validate_reclaim_result
+from omarchy_cast.guard import GuardError, GuardRequest, HELPER_PATH, orphan_parent_interfaces, prepare_command, read_guard_status, reclaim_command, reclaim_orphan_interfaces, validate_helper_result, validate_reclaim_result
 
 
 class GuardContractTest(unittest.TestCase):
@@ -134,3 +137,54 @@ class GuardContractTest(unittest.TestCase):
         self.assertEqual(result["brokerPath"], broker)
         with self.assertRaises(GuardError):
             validate_helper_result({**status, "brokerPath": "/tmp/broker"})
+
+    def test_status_file_is_descriptor_anchored_and_bounded(self) -> None:
+        session_id = "c" * 32
+        owner = os.getuid()
+        payload = {
+            "schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True,
+            "phase": "cleaned", "sessionId": session_id, "error": None,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtime"
+            session = root / session_id
+            root.mkdir(mode=0o755)
+            session.mkdir(mode=0o711)
+            status = session / "status.json"
+            status.write_text(json.dumps(payload), encoding="utf-8")
+            status.chmod(0o644)
+            self.assertEqual(
+                read_guard_status(session_id, runtime_root=root, expected_owner=owner),
+                payload,
+            )
+            status.unlink()
+            self.assertIsNone(read_guard_status(session_id, runtime_root=root, expected_owner=owner))
+
+    def test_status_file_rejects_links_special_files_modes_and_floods(self) -> None:
+        session_id = "d" * 32
+        owner = os.getuid()
+        payload = json.dumps({
+            "schemaVersion": 1, "kind": "omarchy-cast-guard-status", "ok": True,
+            "phase": "cleaned", "sessionId": session_id, "error": None,
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "runtime"
+            session = root / session_id
+            root.mkdir(mode=0o755)
+            session.mkdir(mode=0o711)
+            target = base / "target"
+            target.write_text(payload, encoding="utf-8")
+            target.chmod(0o644)
+            status = session / "status.json"
+            for prepare in (
+                lambda: status.symlink_to(target),
+                lambda: os.link(target, status),
+                lambda: os.mkfifo(status, 0o644),
+                lambda: (status.write_text(payload, encoding="utf-8"), status.chmod(0o666)),
+                lambda: (status.write_text("[" * 5000, encoding="utf-8"), status.chmod(0o644)),
+            ):
+                prepare()
+                with self.assertRaises(GuardError):
+                    read_guard_status(session_id, runtime_root=root, expected_owner=owner)
+                status.unlink()

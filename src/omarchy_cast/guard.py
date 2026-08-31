@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import json
 import os
 import re
+import stat
+from pathlib import Path
 
 from .bounds import BoundError, bounded_text, validate_json_budget
 from .command import Runner, run_command
@@ -22,6 +24,8 @@ _SESSION_ID = re.compile(r"^[a-f0-9]{32}$")
 _INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 MAX_RECOVERY_INTERFACES = 32
 MAX_RECOVERY_CHILD_INTERFACES = 64
+MAX_GUARD_STATUS_BYTES = 4096
+RUNTIME_ROOT = Path("/run/omarchy-cast")
 
 
 class GuardError(ValueError):
@@ -189,3 +193,72 @@ def validate_helper_result(payload: object) -> dict[str, object]:
     if phase == "ready" and (not isinstance(broker, str) or broker != expected_broker):
         raise GuardError("guard status has an invalid broker path")
     return dict(payload)
+
+
+def read_guard_status(
+    session_id: str,
+    *,
+    runtime_root: Path = RUNTIME_ROOT,
+    expected_owner: int = 0,
+) -> dict[str, object] | None:
+    """Read one root-owned status through descriptor-anchored directories."""
+    if not _SESSION_ID.fullmatch(session_id):
+        raise GuardError("guard session id must be controller-issued")
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW
+    directory_flags = flags | os.O_DIRECTORY
+    descriptors: list[int] = []
+    try:
+        try:
+            root_fd = os.open(runtime_root, directory_flags)
+        except FileNotFoundError:
+            return None
+        descriptors.append(root_fd)
+        root_metadata = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(root_metadata.st_mode)
+            or root_metadata.st_uid != expected_owner
+            or stat.S_IMODE(root_metadata.st_mode) != 0o755
+        ):
+            raise GuardError("guard runtime root is unsafe")
+        try:
+            session_fd = os.open(session_id, directory_flags, dir_fd=root_fd)
+        except FileNotFoundError:
+            return None
+        descriptors.append(session_fd)
+        session_metadata = os.fstat(session_fd)
+        if (
+            not stat.S_ISDIR(session_metadata.st_mode)
+            or session_metadata.st_uid != expected_owner
+            or stat.S_IMODE(session_metadata.st_mode) != 0o711
+        ):
+            raise GuardError("guard session directory is unsafe")
+        try:
+            status_fd = os.open("status.json", flags, dir_fd=session_fd)
+        except FileNotFoundError:
+            return None
+        descriptors.append(status_fd)
+        metadata = os.fstat(status_fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != expected_owner
+            or stat.S_IMODE(metadata.st_mode) != 0o644
+            or metadata.st_nlink != 1
+            or metadata.st_size > MAX_GUARD_STATUS_BYTES
+        ):
+            raise GuardError("guard status file is unsafe")
+        raw = os.read(status_fd, MAX_GUARD_STATUS_BYTES + 1)
+        if len(raw) > MAX_GUARD_STATUS_BYTES:
+            raise GuardError("guard status file is oversized")
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+            raise GuardError("guard status file is invalid") from exc
+        result = validate_helper_result(payload)
+        if result.get("sessionId") != session_id:
+            raise GuardError("guard status belongs to another session")
+        return result
+    except OSError as exc:
+        raise GuardError("guard status could not be read safely") from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
