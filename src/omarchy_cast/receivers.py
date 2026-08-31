@@ -115,7 +115,7 @@ def _receiver_from_record(record: Mapping[str, object]) -> Receiver:
     if not set(normalized_capabilities) <= _ALLOWED_CAPABILITIES or "miracast" not in normalized_capabilities:
         raise ReceiverError("receiver must advertise supported Miracast capabilities")
     wfd_role = record.get("wfd_role", "unknown")
-    if wfd_role not in {"unknown", "primary-sink", "secondary-sink", "dual-role"}:
+    if wfd_role not in {"unknown", "primary-sink", "secondary-sink", "source-primary-sink"}:
         raise ReceiverError("receiver WFD role is invalid")
     rtsp_port = record.get("rtsp_port", 0)
     throughput_mbps = record.get("throughput_mbps", 0)
@@ -211,7 +211,7 @@ class FluxCastReceiverDiscovery:
                 name = advertised_name or f"Miracast display · {address[-5:]}"
                 is_fire_tv = "fire tv" in advertised_name.casefold()
                 device_type = wfd_info[0] & 0x03
-                role = {1: "primary-sink", 2: "secondary-sink", 3: "dual-role"}[device_type]
+                role = {1: "primary-sink", 2: "secondary-sink", 3: "source-primary-sink"}[device_type]
                 manufacturer = bounded_text(getattr(peer, "manufacturer", ""), limit=120).strip()
                 model = bounded_text(getattr(peer, "model", ""), limit=120).strip()
                 raw_signal = getattr(peer, "strength_percent", None)

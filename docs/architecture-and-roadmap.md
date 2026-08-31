@@ -133,7 +133,8 @@ users remain denied, and lost renewal triggers bounded independent recovery.
   hidden. Fire TV remains the locally hardware-validated receiver class. The
   panel does not editorialize compatibility per brand: it shows bounded facts
   advertised by each sink—role, RTSP port, throughput, manufacturer/model, and
-  signal—so users can distinguish peers without blocking contributor hardware.
+  signal—in a compact icon row with expanded definitions in the tooltip, so
+  users can distinguish peers without blocking contributor hardware.
 - The native Omarchy panel exposes live negotiated mode, capture/mux load,
   packet timing, RTP queueing, radio counters, and a derived health verdict.
 - The panel launches production work in `omacast-session.service`; a simulated

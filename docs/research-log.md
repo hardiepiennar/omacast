@@ -2758,3 +2758,11 @@ range, string, and JSON bounds before QML projects those fields as plain text.
 Companion revision 77 carries patch 53; guard API 14 and engine contract API 1
 remain unchanged, and prior receiver evidence does not validate this UI/data
 path.
+
+The initial factual row was still too verbose. The compact presentation now
+uses a monitor role, network port, advertised-rate, and signal icon with short
+values; manufacturer/model appears only when it adds information not already in
+the peer name. Hover text retains the expanded definitions. WFD device type 3
+is named `source-primary-sink` and rendered `Source/Sink`, reflecting that it
+can originate or receive a display session rather than implying a special sink
+quality tier.

@@ -31,7 +31,7 @@ class ReceiverDiscoveryTest(unittest.TestCase):
     def test_receiver_metadata_requires_exact_bounded_scalar_types(self) -> None:
         base = self.records()[0]
         invalid = (
-            {"wfd_role": "television"},
+            {"wfd_role": "dual-role"},
             {"rtsp_port": True},
             {"rtsp_port": 65_536},
             {"throughput_mbps": -1},
@@ -150,6 +150,7 @@ class ReceiverDiscoveryTest(unittest.TestCase):
             [receiver["id"] for receiver in payload["receivers"]],
             ["02:00:00:00:00:14", "02:00:00:00:00:16", "02:00:00:00:00:13"],
         )
+        self.assertEqual(payload["receivers"][0]["wfd_role"], "source-primary-sink")
 
     def test_fluxcast_diagnostics_are_discarded_instead_of_collected(self) -> None:
         def scanner(*, interface: str | None, timeout: int):

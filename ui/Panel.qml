@@ -153,7 +153,7 @@ Panel {
         && id !== "00:00:00:00:00:00" && id !== "FF:FF:FF:FF:FF:FF"
       if (!validAddress || !name || !kind || ids[id]) continue
       ids[id] = true
-      var role = ["primary-sink", "secondary-sink", "dual-role"].indexOf(item.wfd_role) >= 0
+      var role = ["primary-sink", "secondary-sink", "source-primary-sink"].indexOf(item.wfd_role) >= 0
         ? item.wfd_role : "unknown"
       var rtspPort = typeof item.rtsp_port === "number" && isFinite(item.rtsp_port)
         && Math.floor(item.rtsp_port) === item.rtsp_port && item.rtsp_port >= 0 && item.rtsp_port <= 65535
@@ -176,17 +176,35 @@ Panel {
   }
 
   function receiverFacts(receiver) {
-    var role = receiver.wfdRole === "primary-sink" ? "Primary sink"
+    var role = receiver.wfdRole === "primary-sink" ? "󰍹 Sink"
+      : receiver.wfdRole === "secondary-sink" ? "󰍹 Secondary"
+      : receiver.wfdRole === "source-primary-sink" ? "󰑃 Source/Sink" : "󰍹 WFD"
+    var parts = []
+    var maker = String(receiver.manufacturer || "").trim()
+    var model = String(receiver.model || "").trim()
+    var name = String(receiver.name || "").toLowerCase()
+    if (model && String(receiver.name || "").toLowerCase().indexOf(model.toLowerCase()) < 0
+        && model.toLowerCase() !== maker.toLowerCase()) parts.push(model)
+    else if (maker && name.indexOf(maker.toLowerCase()) < 0) parts.push(maker)
+    parts.push(role)
+    if (receiver.rtspPort > 0) parts.push("󰈀 " + receiver.rtspPort)
+    if (receiver.throughputMbps > 0) parts.push("󰓅 " + receiver.throughputMbps + "M")
+    if (receiver.signalPercent >= 0) parts.push("󰤨 " + receiver.signalPercent + "%")
+    return parts.join(" · ")
+  }
+
+  function receiverFactsTooltip(receiver) {
+    var role = receiver.wfdRole === "primary-sink" ? "Primary sink (receives)"
       : receiver.wfdRole === "secondary-sink" ? "Secondary sink"
-      : receiver.wfdRole === "dual-role" ? "Dual-role sink" : "WFD sink"
+      : receiver.wfdRole === "source-primary-sink" ? "Source + primary sink (sends or receives)"
+      : "Wi-Fi Display sink"
     var parts = [role]
     var maker = String(receiver.manufacturer || "").trim()
     var model = String(receiver.model || "").trim()
-    if (maker && String(receiver.name || "").toLowerCase().indexOf(maker.toLowerCase()) < 0) parts.push(maker)
-    if (model && String(receiver.name || "").toLowerCase().indexOf(model.toLowerCase()) < 0
-        && model.toLowerCase() !== maker.toLowerCase()) parts.push(model)
-    if (receiver.rtspPort > 0) parts.push("RTSP " + receiver.rtspPort)
-    if (receiver.throughputMbps > 0) parts.push("WFD " + receiver.throughputMbps + " Mb/s")
+    if (maker) parts.push("Manufacturer " + maker)
+    if (model) parts.push("Model " + model)
+    if (receiver.rtspPort > 0) parts.push("RTSP port " + receiver.rtspPort)
+    if (receiver.throughputMbps > 0) parts.push("Advertised WFD rate " + receiver.throughputMbps + " Mb/s")
     if (receiver.signalPercent >= 0) parts.push("Signal " + receiver.signalPercent + "%")
     return parts.join(" · ")
   }
@@ -1022,7 +1040,7 @@ Panel {
                 width: parent.width
                 labelText: root.boundedText(modelData.name, "Miracast display", 120)
                 detailText: root.receiverFacts(modelData)
-                tooltipText: detailText
+                tooltipText: root.receiverFactsTooltip(modelData)
                 selected: root.receiverId === String(modelData.id)
                 hasCursor: root.keyboardCursor && root.receiverCursor === index
                 enabled: !root.sessionBusy

@@ -4,8 +4,9 @@
 
 - Show objective sink metadata in receiver rows: WFD role, RTSP port,
   advertised throughput, manufacturer/model when supplied, and current signal
-  quality. Production patch 53 carries the bounded NetworkManager metadata in
-  companion revision 77; serial numbers remain private.
+  quality. The row uses compact role/network/rate/signal icons and keeps the
+  expanded definitions in its tooltip. Production patch 53 carries the bounded
+  NetworkManager metadata in companion revision 77; serial numbers remain private.
 - Preserve NetworkManager's advertised WFD device role in discovery results,
   so the controller can identify genuine sinks without inferring capability
   from an RTSP port. Companion revision 76 carries production patch 52.
