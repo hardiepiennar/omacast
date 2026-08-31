@@ -374,7 +374,13 @@ def _stop_requested(session_id: str, environ: Mapping[str, str] | None = None) -
         validate_json_budget(payload, max_nodes=16, max_collection_items=8, max_string_chars=64)
     except (UnicodeDecodeError, json.JSONDecodeError, BoundError, RecursionError):
         return False
-    return isinstance(payload, dict) and type(payload.get("schemaVersion")) is int and payload.get("schemaVersion") == 1 and payload.get("sessionId") == session_id
+    return (
+        isinstance(payload, dict)
+        and set(payload) == {"schemaVersion", "sessionId"}
+        and type(payload.get("schemaVersion")) is int
+        and payload.get("schemaVersion") == 1
+        and payload.get("sessionId") == session_id
+    )
 
 
 def recover_stale_session(environ: Mapping[str, str] | None = None) -> dict[str, object]:

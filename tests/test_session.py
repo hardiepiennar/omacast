@@ -335,6 +335,8 @@ class SessionTest(unittest.TestCase):
             self.assertFalse(_stop_requested(session_id, environment))
             path.write_text(json.dumps({"schemaVersion": True, "sessionId": session_id}), encoding="utf-8")
             self.assertFalse(_stop_requested(session_id, environment))
+            path.write_text(json.dumps({"schemaVersion": 1, "sessionId": session_id, "extra": True}), encoding="utf-8")
+            self.assertFalse(_stop_requested(session_id, environment))
 
     def test_recovery_clears_stale_active_state_under_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

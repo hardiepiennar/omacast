@@ -3094,3 +3094,15 @@ package install, network mutation, or receiver run was performed in this
 development session. The affected adapter and second-sink acceptance matrix
 is intentionally deferred until the user is available for visible hardware
 testing.
+
+### Post-issue sibling-boundary audit (2026-08-31)
+
+The full post-implementation audit found two adjacent control-boundary gaps.
+The private Stop request checked its required revision and session but did not
+reject extra JSON fields. It now requires the exact two-field document. The
+fallback direct-supplicant cleanup in both root helpers also invoked `gdbus`
+without the broker's output and completion bounds. Those reads now retain at
+most 64 KiB, reject excess WFD values, and use a five-second deadline for both
+the read and clear calls. Companion revision 84 carries the compatible helper
+hardening; guard API 17 and engine API 3 are unchanged. Installed and receiver
+acceptance remain deferred to the user-attended candidate test.

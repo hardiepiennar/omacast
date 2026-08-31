@@ -1366,9 +1366,11 @@ identity. The independent renewable-lease recovery invokes the same bounded
 broker cleanup. An ambiguous, replaced, malformed, linked, public, or special
 record fails closed and retains recovery ownership.
 
-Companion revision 83 and guard API 17 make this incompatible boundary
+Companion revision 84 and guard API 17 make this incompatible boundary
 explicit. Offline controller, QML, service, guard, broker, output-bound,
 identity-change, partial-mutation, normal-cleanup, and forced-recovery coverage
-passes. The affected adapter, infrastructure-Wi-Fi coexistence, normal Stop,
+passes. Revision 84 additionally closes the exact private Stop schema and
+bounds the root helpers' fallback supplicant cleanup command. The affected
+adapter, infrastructure-Wi-Fi coexistence, normal Stop,
 forced lease recovery, and a second receiver remain hardware acceptance gates
 for the next user-attended test; none are claimed as passed.

@@ -643,6 +643,24 @@ class SupplicantBrokerProtocolTest(unittest.TestCase):
         self.assertIn(active, call.call_args.args[0])
         remove_record.assert_called_once_with()
 
+    def test_networkmanager_cleanup_converges_with_independent_recovery(self) -> None:
+        broker = self.networkmanager_broker()
+        device = "/org/freedesktop/NetworkManager/Devices/42"
+        peer = "/org/freedesktop/NetworkManager/WifiP2PPeer/7"
+        connection = "/org/freedesktop/NetworkManager/Settings/9"
+        active = "/org/freedesktop/NetworkManager/ActiveConnection/11"
+        with mock.patch.object(
+            broker, "_read_nm_record", return_value=(active, connection, device, peer)
+        ), mock.patch.object(
+            broker, "_nm_owned", side_effect=(True, False, False)
+        ), mock.patch.object(
+            broker, "_remove_nm_record"
+        ) as remove_record, mock.patch.object(
+            broker_module, "call", side_effect=broker_module.BrokerError("already deactivated")
+        ):
+            self.assertTrue(broker.cleanup_networkmanager())
+        remove_record.assert_called_once_with()
+
     def test_networkmanager_intent_resolution_rejects_ambiguous_or_changed_identity(self) -> None:
         broker = self.networkmanager_broker()
         device = "/org/freedesktop/NetworkManager/Devices/42"

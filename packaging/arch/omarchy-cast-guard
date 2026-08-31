@@ -9,6 +9,7 @@ readonly run_root='/run/omarchy-cast' network_root='/run/systemd/network'
 readonly wait_for_trigger_seconds=300
 readonly recovery_ready_timeout_seconds=5
 readonly status_ack_timeout_seconds=15
+readonly max_privileged_command_output_bytes=65536
 readonly max_p2p_interfaces=64 max_interfaces_file_bytes=1024
 readonly networkd_units=(systemd-networkd.service systemd-networkd.socket systemd-networkd-varlink.socket systemd-networkd-varlink-metrics.socket systemd-networkd-resolve-hook.socket)
 action='' session_id='' uid='' interface='' peer='' frequency='' duration='' backend='' session_root='' user_root='' token_file='' ready_file='' status_ack_file='' stop_file='' trigger_file='' heartbeat_file='' heartbeat_fd='' guard_lock_fd='' network_file='' networkd_state_file='' networkd_state_pending_file='' network_root_marker='' interfaces_file='' interfaces_armed_file='' network_manager_resume_file='' recovery_ready_file='' broker_socket='' broker_unit='' recovery_unit='' broker_wfd_file='' firewalld_marker='' token='' ufw_rule_added=false runtime_dirs_created=false broker_started=false broker_cleanup_ok=true interface_cleanup_ok=true network_manager_cleanup_ok=true cleanup_ok=true network_sys_root='/sys/class/net'
@@ -240,13 +241,15 @@ remove_broker_socket() {
   rm -f -- "$broker_socket"
 }
 clear_owned_wfd_ies() {
-  local current expected='0x00 0x00 0x06 0x00 0x10 0x1c 0x44 0x00 0xc8'
+  local raw current expected='0x00 0x00 0x06 0x00 0x10 0x1c 0x44 0x00 0xc8'
   [[ ! -e "$broker_wfd_file" ]] && return 0
   [[ -f "$broker_wfd_file" && ! -L "$broker_wfd_file" && "$(stat -c '%u:%a' "$broker_wfd_file" 2>/dev/null)" == "$EUID:600" ]] || return 1
-  current="$(gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Get fi.w1.wpa_supplicant1 WFDIEs 2>/dev/null | { grep -oE '0x[0-9A-Fa-f]{2}' || true; } | tr '[:upper:]' '[:lower:]' | paste -sd ' ' -)" || return 1
+  raw="$(timeout --signal=KILL 5s gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Get fi.w1.wpa_supplicant1 WFDIEs 2>/dev/null | head -c $((max_privileged_command_output_bytes + 1)))" || return 1
+  (( ${#raw} <= max_privileged_command_output_bytes )) || return 1
+  current="$(grep -oE '0x[0-9A-Fa-f]{2}' <<< "$raw" | head -n 10 | tr '[:upper:]' '[:lower:]' | paste -sd ' ' -)" || true
   if [[ -z "$current" ]]; then rm -f -- "$broker_wfd_file"; return; fi
   [[ "$current" == "$expected" ]] || return 1
-  gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Set fi.w1.wpa_supplicant1 WFDIEs '<@ay []>' >/dev/null || return 1
+  timeout --signal=KILL 5s gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Set fi.w1.wpa_supplicant1 WFDIEs '<@ay []>' >/dev/null 2>&1 || return 1
   rm -f -- "$broker_wfd_file"
 }
 recover_networkmanager_connection() {

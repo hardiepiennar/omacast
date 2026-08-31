@@ -313,6 +313,7 @@ broker_wfd_file="$root/supplicant-wfd-owned"
 nm_active_file="$root/networkmanager-active"
 firewalld_marker="$root/firewalld-port-opened"
 recovery_cleanup_ok=true
+max_privileged_command_output_bytes=65536
 mkdir -p "$user_root" "$network_root"
 touch "$token_file" "$recovery_ready_file"
 case "$phase" in
@@ -326,6 +327,7 @@ resume_network_manager() { return 0; }
 restore_networkd_state() { printf '%s\n' restore-networkd >> "$calls"; return 0; }
 systemctl() { [[ "$1" == is-active ]] && return 1; printf '%s\n' "$*" >> "$calls"; }
 gdbus() { printf '%s\n' clear-wfd >> "$calls"; }
+timeout() { [[ "$1" == --signal=KILL && "$2" == 5s ]]; shift 2; "$@"; }
 ufw() { return 1; }
 recover_session
 [[ "$recovery_cleanup_ok" == true ]]
@@ -540,6 +542,45 @@ grep -Fxq 'is-active --quiet NetworkManager.service' "$calls"
             self.assertIn('--peer "$peer" --frequency 0 --backend networkmanager', source)
             self.assertNotIn("nmcli connection delete", source)
 
+    def test_fallback_wfd_cleanup_bounds_gdbus_output_and_time(self) -> None:
+        guard = (ROOT / "packaging" / "arch" / "omarchy-cast-guard").read_text(encoding="utf-8")
+        recovery = (ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover").read_text(encoding="utf-8")
+        for source in (guard, recovery):
+            body = source.split("clear_owned_wfd_ies() {", 1)[1].split("\n}", 1)[0]
+            self.assertIn("timeout --signal=KILL 5s gdbus call", body)
+            self.assertIn("head -c $((max_privileged_command_output_bytes + 1))", body)
+            self.assertIn("${#raw} <= max_privileged_command_output_bytes", body)
+
+        harness = r'''
+source <(sed '/^if \[\[ \$# -eq 1/,$d' "$1")
+broker_wfd_file="$2/owned"
+touch "$broker_wfd_file"
+chmod 600 "$broker_wfd_file"
+if clear_owned_wfd_ies; then exit 3; fi
+[[ -f "$broker_wfd_file" ]]
+'''
+        for scenario, program in (
+            ("overflow", "#!/usr/bin/env bash\nhead -c 70000 /dev/zero | tr '\\0' x\n"),
+            ("deadline", "#!/usr/bin/env bash\nsleep 10\n"),
+        ):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temp:
+                fake_bin = Path(temp) / "bin"
+                fake_bin.mkdir()
+                gdbus = fake_bin / "gdbus"
+                gdbus.write_text(program, encoding="utf-8")
+                gdbus.chmod(0o755)
+                started = time.monotonic()
+                result = subprocess.run(
+                    ("bash", "-euo", "pipefail", "-c", harness, "_", str(ROOT / "packaging" / "arch" / "omarchy-cast-guard"), temp),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=7,
+                    env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(time.monotonic() - started, 6.5)
+
     def test_recovery_preserves_broker_ownership_if_unit_cannot_stop(self) -> None:
         recovery = ROOT / "packaging" / "arch" / "omarchy-cast-guard-recover"
         harness = r'''
@@ -620,7 +661,7 @@ network_manager_marker_valid
 
     def test_recipe_installs_the_immutable_privilege_boundary(self) -> None:
         recipe = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text(encoding="utf-8")
-        self.assertIn("pkgrel=83", recipe)
+        self.assertIn("pkgrel=84", recipe)
         self.assertIn('omarchy-cast-guard"', recipe)
         self.assertIn('omarchy-cast-guard-launch"', recipe)
         self.assertIn('omarchy-cast-guard-recover"', recipe)

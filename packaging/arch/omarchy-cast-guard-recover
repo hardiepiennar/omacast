@@ -3,6 +3,7 @@
 set -euo pipefail
 [[ ${EUID} -eq 0 && $# -eq 8 ]] || exit 2
 readonly status_ack_timeout_seconds=15
+readonly max_privileged_command_output_bytes=65536
 startup_seconds="$1"; lease_seconds="$2"; session="$3"; token="$4"; uid="$5"; interface="$6"; peer="$7"; backend="$8"
 readonly max_p2p_interfaces=64 max_interfaces_file_bytes=1024
 [[ "$startup_seconds" =~ ^[0-9]{2,4}$ && "$lease_seconds" =~ ^[0-9]{2,4}$ && "$session" =~ ^[a-f0-9]{32}$ && "$token" =~ ^[a-f0-9]{48}$ && "$uid" =~ ^[1-9][0-9]{3,9}$ && "$interface" =~ ^[A-Za-z0-9_.-]{1,15}$ && "$peer" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ && ( "$backend" == direct || "$backend" == networkmanager ) ]] || exit 2
@@ -116,13 +117,15 @@ remove_broker_socket() {
   rm -f -- "$broker_socket"
 }
 clear_owned_wfd_ies() {
-  local current expected='0x00 0x00 0x06 0x00 0x10 0x1c 0x44 0x00 0xc8'
+  local raw current expected='0x00 0x00 0x06 0x00 0x10 0x1c 0x44 0x00 0xc8'
   [[ ! -e "$broker_wfd_file" ]] && return 0
   [[ -f "$broker_wfd_file" && ! -L "$broker_wfd_file" && "$(stat -c '%u:%a' "$broker_wfd_file" 2>/dev/null)" == "$EUID:600" ]] || return 1
-  current="$(gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Get fi.w1.wpa_supplicant1 WFDIEs 2>/dev/null | { grep -oE '0x[0-9A-Fa-f]{2}' || true; } | tr '[:upper:]' '[:lower:]' | paste -sd ' ' -)" || return 1
+  raw="$(timeout --signal=KILL 5s gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Get fi.w1.wpa_supplicant1 WFDIEs 2>/dev/null | head -c $((max_privileged_command_output_bytes + 1)))" || return 1
+  (( ${#raw} <= max_privileged_command_output_bytes )) || return 1
+  current="$(grep -oE '0x[0-9A-Fa-f]{2}' <<< "$raw" | head -n 10 | tr '[:upper:]' '[:lower:]' | paste -sd ' ' -)" || true
   if [[ -z "$current" ]]; then rm -f -- "$broker_wfd_file"; return; fi
   [[ "$current" == "$expected" ]] || return 1
-  gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Set fi.w1.wpa_supplicant1 WFDIEs '<@ay []>' >/dev/null || return 1
+  timeout --signal=KILL 5s gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Set fi.w1.wpa_supplicant1 WFDIEs '<@ay []>' >/dev/null 2>&1 || return 1
   rm -f -- "$broker_wfd_file"
 }
 recover_networkmanager_connection() {

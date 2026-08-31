@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Close the internal Stop request schema and bound the fallback privileged
+  supplicant cleanup call by both output size and deadline. Companion revision
+  84 carries the helper hardening without changing guard API 17.
 - Add an explicit NetworkManager compatibility backend for adapters that reject
   the receiver-owned direct-supplicant topology. The user selects it before
   casting; it is never a blind retry. NetworkManager owns one volatile
