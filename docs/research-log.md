@@ -2969,3 +2969,35 @@ acknowledgment, Stop during startup, partial initialization, owner lease loss,
 and recovery cleanup. No live receiver or installed system-service acceptance
 has been run for this candidate; normal Stop and forced owner-death remain the
 next gates and are not claimed as passed.
+
+The first installed attempt exposed two status-channel defects hidden by tests
+whose temporary session directories were owned by the test user. A mode-0711
+root directory cannot be opened read-only by that user even though it can be
+traversed, so the controller now opens each protected parent with `O_PATH` and
+retains descriptor-relative validation for `status.json`. After that fix, a
+normal session reached streaming, but terminal cleanup waited the 15-second
+acknowledgment bound and retained the otherwise empty session directory. GNU
+`stat %F` describes a zero-byte regular file as `regular empty file`; both
+helpers had compared it with the literal `regular file`. Commit `ae76e8e`
+instead compares the exact owner, mode, link count, and size after the existing
+regular-file and no-symlink checks. A regression executes both real helpers
+against an empty marker and proves full terminal-directory removal.
+
+The exact installed `ae76e8e` candidate then negotiated 1280x720p60 with the
+supported Fire TV. Telemetry stabilized at 60.33 fps and a 1.003 realtime
+ratio, with zero FFmpeg drops or duplicates and no radio failures. The user
+service cgroup contained only the controller and media pipeline; the guard,
+recovery worker, and supplicant broker each ran in a root system-service
+cgroup. Cooperative Stop returned to idle and removed those services and the
+exact root session directory in 2.318 seconds.
+
+A second session tested abrupt owner death. `SIGKILL` removed the complete user
+service cgroup without creating a Stop marker. The root workers remained alive
+through the 60-second heartbeat lease, independently stopped the broker and
+restored networking, then retained terminal status for the documented
+15-second unacknowledged bound. At 75 seconds every system service, P2P group,
+media process, and root session directory was absent; infrastructure Wi-Fi was
+connected to its original profile. The controller reported
+`session-owner-lost`, and its ordinary Recover action returned the panel to
+idle without reclaiming an interface. This closes issue 9's installed normal
+Stop and forced owner-death gates for `ae76e8e`.

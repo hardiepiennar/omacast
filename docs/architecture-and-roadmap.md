@@ -1051,8 +1051,14 @@ removes the status and session directory within a fixed bound. Early detached
 worker failures publish the same closed error status. This changes the helper
 contract to guard API 15 and companion revision 80. Offline reconstruction,
 artifact, upgrade/removal, failure-path, and regression gates pass at
-`e9bc52b`; installed Stop and owner-death acceptance remain outstanding and
-must postdate the exact installed candidate.
+`ae76e8e`. The exact installed candidate completed a supported Fire TV stream
+with the root workers in independent system-service cgroups. Cooperative Stop
+removed the protected session in 2.318 seconds. Forced user-service death then
+exercised the 60-second missed-heartbeat lease and 15-second unacknowledged
+terminal-status bound; all owned media, P2P, service, and runtime state was
+absent at 75 seconds, infrastructure Wi-Fi was restored, and the ordinary
+Recover action returned the panel to idle. These results close issue 9's
+installed Stop and owner-death acceptance gates.
 
 The first supported release is complete only when all are true:
 
