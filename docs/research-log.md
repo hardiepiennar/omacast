@@ -3303,3 +3303,25 @@ mixed revision-88 results instead establish a real but intermittent connection
 problem; they do not isolate whether transport parameters made the successful
 attempt possible. Fire TV regression and repeated Samsung acceptance remain
 outstanding before treating patch 59 as a release candidate.
+
+During the successful Samsung session, the maintainer later reported a small
+recurring video stutter. Live sampling reproduced capture-side discontinuities:
+GPU Screen Recorder's one-second update count fell to 40 and later 47 while the
+FFmpeg output ratio briefly fell to 0.938--0.949 before catching up at 1.017.
+Other observed clusters fell as low as 31 updates per second. PipeWire reported
+audio-monitor overruns at the same times. FFmpeg reported no dropped or
+duplicated frames, the RTP send queue remained bounded, and the radio telemetry
+reported no retries or failures. Correctable ath10k PCIe errors also occurred,
+but did not align as closely with the capture collapses.
+
+GPU Screen Recorder 6.0.0 has no audio-buffer control and fixes its Pulse input
+buffer to one fragment. Its audio and video writers share the Matroska output,
+so the Pulse overrun is consistent with the entire capture process blocking on
+the small default stdout pipe rather than proving an audio-source fault. This
+also agrees with the earlier loopback evidence that isolated burst delivery at
+the Matroska handoff. Production patch 60 therefore changes only that kernel
+pipe to a fixed 1 MiB capacity. At the configured 10.5 Mbit/s transport mux rate
+this is less than one second of bounded elasticity. The isolated engine suite
+passes 132 tests, including the exact pipe-size assertion. Companion revision
+89 carries the candidate without changing engine API 3; clean construction,
+installation, and receiver A/B acceptance remain pending.
