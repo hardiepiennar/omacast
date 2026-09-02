@@ -3180,3 +3180,26 @@ through the monitored window. The user accepted picture and sound. Cooperative
 Stop returned idle, removed the user service, root services, and P2P child, and
 left infrastructure Wi-Fi connected. The pre-RTSP loss detection therefore did
 not regress the established Fire TV path in this run.
+
+### Samsung post-DHCP port-9999 evidence (2026-09-02)
+
+A later bounded journal review sharpened the earlier receiver-abort diagnosis.
+The Samsung completed GO negotiation, PBC WPS, association, WPA key negotiation,
+P2P group creation, and DHCP; the laptop received a client address from the
+television. Immediately afterward the television sent one inbound TCP SYN to
+the laptop's port 9999. The active default-deny UFW policy logged that packet as
+blocked, and the television disassociated roughly 0.7 seconds later with reason
+2 (`PREV_AUTH_NOT_VALID`). The two preceding Samsung Direct attempts contain the
+same port-9999 block. The successful Fire TV regression contains no equivalent
+packet and proceeded through RTSP and media normally.
+
+This evidence disproves the earlier working description that the Samsung never
+completed its selected-peer group, but it does not yet prove that accepting the
+port-9999 connection will make the receiver continue. Omacast advertises the
+standard source RTSP port 7236, has no listener on 9999, and deliberately opens
+only 7236 on the session P2P interface. A controlled next experiment must use a
+bounded temporary listener and a peer/interface-scoped firewall exception to
+identify whether the television sends a setup protocol, waits for a server
+message, or merely performs an unrelated probe. Port 9999 must not be added to
+production policy without that evidence and a corresponding authenticated,
+bounded protocol implementation.
