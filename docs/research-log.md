@@ -3172,3 +3172,11 @@ service set, and P2P interface were absent afterward, infrastructure Wi-Fi was
 connected, and ordinary Recover returned idle without reclaiming an interface.
 This accepts the fail-fast classification and cleanup change, not Samsung
 streaming compatibility.
+
+The same installed `0995e97` controller then completed the supported-receiver
+regression against the Fire TV. It reached streaming, stabilized at roughly
+60 fps and a 1.003 realtime ratio, and retained zero FFmpeg drops or duplicates
+through the monitored window. The user accepted picture and sound. Cooperative
+Stop returned idle, removed the user service, root services, and P2P child, and
+left infrastructure Wi-Fi connected. The pre-RTSP loss detection therefore did
+not regress the established Fire TV path in this run.
