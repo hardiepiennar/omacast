@@ -581,9 +581,20 @@
       Runtime acceptance used commit `df664f5`; the subsequent acceptance and
       release-metadata commits change documentation only and passed
       proportionate exact-HEAD offline validation before release.
-- [ ] Exercise forced recovery and complete the canonical three consecutive
-      30-minute acceptance sessions. Revision 60's short run and pre-broker
-      20.5-minute soak do not satisfy these gates.
+- [x] Exact installed revision 84 completed Direct-path forced owner-loss
+      recovery. After SIGKILL of the owned user-service cgroup, the independent
+      guard, recovery, and broker units exited within the 60-second lease plus
+      status bound, removed protected runtime and P2P state, preserved connected
+      infrastructure Wi-Fi, and allowed ordinary Recover to return idle.
+- [ ] Complete the canonical three consecutive 30-minute acceptance sessions.
+      Revision 84 completed three short supported-receiver sessions, including
+      controller Stop, panel-keyboard Stop, and forced owner loss, but these do
+      not satisfy the duration gate.
+- [ ] Complete receiver-backed PIN acceptance and a successful NetworkManager
+      compatibility stream with normal Stop and forced recovery. The available
+      Samsung source/primary-sink displayed no PIN and joined neither Direct
+      nor compatibility mode; both failures cleaned up without disrupting
+      infrastructure Wi-Fi.
 - [x] GitHub private vulnerability reporting is enabled for the public
       repository, and `SECURITY.md` links directly to the private report form.
 

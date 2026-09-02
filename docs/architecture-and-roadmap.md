@@ -1371,6 +1371,19 @@ explicit. Offline controller, QML, service, guard, broker, output-bound,
 identity-change, partial-mutation, normal-cleanup, and forced-recovery coverage
 passes. Revision 84 additionally closes the exact private Stop schema and
 bounds the root helpers' fallback supplicant cleanup command. The affected
-adapter, infrastructure-Wi-Fi coexistence, normal Stop,
-forced lease recovery, and a second receiver remain hardware acceptance gates
-for the next user-attended test; none are claimed as passed.
+adapter and a second receiver have now been exercised without a successful
+compatibility-mode stream: NetworkManager created the session-owned volatile
+activation while infrastructure Wi-Fi stayed connected, but the receiver did
+not join before the bounded activation deadline. Recovery removed the owned
+activation and P2P child and returned the controller to idle. Compatibility-
+mode streaming, normal Stop, and forced lease recovery therefore remain open.
+
+The unchanged Direct path completed repeated supported-receiver sessions on
+the exact installed revision-84 candidate. Controller Stop and panel-keyboard
+Stop both restored the normal radio topology. A third healthy session was
+terminated by killing the complete transient user-service cgroup; the
+independent guard, recovery, and broker services then exited within the
+documented lease plus status bound, removed the protected session runtime, and
+left NetworkManager and infrastructure Wi-Fi healthy. The receiver never asks
+this host to approve repeat connections, so prompt suppression and invitation-
+based persistent-group reuse are still not proven by that hardware.

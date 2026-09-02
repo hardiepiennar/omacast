@@ -3106,3 +3106,38 @@ most 64 KiB, reject excess WFD values, and use a five-second deadline for both
 the read and clear calls. Companion revision 84 carries the compatible helper
 hardening; guard API 17 and engine API 3 are unchanged. Installed and receiver
 acceptance remain deferred to the user-attended candidate test.
+
+### Installed revision-84 receiver acceptance (2026-09-02)
+
+The exact installed plugin commit `94fd02e` and companion revision 84 reported
+engine API 3, guard API 17, complete host readiness, and a successful local
+60-frame VAAPI media probe. Three Direct sessions then reached the supported
+Fire TV at 1280x720p60. The user accepted picture and sound on the first run;
+steady samples reached 60.0 fps near realtime with zero FFmpeg drops or
+duplicates and no radio failures. Controller Stop on the first run and panel
+keyboard Stop on the repeated run both returned idle, removed the media and
+root service trees and P2P group, and restored connected infrastructure Wi-Fi.
+The receiver never asks this host for approval on either initial or repeat
+connections, so these runs establish no regression from `persistent=true` but
+cannot prove prompt suppression, invitation reuse, or reboot persistence.
+
+The third Direct run was healthy before the complete transient user-service
+cgroup received SIGKILL. The controller immediately reported owner loss. At
+36 seconds the P2P child was absent and infrastructure Wi-Fi was connected; at
+75 seconds the independent guard, recovery, and broker units were inactive.
+The protected session runtime was absent five seconds later, NetworkManager
+was active, and ordinary Recover returned the panel to idle without reclaiming
+another interface. This passes exact-candidate forced owner-loss recovery.
+
+A separately advertised Samsung source/primary-sink was also exercised. Its
+Direct attempt formed a local P2P child but never completed the selected-peer
+group or produced a receiver prompt; the guard subsequently reported cleaned
+and Recover returned idle. Explicit NetworkManager compatibility mode created
+the session-labelled volatile Wi-Fi-P2P activation while infrastructure Wi-Fi
+remained connected, but the receiver did not join before the 45-second
+activation deadline. Recovery reclaimed the remaining P2P child, removed the
+volatile activation, and preserved the infrastructure connection. Because the
+receiver displayed no PIN, live PIN, wrong-PIN, and cancellation acceptance
+remain open. Compatibility-mode streaming, Stop, and forced recovery also
+remain open; this failed receiver attempt must not be reported as a successful
+compatibility test.
