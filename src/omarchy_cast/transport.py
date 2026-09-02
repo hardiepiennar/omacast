@@ -35,6 +35,31 @@ _AUDIO_SOURCE = re.compile(r"^[^\x00-\x1f\x7f]{1,240}$")
 _FRAME_COUNT = re.compile(r"^[0-9]{1,20}$")
 
 
+@dataclass
+class _P2PGroupLiveness:
+    """Recognize a proved, sustained loss after this session's group appears."""
+
+    seen: bool = False
+    missing_since: float | None = None
+
+    def observe(self, present: bool | None, now: float) -> bool:
+        if present is True:
+            self.seen = True
+            self.missing_since = None
+            return False
+        if present is None:
+            # A bounded observation that cannot establish presence or absence
+            # must break the consecutive-absence window.
+            self.missing_since = None
+            return False
+        if not self.seen:
+            return False
+        if self.missing_since is None:
+            self.missing_since = now
+            return False
+        return now - self.missing_since >= RECEIVER_DISCONNECT_GRACE_SECONDS
+
+
 class TransportError(RuntimeError):
     def __init__(self, message: str, *, code: str = "transport-failed") -> None:
         super().__init__(message)
@@ -677,7 +702,7 @@ class GuardedTransportAdapter:
             deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else float("inf")
             connect_deadline = time.monotonic() + CONNECT_TIMEOUT_SECONDS
             rtsp_ready_at: float | None = None
-            p2p_missing_at: float | None = None
+            p2p_liveness = _P2PGroupLiveness()
             streaming = False
             while engine.poll() is None and time.monotonic() < deadline:
                 if cancelled():
@@ -690,14 +715,15 @@ class GuardedTransportAdapter:
                     engine_output_collector.note_startup("first-frame", now - startup_started_at)
                     stage("streaming")
                     streaming = True
-                if streaming:
-                    group_present = self._p2p_group_present(self.request.interface)
-                    if group_present is True:
-                        p2p_missing_at = None
-                    elif group_present is False and p2p_missing_at is None:
-                        p2p_missing_at = now
-                    elif group_present is False and now - p2p_missing_at >= RECEIVER_DISCONNECT_GRACE_SECONDS:
+                if p2p_liveness.observe(self._p2p_group_present(self.request.interface), now):
+                    if streaming:
                         return TransportResult("completed", "receiver disconnected", True)
+                    return TransportResult(
+                        "failed",
+                        "The receiver ended the Wi-Fi Direct connection before Miracast negotiation completed.",
+                        True,
+                        "p2p-negotiation-failed",
+                    )
                 if rtsp_ready_at is None and now >= connect_deadline:
                     return TransportResult(
                         "failed",

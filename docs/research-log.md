@@ -3141,3 +3141,23 @@ receiver displayed no PIN, live PIN, wrong-PIN, and cancellation acceptance
 remain open. Compatibility-mode streaming, Stop, and forced recovery also
 remain open; this failed receiver attempt must not be reported as a successful
 compatibility test.
+
+### Pre-RTSP receiver-disconnect diagnosis (2026-09-02)
+
+Two follow-up Direct attempts used the Samsung Smart View instructions screen
+after a television power cycle. Discovery now advertised the television as a
+primary sink rather than the earlier source/primary-sink observation. In both
+attempts the instructions screen disappeared immediately, a session P2P child
+appeared for several seconds, then the child vanished without an established
+RTSP connection or media frames. Local traffic stopped at the same boundary,
+and cleanup restored infrastructure Wi-Fi. The controller nevertheless stayed
+in `connecting` until its generic 75-second negotiation deadline because its
+P2P-group liveness check was armed only after streaming began.
+
+The controller now observes that same bounded group signal during negotiation.
+Initial absence cannot fail a session; only a group that was first observed and
+then proved absent continuously for the existing three-second grace returns
+`p2p-negotiation-failed`. An unknown observation caused by the sysfs entry cap
+breaks the absence window. This makes the observed receiver abort prompt and
+accurate without claiming a cause the current diagnostics cannot prove. The
+Samsung still has no successful RTSP/media acceptance result.

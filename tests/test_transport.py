@@ -14,7 +14,7 @@ import tempfile
 from unittest.mock import Mock, patch
 
 from omarchy_cast.telemetry import MAX_PROCESS_DESCRIPTORS, MAX_SYSFS_INTERFACE_ENTRIES
-from omarchy_cast.transport import CAPTURE_START_TIMEOUT_SECONDS, CONNECT_TIMEOUT_SECONDS, GUARD_LEASE_SECONDS, MAX_GUARD_DIAGNOSTIC_BYTES, RECEIVER_DISCONNECT_GRACE_SECONDS, SUPPLICANT_GROUP_TIMEOUT_SECONDS, DisabledTransportAdapter, FakeTransportAdapter, GuardedTransportAdapter, SessionLease, TransportDisabled, TransportError, _BoundedPipeDrain, validate_transport_plan
+from omarchy_cast.transport import CAPTURE_START_TIMEOUT_SECONDS, CONNECT_TIMEOUT_SECONDS, GUARD_LEASE_SECONDS, MAX_GUARD_DIAGNOSTIC_BYTES, RECEIVER_DISCONNECT_GRACE_SECONDS, SUPPLICANT_GROUP_TIMEOUT_SECONDS, DisabledTransportAdapter, FakeTransportAdapter, GuardedTransportAdapter, SessionLease, TransportDisabled, TransportError, _BoundedPipeDrain, _P2PGroupLiveness, validate_transport_plan
 
 
 class StatusDrainFixture:
@@ -216,6 +216,33 @@ class TransportTest(unittest.TestCase):
                 actual,
             ]
             self.assertIsNone(GuardedTransportAdapter._p2p_group_present("wlan42", ordered_root))
+
+    def test_receiver_loss_is_armed_only_after_the_p2p_group_appears(self) -> None:
+        liveness = _P2PGroupLiveness()
+        self.assertFalse(liveness.observe(False, 0))
+        self.assertFalse(liveness.observe(False, 100))
+        self.assertFalse(liveness.observe(True, 101))
+        self.assertFalse(liveness.observe(False, 102))
+        self.assertFalse(liveness.observe(False, 104.9))
+        self.assertTrue(liveness.observe(False, 105))
+
+    def test_unknown_p2p_observation_breaks_the_absence_window(self) -> None:
+        liveness = _P2PGroupLiveness()
+        self.assertFalse(liveness.observe(True, 0))
+        self.assertFalse(liveness.observe(False, 1))
+        self.assertFalse(liveness.observe(None, 10))
+        self.assertFalse(liveness.observe(False, 11))
+        self.assertFalse(liveness.observe(False, 13.9))
+        self.assertTrue(liveness.observe(False, 14))
+
+    def test_p2p_group_return_clears_a_pending_disconnect(self) -> None:
+        liveness = _P2PGroupLiveness()
+        self.assertFalse(liveness.observe(True, 0))
+        self.assertFalse(liveness.observe(False, 1))
+        self.assertFalse(liveness.observe(True, 10))
+        self.assertFalse(liveness.observe(False, 11))
+        self.assertFalse(liveness.observe(False, 13.9))
+        self.assertTrue(liveness.observe(False, 14))
 
     def test_streaming_requires_a_completed_video_progress_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
