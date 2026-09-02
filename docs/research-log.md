@@ -3161,3 +3161,14 @@ then proved absent continuously for the existing three-second grace returns
 breaks the absence window. This makes the observed receiver abort prompt and
 accurate without claiming a cause the current diagnostics cannot prove. The
 Samsung still has no successful RTSP/media acceptance result.
+
+The exact installed `0995e97` controller then reproduced the Samsung Direct
+attempt. Discovery reported a primary sink at strong signal, the session P2P
+child formed, and no RTSP connection or media frame followed. The child
+disappeared about 18 seconds after launch; the controller returned the new
+`p2p-negotiation-failed` result at 24 seconds, including cleanup time, rather
+than the former roughly 77-second generic timeout. The user service, root
+service set, and P2P interface were absent afterward, infrastructure Wi-Fi was
+connected, and ordinary Recover returned idle without reclaiming an interface.
+This accepts the fail-fast classification and cleanup change, not Samsung
+streaming compatibility.
