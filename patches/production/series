@@ -51,4 +51,3 @@
 0057-Accept-identical-Samsung-Content-Length-pair.patch
 0058-Match-reference-WFD-SETUP-response-framing.patch
 0059-Identify-WFD-transport-endpoints-explicitly.patch
-0060-Buffer-GSR-handoff-bursts.patch

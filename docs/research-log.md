@@ -3325,3 +3325,21 @@ this is less than one second of bounded elasticity. The isolated engine suite
 passes 132 tests, including the exact pipe-size assertion. Companion revision
 89 carries the candidate without changing engine API 3; clean construction,
 installation, and receiver A/B acceptance remain pending.
+
+The exact revision-89 artifact subsequently passed clean construction, its
+132-test engine suite, the repository's 305 tests, shell lint, plugin
+validation, artifact audit, and disposable installation/removal. The installed
+Samsung run rejected the candidate. The live pipe was verified at exactly
+1,048,576 bytes; during a 45-second sample it reached 680,451 bytes and remained
+above 256 KiB for about 3.25 seconds. GSR held 60--61 updates per second with no
+PipeWire overruns, but FFmpeg's realtime ratio collapsed to 0.64--0.73 before
+surging to 1.12--1.20 as the buffered backlog drained. This was a materially
+larger delay/catch-up oscillation than the revision-88 baseline.
+
+Patch 60 is therefore rejected and excluded from the production series.
+Increasing the buffer moved the discontinuity downstream instead of smoothing
+it: the small pipe exposes paced-output backpressure as a capture stall, while
+the large pipe accumulates several hundred kilobytes of timing debt and later
+delivers it in a catch-up burst. Production returns to companion revision 88.
+The next cadence candidate must regulate the burst at its source or at the
+receiver-facing clock; it must not merely increase queued latency.

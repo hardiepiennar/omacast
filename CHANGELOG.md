@@ -2,10 +2,6 @@
 
 ## Unreleased
 
-- Give the GPU Screen Recorder-to-FFmpeg handoff a fixed 1 MiB pipe so short
-  Matroska/AAC bursts do not stall capture behind the paced RTP mux. Companion
-  revision 89 carries the bounded cadence candidate without changing engine
-  API 3.
 - Include the verified sink and local source addresses in the SETUP transport
   selection for receivers that require explicit unicast endpoints. Companion
   revision 88 carries the compatibility change without changing engine API 3.
