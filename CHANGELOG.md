@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Match Android's reference Wi-Fi Display SETUP response framing for older
+  receivers: include the RTSP `Date` header and omit `Content-Length` for the
+  empty response body. Companion revision 87 carries the compatibility change
+  without changing engine API 3.
 - Accept Samsung RTSP responses that repeat exactly two identical
   `Content-Length` headers while continuing to reject conflicting, excessive,
   malformed, oversized, and truncated framing. Companion revision 86 carries

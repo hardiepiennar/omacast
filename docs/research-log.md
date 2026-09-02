@@ -3254,3 +3254,15 @@ continuing to reject conflicting values, three or more occurrences, invalid
 decimals, oversized bodies, and truncated bodies. The isolated engine suite
 passes 129 tests. Companion revision 86 carries this candidate without changing
 engine API 3; installed receiver acceptance remains pending.
+
+The installed revision-86 follow-up accepted the duplicate M3 framing and
+advanced through M4, the SETUP trigger, the television's SETUP request, and the
+source's successful SETUP response. The television then sent no PLAY request;
+the source closed only when its bounded 10-second negotiation read expired.
+The reply differed from Android's reference Wi-Fi Display source in two wire
+details: it lacked `Date` and added `Content-Length: 0` to an empty response.
+Production patch 58 confines the next experiment to that response, matching
+the reference header set and empty-body framing without changing who initiates
+PLAY or relaxing any parser limit. The isolated engine suite passes 131 tests.
+Companion revision 87 carries the candidate without changing engine API 3;
+installed Samsung and Fire TV acceptance remain pending.

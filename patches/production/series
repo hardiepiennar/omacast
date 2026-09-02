@@ -49,3 +49,4 @@
 0055-Pass-receiver-PIN-through-guarded-descriptor.patch
 0056-Begin-selected-peer-RTSP-lookup-immediately.patch
 0057-Accept-identical-Samsung-Content-Length-pair.patch
+0058-Match-reference-WFD-SETUP-response-framing.patch

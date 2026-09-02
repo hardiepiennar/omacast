@@ -1,0 +1,126 @@
+From f9dc58807eb970780e71834f2101f2d01266d126 Mon Sep 17 00:00:00 2001
+From: Omacast maintainers <packaging@localhost>
+Date: Wed, 2 Sep 2026 21:17:55 +1200
+Subject: [PATCH] Match reference WFD SETUP response framing
+
+---
+ src/wfd/rtsp/handler.py       | 32 +++++++++++++++++++++++++-------
+ tests/test_wfd_rtsp_limits.py | 32 +++++++++++++++++++++++++++++++-
+ 2 files changed, 56 insertions(+), 8 deletions(-)
+
+diff --git a/src/wfd/rtsp/handler.py b/src/wfd/rtsp/handler.py
+index 9b9c6ad..a6a7855 100644
+--- a/src/wfd/rtsp/handler.py
++++ b/src/wfd/rtsp/handler.py
+@@ -3,6 +3,8 @@ import socketserver
+ import threading
+ import time
+ from dataclasses import replace
++from datetime import datetime, timezone
++from email.utils import format_datetime
+ from typing import Optional
+ 
+ from ..config import WFDCEAMode, WFDMediaConfig, WFDNotReady, WFDVideoFormat
+@@ -25,6 +27,11 @@ from .message import (
+ RTSP_MESSAGE_TIMEOUT = 10.0
+ 
+ 
++def _rtsp_date(timestamp: Optional[float] = None) -> str:
++    instant = time.time() if timestamp is None else timestamp
++    return format_datetime(datetime.fromtimestamp(instant, timezone.utc))
++
++
+ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+     def handle(self) -> None:
+         client_ip = self.client_address[0]
+@@ -215,6 +222,23 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+         self._send_bytes("\r\n".join(output))
+         print(f"[FluxCast WFD RTSP] -> response {status} for {msg.method or msg.status}")
+ 
++    def _send_setup_response(self, msg: RTSPMessage, transport: str) -> None:
++        # Match Android's reference Wi-Fi Display source response here. Some
++        # older sinks are strict about this SETUP framing: the reference sends
++        # Date and no Content-Length header for an empty response body.
++        output = [
++            "RTSP/1.0 200 OK",
++            f"Date: {_rtsp_date()}",
++            "Server: FluxCast-WFD/0.1",
++            f"CSeq: {msg.cseq}",
++            f"Session: {self.session_id};timeout=30",
++            f"Transport: {transport}",
++            "",
++            "",
++        ]
++        self._send_bytes("\r\n".join(output))
++        print("[FluxCast WFD RTSP] -> response 200 OK for SETUP")
++
+     def _send_m1_options(self) -> None:
+         self._send_request(
+             "M1_OPTIONS",
+@@ -388,13 +412,7 @@ class _WFDRTSPHandler(socketserver.StreamRequestHandler):
+                     f"client_port={self.sink_rtp_port};"
+                     f"server_port={source_port}"
+                 )
+-            self._send_response(
+-                msg,
+-                headers={
+-                    "Transport": transport,
+-                    "Session": f"{self.session_id};timeout=30",
+-                },
+-            )
++            self._send_setup_response(msg, transport)
+             print(f"[FluxCast WFD RTSP] SETUP complete; RTP sink port={self.sink_rtp_port}")
+             return
+ 
+diff --git a/tests/test_wfd_rtsp_limits.py b/tests/test_wfd_rtsp_limits.py
+index e412a73..d4c12e5 100644
+--- a/tests/test_wfd_rtsp_limits.py
++++ b/tests/test_wfd_rtsp_limits.py
+@@ -4,7 +4,7 @@ import socketserver
+ import unittest
+ from unittest import mock
+ 
+-from wfd.rtsp.handler import _WFDRTSPHandler
++from wfd.rtsp.handler import _WFDRTSPHandler, _rtsp_date
+ from wfd.rtsp.message import (
+     RTSP_MAX_BODY_BYTES,
+     RTSP_MAX_HEADER_BYTES,
+@@ -121,6 +121,36 @@ class RTSPPortLimitTest(unittest.TestCase):
+                 )
+ 
+ 
++class RTSPSetupResponseTest(unittest.TestCase):
++    def test_setup_response_matches_reference_empty_body_framing(self):
++        handler = _WFDRTSPHandler.__new__(_WFDRTSPHandler)
++        handler.session_id = "2021802"
++        handler._send_bytes = mock.Mock()
++        request = mock.Mock(cseq="2")
++        transport = (
++            "RTP/AVP/UDP;unicast;client_port=19000-19001;"
++            "server_port=19002-19003"
++        )
++
++        with mock.patch("wfd.rtsp.handler.time.time", return_value=0):
++            handler._send_setup_response(request, transport)
++
++        response = handler._send_bytes.call_args.args[0]
++        self.assertEqual(
++            response,
++            "RTSP/1.0 200 OK\r\n"
++            "Date: Thu, 01 Jan 1970 00:00:00 +0000\r\n"
++            "Server: FluxCast-WFD/0.1\r\n"
++            "CSeq: 2\r\n"
++            "Session: 2021802;timeout=30\r\n"
++            f"Transport: {transport}\r\n\r\n",
++        )
++        self.assertNotIn("Content-Length", response)
++
++    def test_rtsp_date_is_always_utc(self):
++        self.assertEqual(_rtsp_date(0), "Thu, 01 Jan 1970 00:00:00 +0000")
++
++
+ class RTSPDeadlineTest(unittest.TestCase):
+     def setUp(self):
+         self.reader_sock, self.writer_sock = socket.socketpair()
+-- 
+2.55.0
