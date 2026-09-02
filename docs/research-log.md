@@ -3280,4 +3280,26 @@ verified receiver address and `source` from the accepted socket's local address
 while retaining the requested UDP transport, negotiated client ports, selected
 server ports, sink-initiated PLAY, and every existing input bound. The isolated
 engine suite passes 132 tests. Companion revision 88 carries this next candidate
-without changing engine API 3; installed receiver acceptance remains pending.
+without changing engine API 3.
+
+The first installed revision-88 Samsung attempt reached SETUP and the television
+acknowledged the longer response, but it again withheld PLAY until the source's
+10-second negotiation deadline closed the connection. This disproved the idea
+that explicit `source` and `destination` transport parameters alone guarantee
+compatibility. A later attempt initially failed before RTSP when the television
+rejected push-button Wi-Fi Direct provisioning with status 10. After ordinary
+owned-session recovery, an immediate retry on the same installed revision
+completed negotiation and streamed successfully. The television sent PLAY,
+the source negotiated 1280x720p60, and the maintainer confirmed that picture
+and sound looked correct. Live telemetry reported approximately 60 fps with no
+FFmpeg drops or duplicates during the observed interval.
+
+A bounded packet observer on that successful session captured recurring RTCP
+receiver reports from the television's UDP port 19001 to the source's selected
+port 19003. This disproves the proposed explanation that Samsung always withholds
+PLAY because FluxCast has not bound its media ports before answering SETUP: in
+the successful exchange the existing PLAY-then-media sequence worked. The
+mixed revision-88 results instead establish a real but intermittent connection
+problem; they do not isolate whether transport parameters made the successful
+attempt possible. Fire TV regression and repeated Samsung acceptance remain
+outstanding before treating patch 59 as a release candidate.
