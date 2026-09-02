@@ -1,0 +1,65 @@
+From 86a8b6ba07e588e21e3366061ca54e823314a3ef Mon Sep 17 00:00:00 2001
+From: Omacast Maintainers <4540086+hardiepienaar@users.noreply.github.com>
+Date: Wed, 2 Sep 2026 21:07:42 +1200
+Subject: [PATCH] Accept identical Samsung Content-Length pair
+
+---
+ src/wfd/rtsp/message.py       |  9 +++++++--
+ tests/test_wfd_rtsp_limits.py | 21 ++++++++++++++++-----
+ 2 files changed, 23 insertions(+), 7 deletions(-)
+
+diff --git a/src/wfd/rtsp/message.py b/src/wfd/rtsp/message.py
+index f8c2fd2..db00b7e 100644
+--- a/src/wfd/rtsp/message.py
++++ b/src/wfd/rtsp/message.py
+@@ -82,8 +82,13 @@ def _read_rtsp_message(rfile) -> Optional[RTSPMessage]:
+             headers[normalized_key] = normalized_value
+ 
+     content_length = 0
+-    if len(content_length_values) > 1:
+-        raise RTSPMessageError("RTSP message has duplicate Content-Length headers")
++    if len(content_length_values) > 2:
++        raise RTSPMessageError("RTSP message has too many Content-Length headers")
++    if (
++        len(content_length_values) == 2
++        and content_length_values[0] != content_length_values[1]
++    ):
++        raise RTSPMessageError("RTSP message has conflicting Content-Length headers")
+     if content_length_values:
+         value = content_length_values[0]
+         if not value or not value.isascii() or not value.isdecimal():
+diff --git a/tests/test_wfd_rtsp_limits.py b/tests/test_wfd_rtsp_limits.py
+index 043ead1..e412a73 100644
+--- a/tests/test_wfd_rtsp_limits.py
++++ b/tests/test_wfd_rtsp_limits.py
+@@ -63,11 +63,22 @@ class RTSPMessageLimitTest(unittest.TestCase):
+             with self.subTest(value=value), self.assertRaises(RTSPMessageError):
+                 _read_rtsp_message(message((b"Content-Length: " + value,)))
+ 
+-    def test_duplicate_content_length_is_rejected(self):
+-        with self.assertRaisesRegex(RTSPMessageError, "duplicate"):
+-            _read_rtsp_message(
+-                message((b"Content-Length: 0", b"Content-Length: 0"))
+-            )
++    def test_two_identical_content_lengths_are_accepted(self):
++        parsed = _read_rtsp_message(
++            message((b"Content-Length: 4", b"Content-Length: 4"), b"test")
++        )
++        self.assertEqual(parsed.body, "test")
++
++    def test_conflicting_or_excess_content_lengths_are_rejected(self):
++        cases = (
++            (b"Content-Length: 0", b"Content-Length: 1"),
++            (b"Content-Length: 0",) * 3,
++        )
++        for headers in cases:
++            with self.subTest(headers=headers), self.assertRaisesRegex(
++                RTSPMessageError, "conflicting|too many"
++            ):
++                _read_rtsp_message(message(headers))
+ 
+     def test_truncated_body_is_rejected(self):
+         with self.assertRaisesRegex(RTSPMessageError, "body ended"):
+-- 
+2.55.0
+

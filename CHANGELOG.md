@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Accept Samsung RTSP responses that repeat exactly two identical
+  `Content-Length` headers while continuing to reject conflicting, excessive,
+  malformed, oversized, and truncated framing. Companion revision 86 carries
+  the parser compatibility fix without changing engine API 3.
 - Start the bounded, selected-receiver RTSP lookup as soon as the Wi-Fi Direct
   group is ready instead of waiting four seconds. Confirmed passive receiver
   connections still retain priority. Companion revision 85 carries the timing

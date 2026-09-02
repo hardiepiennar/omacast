@@ -3236,3 +3236,21 @@ pinned upstream commit applied all 50 patches and passed all 128 engine tests
 without background-thread exceptions. Companion revision 85 carries the
 candidate without changing engine API 3. Installed Samsung and Fire TV
 acceptance remains pending and must not be inferred from the offline result.
+
+The installed revision-85 Samsung follow-up established the first complete
+RTSP trace. After DHCP, the active probe attempted the selected receiver's
+advertised port 7236 and the television immediately opened a passive connection
+to the source's advertised port 7236. M1 and M2 completed. The television then
+returned a successful M3 capability response with two byte-for-byte identical
+`Content-Length: 242` headers. The hardened parser rejected that otherwise
+unambiguous framing before sending M4, and the connection closed. The same M3
+advertised HDCP 2.1 on port 9999; whether that protection is mandatory remains
+unknown until M3 parsing succeeds. A simultaneous bounded port-9999 experiment
+showed the television abandoned its inbound TCP handshake after the source's
+SYN-ACK, so that inbound probe is not evidence for a required listener.
+
+Production patch 57 accepts exactly two identical Content-Length values while
+continuing to reject conflicting values, three or more occurrences, invalid
+decimals, oversized bodies, and truncated bodies. The isolated engine suite
+passes 129 tests. Companion revision 86 carries this candidate without changing
+engine API 3; installed receiver acceptance remains pending.
