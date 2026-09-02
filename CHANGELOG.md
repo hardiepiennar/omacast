@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Include the verified sink and local source addresses in the SETUP transport
+  selection for receivers that require explicit unicast endpoints. Companion
+  revision 88 carries the compatibility change without changing engine API 3.
 - Match Android's reference Wi-Fi Display SETUP response framing for older
   receivers: include the RTSP `Date` header and omit `Content-Length` for the
   empty response body. Companion revision 87 carries the compatibility change

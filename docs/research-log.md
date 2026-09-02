@@ -3266,3 +3266,18 @@ the reference header set and empty-body framing without changing who initiates
 PLAY or relaxing any parser limit. The isolated engine suite passes 131 tests.
 Companion revision 87 carries the candidate without changing engine API 3;
 installed Samsung and Fire TV acceptance remain pending.
+
+A bounded revision-87 packet observer then captured the complete Samsung
+exchange. The television acknowledged the reference-framed SETUP response but
+sent no PLAY request. Ten seconds later the source's bounded negotiation read
+expired and its FIN advanced the acknowledgement number; the television closed
+afterward. Revision 87 therefore disproves empty-body framing as the remaining
+Samsung blocker, although that standards-aligned framing remains in place.
+
+Samsung's published RTSP transport example identifies both unicast endpoints
+in the SETUP response. Production patch 59 adds `destination` from the already
+verified receiver address and `source` from the accepted socket's local address
+while retaining the requested UDP transport, negotiated client ports, selected
+server ports, sink-initiated PLAY, and every existing input bound. The isolated
+engine suite passes 132 tests. Companion revision 88 carries this next candidate
+without changing engine API 3; installed receiver acceptance remains pending.
