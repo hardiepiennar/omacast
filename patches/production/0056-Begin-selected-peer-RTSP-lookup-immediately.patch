@@ -1,0 +1,114 @@
+From ad66e1e1beef547dfc27caf983ad7f4287ee7a30 Mon Sep 17 00:00:00 2001
+From: Omacast Maintainers <4540086+hardiepienaar@users.noreply.github.com>
+Date: Wed, 2 Sep 2026 20:44:01 +1200
+Subject: [PATCH] Begin selected-peer RTSP lookup immediately
+
+---
+ src/wfd/probe.py                       | 12 ++++-------
+ tests/test_wfd_active_probe_claim.py   | 29 ++++++++++++++++++++++----
+ tests/test_wfd_cooperative_shutdown.py |  4 ++--
+ 3 files changed, 31 insertions(+), 14 deletions(-)
+
+diff --git a/src/wfd/probe.py b/src/wfd/probe.py
+index 6db38b7..1ce3fac 100644
+--- a/src/wfd/probe.py
++++ b/src/wfd/probe.py
+@@ -1,7 +1,6 @@
+ import random
+ import socket
+ import threading
+-import time
+ from dataclasses import replace
+ from typing import Optional
+ 
+@@ -115,13 +114,10 @@ def _active_rtsp_probe(
+     media_config: WFDMediaConfig,
+     control: Optional[ActiveRTSPProbe] = None,
+ ) -> None:
+-    # 4s: give passive-RTSP TVs a window to connect first, without burning too
+-    # much of the cca 15 s timeout that some TVs enforce after P2P activation.
+-    if control is not None:
+-        if control.wait(4.0):
+-            return
+-    else:
+-        time.sleep(4.0)
++    # The passive listener is already running and retains confirmed ownership.
++    # Begin bounded, selected-peer address lookup immediately: some receivers
++    # leave less than a second between DHCP completion and ending a session
++    # that has not initiated RTSP.
+     if rtsp_server.has_connected_client:
+         return
+ 
+diff --git a/tests/test_wfd_active_probe_claim.py b/tests/test_wfd_active_probe_claim.py
+index aa1204c..35d0e76 100644
+--- a/tests/test_wfd_active_probe_claim.py
++++ b/tests/test_wfd_active_probe_claim.py
+@@ -6,6 +6,29 @@ from wfd.probe import _active_rtsp_probe
+ 
+ 
+ class ActiveProbeClaimTest(unittest.TestCase):
++    def test_selected_peer_lookup_has_no_fixed_passive_wait(self):
++        server = SimpleNamespace(
++            has_connected_client=False,
++            interface="wlan0",
++        )
++        peer = SimpleNamespace(address="aa:bb:cc:dd:ee:ff")
++        control = mock.Mock()
++        control.cancelled.return_value = False
++
++        with mock.patch(
++            "wfd.probe._wait_for_peer_ip", return_value=None
++        ) as lookup:
++            _active_rtsp_probe(server, peer, SimpleNamespace(), control)
++
++        control.wait.assert_not_called()
++        lookup.assert_called_once_with(
++            peer.address,
++            timeout=8.0,
++            interface="wlan0",
++            allow_interface_fallback=False,
++            cancelled=control.cancelled,
++        )
++
+     def test_probe_atomically_supersedes_only_an_unconfirmed_passive_claim(self):
+         server = SimpleNamespace(
+             has_connected_client=False,
+@@ -16,7 +39,7 @@ class ActiveProbeClaimTest(unittest.TestCase):
+         peer = SimpleNamespace(address="aa:bb:cc:dd:ee:ff", rtsp_port=7236)
+         sock = mock.Mock()
+ 
+-        with mock.patch("wfd.probe.time.sleep"), mock.patch(
++        with mock.patch(
+             "wfd.probe._wait_for_peer_ip", return_value="192.168.49.1"
+         ), mock.patch("wfd.probe.socket.create_connection", return_value=sock):
+             _active_rtsp_probe(server, peer, SimpleNamespace())
+@@ -28,9 +51,7 @@ class ActiveProbeClaimTest(unittest.TestCase):
+ 
+     def test_confirmed_passive_client_cancels_probe_before_address_lookup(self):
+         server = SimpleNamespace(has_connected_client=True)
+-        with mock.patch("wfd.probe.time.sleep"), mock.patch(
+-            "wfd.probe._wait_for_peer_ip"
+-        ) as lookup:
++        with mock.patch("wfd.probe._wait_for_peer_ip") as lookup:
+             _active_rtsp_probe(server, SimpleNamespace(), SimpleNamespace())
+         lookup.assert_not_called()
+ 
+diff --git a/tests/test_wfd_cooperative_shutdown.py b/tests/test_wfd_cooperative_shutdown.py
+index bfb054c..c8ac01d 100644
+--- a/tests/test_wfd_cooperative_shutdown.py
++++ b/tests/test_wfd_cooperative_shutdown.py
+@@ -39,9 +39,9 @@ class WFDSignalTest(unittest.TestCase):
+ 
+ 
+ class ActiveProbeOwnershipTest(unittest.TestCase):
+-    def test_stop_cancels_and_joins_probe_during_initial_wait(self):
++    def test_stop_cancels_and_joins_probe_during_peer_lookup(self):
+         probe = ActiveRTSPProbe(
+-            SimpleNamespace(has_connected_client=False),
++            SimpleNamespace(has_connected_client=False, interface="wlan0"),
+             WFDPeer(address="00:11:22:33:44:55", name="TV"),
+             WFDMediaConfig(monitor=None),
+         )
+-- 
+2.55.0
+

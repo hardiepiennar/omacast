@@ -3226,3 +3226,13 @@ A next candidate should begin bounded selected-peer address lookup immediately
 while retaining the already-running passive RTSP listener and its atomic
 confirmed-client ownership rules. That timing change still requires isolated
 engine regressions and both Samsung and Fire TV acceptance.
+
+Production patch 56 implements that isolated candidate. It removes only the
+fixed four-second pre-lookup wait; the passive listener still starts first,
+confirmed passive ownership still wins before and after selected-peer lookup,
+and the lookup retains its eight-second deadline, cancellation callback, exact
+receiver MAC, and session-interface scope. A clean reconstruction from the
+pinned upstream commit applied all 50 patches and passed all 128 engine tests
+without background-thread exceptions. Companion revision 85 carries the
+candidate without changing engine API 3. Installed Samsung and Fire TV
+acceptance remains pending and must not be inferred from the offline result.

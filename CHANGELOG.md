@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Start the bounded, selected-receiver RTSP lookup as soon as the Wi-Fi Direct
+  group is ready instead of waiting four seconds. Confirmed passive receiver
+  connections still retain priority. Companion revision 85 carries the timing
+  fix without changing engine API 3.
 - Close the internal Stop request schema and bound the fallback privileged
   supplicant cleanup call by both output size and deadline. Companion revision
   84 carries the helper hardening without changing guard API 17.

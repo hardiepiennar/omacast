@@ -47,3 +47,4 @@
 0053-Expose-bounded-WFD-peer-metadata.patch
 0054-Stream-Wi-Fi-Direct-discovery-snapshots.patch
 0055-Pass-receiver-PIN-through-guarded-descriptor.patch
+0056-Begin-selected-peer-RTSP-lookup-immediately.patch
