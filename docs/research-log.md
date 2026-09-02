@@ -3203,3 +3203,26 @@ identify whether the television sends a setup protocol, waits for a server
 message, or merely performs an unrelated probe. Port 9999 must not be added to
 production policy without that evidence and a corresponding authenticated,
 bounded protocol implementation.
+
+The controlled follow-up did not reproduce the port-9999 packet. Before the
+cast, no process listened on that port and no matching UFW rule existed. The
+experiment armed an independent 90-second cleanup, added one IPv4 rule limited
+to the observed receiver address and selected adapter's P2P child pattern, and
+ran a listener which accepted only that address, retained at most 4 KiB, and
+had a 45-second wall-clock bound. The Samsung again completed group creation
+and DHCP, then disassociated with reason 2 about 0.56 seconds after receiving
+the lease. The listener accepted no connection and the journal contained
+neither a port-9999 packet nor a firewall block. The independent cleanup
+deleted the rule, the listener exited, ordinary recovery returned idle, and
+infrastructure Wi-Fi remained connected.
+
+Port 9999 is therefore a correlated but non-deterministic Samsung probe, not a
+demonstrated casting prerequisite. The more consistent timing defect is that
+the engine deliberately waits four seconds after brokered group discovery
+before beginning selected-peer address lookup for its outbound RTSP fallback.
+This television completed DHCP only about half a second before it disconnected;
+the fallback could not reach its authenticated connect attempt in that window.
+A next candidate should begin bounded selected-peer address lookup immediately
+while retaining the already-running passive RTSP listener and its atomic
+confirmed-client ownership rules. That timing change still requires isolated
+engine regressions and both Samsung and Fire TV acceptance.
