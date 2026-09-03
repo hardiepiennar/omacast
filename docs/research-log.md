@@ -3459,3 +3459,27 @@ client, system units, protected root session runtime, and current session state
 were absent afterward; infrastructure Wi-Fi was restored and its P2P device was
 disconnected. The encoder bound may remain an incremental candidate, but the
 slowdown/catch-up mechanism still requires separate isolation before release.
+
+Post-stop correlation of that exact session narrows the boundary without
+changing the conclusion. The low-cadence interval began at 09:39:56 UTC:
+GSR's output writes fell from roughly 500 per second to single digits, FFmpeg
+received only a few input reads per second, and output cadence fell to 30.67
+fps before recovering in a 114.47-fps catch-up burst. PipeWire emitted 85
+audio-monitor overrun recoveries from 09:39:57 through the catch-up interval;
+individual recoveries discarded 32--262 KiB. The GSR and FFmpeg processes were
+not CPU-starved at the collapse, and transport queues, radio retry/failure
+counters, and packet-loss counters remained bounded and clean. This proves
+that the shared audio/video stdout handoff was backpressured at the same time
+as the presentation defect. It does not prove that Pulse audio initiated that
+backpressure: GSR 6.0.0 has a fixed one-fragment Pulse input and no exposed
+audio-buffer control, while a blocked shared writer produces the same overrun.
+
+Correctable ath10k PCIe AER messages remain an independently concerning host
+condition but are not a causal explanation for this interval. The same error
+class occurred while the session held 60 fps, and the documented collapse began
+roughly 34 seconds after the closest preceding cluster. The next discriminating
+experiment is therefore a user-attended, otherwise-identical receiver A/B that
+captures no audio for diagnosis only. It must compare the same duration and
+telemetry windows, retain the existing encoder bound, and never be promoted as
+a product mode unless it proves a causal benefit and a synchronized audio
+solution is separately established.
