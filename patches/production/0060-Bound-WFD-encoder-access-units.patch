@@ -1,0 +1,52 @@
+From 262b47ba4c5652981dd5a5c9721c63e11d1c475b Mon Sep 17 00:00:00 2001
+From: Omacast maintainers <packaging@localhost>
+Date: Thu, 3 Sep 2026 21:28:34 +1200
+Subject: [PATCH] Bound WFD encoder access units
+
+
+diff --git a/src/wfd/media/wlroots.py b/src/wfd/media/wlroots.py
+index 9fc9097..38200f5 100644
+--- a/src/wfd/media/wlroots.py
++++ b/src/wfd/media/wlroots.py
+@@ -55,6 +55,11 @@ class WlrootsMixin:
+             profile = "constrained_baseline"
+         level = _h264_level_for_mode(self.config).replace(".", "")
+         keyint_seconds = max(1, round(gop / self.config.fps))
++        # Keep one-second IDR access units small enough to cross the live
++        # capture pipe promptly.  Pacing already packetized RTP delayed parts
++        # of a frame and caused the receiver to freeze; bound the encoder
++        # output instead and preserve immediate RTP delivery.
++        max_frame_size = 128 * 1024
+ 
+         # GPU Screen Recorder owns capture, scaling, H.264, AAC and their
+         # common clock. It emits silent AAC packets
+@@ -75,7 +80,8 @@ class WlrootsMixin:
+             "-q", str(effective_kbits),
+             "-tune", "performance",
+             "-keyint", str(keyint_seconds),
+-            "-ffmpeg-video-opts", f"profile={profile};level={level};aud=1",
++            "-ffmpeg-video-opts",
++            f"profile={profile};level={level};aud=1;max_frame_size={max_frame_size}",
+             "-ffmpeg-opts",
+             "cluster_time_limit=20;cluster_size_limit=16384;live=1;flush_packets=1",
+             "-c", "mkv",
+diff --git a/tests/test_wfd_media_vaapi.py b/tests/test_wfd_media_vaapi.py
+index 957bf1e..d591376 100644
+--- a/tests/test_wfd_media_vaapi.py
++++ b/tests/test_wfd_media_vaapi.py
+@@ -52,7 +52,11 @@ class WlrootsVAAPITest(unittest.TestCase):
+ 
+         capture, ffmpeg = commands
+         self.assertEqual(capture[0], "gpu-screen-recorder")
+-        self.assertIn("profile=constrained_baseline;level=31;aud=1", capture)
++        video_options = capture[capture.index("-ffmpeg-video-opts") + 1]
++        self.assertEqual(
++            video_options,
++            "profile=constrained_baseline;level=31;aud=1;max_frame_size=131072",
++        )
+         self.assertEqual(ffmpeg[ffmpeg.index("-c:v") + 1], "copy")
+         self.assertNotIn("-vf", ffmpeg)
+         self.assertNotIn("-vaapi_device", ffmpeg)
+-- 
+2.55.0
+
