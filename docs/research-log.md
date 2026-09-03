@@ -3389,3 +3389,26 @@ The installed companion and plugin were restored to revision 88 and
 `5df4a7d`, respectively. Future pacing work must preserve receiver-required
 access-unit delivery and presentation timing. A generic byte-rate token bucket
 is not compatible merely because it improves loopback cadence.
+
+The next offline probe moved the limit to the VAAPI encoder rather than delaying
+already packetized RTP. GPU Screen Recorder 6.0.0 forwards semicolon-separated
+`-ffmpeg-video-opts` to `h264_vaapi`, and the installed encoder exposes
+`max_frame_size`. With the otherwise unchanged 720p60 settings, a 131,072-byte
+limit reduced the largest observed encoded frame from 263,965 to 118,426 bytes
+while both runs retained 17 ms maximum video PTS spacing. In a paired exact
+GSR-to-FFmpeg loopback run, the same limit reduced the largest 20 ms RTP window
+from 240,368 to 164,672 bytes and reduced gaps above 40 ms from 56 to four,
+with no missing or reordered RTP sequence numbers.
+
+Tighter 98,304- and 65,536-byte limits were also accepted by the encoder and
+kept 17 ms PTS spacing, but redistributed more of the configured CBR budget
+into inter-frames. The 65,536-byte variant reduced its largest observed frame
+to 63,383 bytes and its largest measured RTP window to 143,424 bytes, yet its
+worst packet gap in a separate run was 56 ms. These short desktop captures had
+different motion and are not a quality comparison. They establish that
+encoder-side access-unit bounding is technically viable and improves some
+burst metrics; they do not establish the correct limit, subjective quality,
+Fire TV compatibility, or a production fix. Any candidate must first add a
+focused command-construction regression and high-motion offline comparison,
+then pass a fresh installed receiver A/B without reviving the rejected relay or
+changing RTP presentation timing.
