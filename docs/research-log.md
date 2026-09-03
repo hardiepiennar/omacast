@@ -3412,3 +3412,23 @@ Fire TV compatibility, or a production fix. Any candidate must first add a
 focused command-construction regression and high-motion offline comparison,
 then pass a fresh installed receiver A/B without reviving the rejected relay or
 changing RTP presentation timing.
+
+A deterministic `testsrc2` comparison then exercised the local VAAPI H.264
+encoder at 1280x720p60 and 7 Mbps. Its high-motion frames were already below
+the candidate ceiling: both variants peaked at 54,320 bytes, retained exactly
+600 frames with 17 ms maximum PTS spacing, and produced 7.20 versus 7.18 Mbps.
+Average decoded PSNR was 30.907 dB without the limit and 30.901 dB with it.
+Within this short synthetic case the limit therefore did not materially change
+motion quality or cadence; its measured effect remains confined to larger
+desktop access units.
+
+Production patch 60 adds only `max_frame_size=131072` to the existing GSR
+VAAPI option string and pins that exact command in the engine regression.
+Companion revision 90 distinguishes this candidate from both rejected
+revision-89 experiments. Exact commit `3a74b3c` reconstructed all 54 production
+patches and passed 132 engine tests, 305 controller/packaging tests, plugin
+validation, and shell lint. Its clean-clone artifact passed checksum, artifact
+audit, and disposable install/removal with SHA-256
+`eb15a8998d8f3a6b853a73ee0d071dcfe32be0cbc5bfd6d33b0642bb647c91b8`.
+The artifact is not installed and has no receiver evidence; revision 88 remains
+the live-host baseline until the maintainer authorizes a fresh installed A/B.
