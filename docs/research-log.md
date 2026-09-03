@@ -3432,3 +3432,30 @@ audit, and disposable install/removal with SHA-256
 `eb15a8998d8f3a6b853a73ee0d071dcfe32be0cbc5bfd6d33b0642bb647c91b8`.
 The artifact is not installed and has no receiver evidence; revision 88 remains
 the live-host baseline until the maintainer authorizes a fresh installed A/B.
+
+That installed receiver gate was subsequently run against the known Fire TV.
+The exact revision-90 package had 126 intact files, the installed plugin was at
+`0a150f3`, and readiness accepted engine API 3 and guard API 17. The normal
+Direct/Safe controller path negotiated 1280x720p60. The live GSR process was
+independently inspected through `/proc` and carried the intended
+`max_frame_size=131072` encoder option. Unlike the rejected RTP relay, playback
+continued beyond its two-second failure point and the maintainer reported that
+it looked okay.
+
+The first monitored window stabilized at approximately 59.5--60.7 fps and
+0.992--1.003 realtime ratio with zero FFmpeg drops or duplicates, zero radio
+retry/failure deltas, and only short bounded send queues. A later window still
+captured the unresolved pacing oscillation: measured cadence fell through 49,
+31, and 42 fps before catch-up samples reached approximately 79 and 114 fps.
+The send queue remained bounded and the radio counters stayed clean. Clusters
+of correctable ath10k PCIe errors appeared near parts of the session, but the
+same error class existed during prior working revision-88 runs and does not
+isolate the media discontinuity.
+
+Revision 90 therefore passes a short compatibility and no-freeze check but does
+not close smooth-pacing acceptance. Cooperative controller Stop returned idle
+in about four seconds. The user service, media and privileged processes, P2P
+client, system units, protected root session runtime, and current session state
+were absent afterward; infrastructure Wi-Fi was restored and its P2P device was
+disconnected. The encoder bound may remain an incremental candidate, but the
+slowdown/catch-up mechanism still requires separate isolation before release.
