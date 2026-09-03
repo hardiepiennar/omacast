@@ -3343,3 +3343,49 @@ the large pipe accumulates several hundred kilobytes of timing debt and later
 delivers it in a catch-up burst. Production returns to companion revision 88.
 The next cadence candidate must regulate the burst at its source or at the
 receiver-facing clock; it must not merely increase queued latency.
+
+### Receiver-facing pacing isolation and rejected relay (2026-09-03)
+
+Fresh revision-88 offline isolation found that GPU Screen Recorder itself did
+not contain the reported roughly five-second stall. An 18-second capture held
+60--61 updates per second, with video PTS gaps no larger than 17 ms and audio
+PTS gaps no larger than 22 ms. It did, however, emit each one-second H.264 IDR
+as a roughly 105--249 KiB access unit. A wall-clock drain of the exact GSR
+handoff observed those access units arrive as roughly 246 KiB bursts within a
+20 ms window.
+
+The final FFmpeg RTP path was then tested on loopback with the production
+10.5 Mbit/s MPEG-TS mux rate and the URL's nominal 12.6 Mbit/s `bitrate` and
+42,496-bit `burst_bits` controls. Output still reached 325 KiB in one 20 ms
+window and repeatedly left 60--86 ms packet gaps. FFmpeg's RTP protocol source
+explains the result: its option set and internal UDP URL builder do not carry
+the UDP-only `bitrate` or `burst_bits` fields. Passing the same values through
+`-protocol_opts` also left the output unpaced. The production comments and
+tests had verified only command construction, not actual datagram timing.
+
+An isolated unprivileged loopback relay prototype retained GSR, FFmpeg, the
+receiver-proven MPEG-TS layout, PIDs, audio correction, and RTP packetization.
+It owned the advertised RTP/RTCP source ports, forwarded RTCP immediately, and
+applied a bounded four-datagram token bucket to RTP without an unbounded
+user-space queue or session wall clock. A sustained synthetic 720p60 run
+forwarded 7,131 RTP packets and two RTCP packets with zero relay drops, missing
+sequence numbers, or reordering. The largest 20 ms output window fell to
+35.9 KiB. The reconstructed engine passed 139 tests, wheel construction, fresh
+imports, and the artifact/lifecycle gates.
+
+Receiver acceptance rejected the relay. The installed experimental revision
+89 negotiated the known Fire TV at 1280x720p60 and initially reported about
+60 fps, zero FFmpeg drops or duplicates, zero radio retries or failures, and
+an empty send queue. The maintainer observed only about two seconds of playback
+before the picture froze. The sender continued to report healthy until the
+receiver disconnected roughly 34 seconds after streaming began; owned cleanup
+completed. Correctable ath10k PCIe errors recurred near the freeze, but similar
+errors existed on working revision-88 sessions and do not rescue the rejected
+timing change.
+
+Experimental commit `af93db3` and its exact artifact remain in local history
+as evidence; revert `1410861` removes the relay from the production series.
+The installed companion and plugin were restored to revision 88 and
+`5df4a7d`, respectively. Future pacing work must preserve receiver-required
+access-unit delivery and presentation timing. A generic byte-rate token bucket
+is not compatible merely because it improves loopback cadence.
