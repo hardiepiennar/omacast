@@ -3506,3 +3506,48 @@ a socket stall. The next receiver run should time the sender's UDP syscalls
 with a bounded, read-only observer while retaining the installed revision-90
 media path. Only if those calls do not block should an audio-off receiver A/B
 become the next diagnostic candidate.
+
+### Late discovery and shared-radio pacing boundary (2026-09-04)
+
+Two default eight-second controller scans failed to show the known Fire TV
+while it remained in Display Mirroring. A bounded raw 16-second incremental
+scan found the same receiver after 10.6 seconds with a valid primary-sink WFD
+device record and RTSP port 7236. Commit `9da499b` therefore changes only the
+single event-driven UI and CLI scan bound from eight to 16 seconds. Results
+still render as they arrive, selection still cancels discovery, and the former
+staged two-plus-eight-second polling design remains absent.
+
+A fresh installed revision-90 Fire TV session then negotiated 1280x720p60 and
+the maintainer reported that playback looked good. A 20 Hz process observer
+localized the remaining intermittent slowdown below the capture handoff. The
+FFmpeg mux worker was in the kernel's poll wait for every one of 30 samples in
+which the RTP transmit queue reached its observed 34,560-byte maximum. During
+partial queue occupancy it was usually in a futex wait; while the queue was
+empty it was almost exclusively in a futex wait. The GSR-to-FFmpeg pipe peaked
+at 8,403 bytes in that conditional sample and was nonempty only twice. This
+rules out a persistently full capture pipe as the initiating boundary and
+identifies receiver-facing UDP write readiness as the immediate backpressure
+point.
+
+The RTP socket exposed a 65,536-byte send-buffer budget. The P2P link showed no
+qdisc backlog, transmit errors, failures, or retries, and its signal was about
+-50 dBm. The infrastructure station shared the same QCA6174 radio and 2442 MHz
+channel. In a separate 10 Hz, 20-second correlation window, the seven samples
+with a full RTP queue coincided with infrastructure receive traffic averaging
+23.72 Mbit/s and reaching 45.34 Mbit/s; 157 empty-queue samples averaged only
+0.36 Mbit/s. Roughly 38--50 Mbit/s infrastructure bursts recurred about ten
+seconds apart, while P2P transmit throughput dipped and then caught up as the
+download burst ended. This is strong evidence for single-radio airtime
+contention as the trigger, without evidence of packet loss or radio failure.
+
+FFmpeg's documented RTP `dscp` option is forwarded into its nested UDP URL,
+and Linux Wireless maps DSCP AF41 (decimal 34, IP TOS 136) to the WMM video
+access category. A local unprivileged `IP_RECVTOS` loopback probe confirmed
+that the installed FFmpeg emitted TOS 136 when its RTP URL selected DSCP 34.
+Production patch 61 therefore adds only that constant packet marking to the
+existing Miracast RTP URL; it does not change bitrate, encoding, packet size,
+buffering, or presentation timing. Companion revision 91 reconstructs all 55
+production patches and passes 132 engine tests plus the repository's 305 tests,
+plugin validation, and shell lint. It is not yet installed and has no receiver
+acceptance evidence. The revision-90 session ended after an explicit controller
+Stop request and completed owned cleanup; it did not crash.
