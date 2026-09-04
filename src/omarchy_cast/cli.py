@@ -27,6 +27,7 @@ from .wfd_fixture import INCOMPATIBLE_VIDEO_FIXTURE, SUCCESS_FIXTURE, TIMEOUT_FI
 
 
 MAX_STREAMED_SCAN_SNAPSHOTS = 64
+DEFAULT_SCAN_TIMEOUT_SECONDS = 16
 
 
 def _bounded_cli_integer(*, minimum: int, maximum: int, label: str):
@@ -75,11 +76,17 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser("monitors", help="read-only Hyprland monitor discovery")
     subcommands.add_parser("status", help="read session state")
     scan = subcommands.add_parser("scan", help="scan for nearby Miracast receivers without connecting")
-    scan.add_argument("--timeout", type=_SCAN_TIMEOUT, default=8, help="Wi-Fi Direct scan duration in seconds (1-30)")
+    scan.add_argument(
+        "--timeout", type=_SCAN_TIMEOUT, default=DEFAULT_SCAN_TIMEOUT_SECONDS,
+        help="Wi-Fi Direct scan duration in seconds (1-30)",
+    )
     scan.add_argument("--stream", action="store_true", help="emit each changed receiver snapshot as one JSON line")
     receivers = subcommands.add_parser("receivers", help="list nearby Miracast receivers")
     receivers.add_argument("--fixture", action="store_true", help="return the deterministic development Fire TV fixture")
-    receivers.add_argument("--timeout", type=_SCAN_TIMEOUT, default=8, help="Wi-Fi Direct scan duration in seconds (1-30)")
+    receivers.add_argument(
+        "--timeout", type=_SCAN_TIMEOUT, default=DEFAULT_SCAN_TIMEOUT_SECONDS,
+        help="Wi-Fi Direct scan duration in seconds (1-30)",
+    )
     plan = subcommands.add_parser("plan", help="preview the supported FluxCast command; read-only")
     plan.add_argument("--peer", required=True, help="Wi-Fi Direct receiver MAC address")
     plan.add_argument("--mode", choices=("mirror",), default="mirror")

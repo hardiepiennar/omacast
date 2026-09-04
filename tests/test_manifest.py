@@ -71,7 +71,7 @@ class ManifestTest(unittest.TestCase):
         self.assertNotIn("scanStage", panel)
         self.assertNotIn("scanTimeoutSeconds", panel)
         self.assertNotIn("function mergeReceiverLists", panel)
-        self.assertIn('command: [root.controllerPath, "scan", "--timeout", "8", "--stream"]', panel)
+        self.assertIn('command: [root.controllerPath, "scan", "--timeout", "16", "--stream"]', panel)
         self.assertIn("component BoundedLineCollector: SplitParser", panel)
         self.assertIn("segmentLength > root.maxControllerResponseChars - pending.length", panel)
         self.assertIn("lines > root.maxScanStreamLines", panel)

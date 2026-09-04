@@ -932,7 +932,9 @@ Panel {
   }
   Process {
     id: scanProc
-    command: [root.controllerPath, "scan", "--timeout", "8", "--stream"]
+    // One event-driven discovery window. Results render as soon as they
+    // arrive; the longer bound accommodates receivers that advertise late.
+    command: [root.controllerPath, "scan", "--timeout", "16", "--stream"]
     stdout: BoundedLineCollector {
       id: scanOutput
       onLineReady: function(line) {

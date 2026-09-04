@@ -36,6 +36,8 @@ class CliTest(unittest.TestCase):
     def test_hardware_cast_defaults_to_until_stopped(self) -> None:
         self.assertEqual(build_parser().parse_args(["start", "--peer", "tv-01"]).duration, 0)
         self.assertEqual(build_parser().parse_args(["connect", "--peer", "tv-01"]).duration, 0)
+        self.assertEqual(build_parser().parse_args(["scan"]).timeout, 16)
+        self.assertEqual(build_parser().parse_args(["receivers"]).timeout, 16)
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             build_parser().parse_args(["start", "--peer", "tv-01", "--source", "window"])
 
