@@ -3483,3 +3483,26 @@ captures no audio for diagnosis only. It must compare the same duration and
 telemetry windows, retain the existing encoder bound, and never be promoted as
 a product mode unless it proves a causal benefit and a synchronized audio
 solution is separately established.
+
+A subsequent controlled local backpressure probe reduced the value of that
+audio-off receiver A/B as the immediate next step. The exact revision-90 GSR
+command was drained normally for four seconds, deliberately left undrained for
+two seconds, and then drained again. With audio enabled, the blocked interval
+produced a PipeWire monitor overrun and a 1.55 MiB catch-up second. With audio
+disabled, the same interval produced a materially equivalent 1.47 MiB catch-up
+second. Both processes exited normally and left no recorder behind. This
+demonstrates that a blocked video-only GSR handoff has the same accumulated
+delivery shape; the audio overrun is an expected consequence of the shared
+writer blocking and is not evidence that audio initiated the live stall.
+
+The live session's `/proc/net/udp` record provides a more discriminating next
+boundary. Its RTP socket transmit queue reached an observed session maximum of
+34,560 bytes for 18 consecutive one-second samples spanning the initial
+55-to-31-fps collapse and most of the catch-up. At the single largest catch-up
+sample the queue cleared, transmit throughput reached 21.76 Mbit/s, GSR writes
+reached 667 per second, and FFmpeg input reads reached 67 per second. A nonzero
+queue also occurred during healthy samples, so occupancy alone is not proof of
+a socket stall. The next receiver run should time the sender's UDP syscalls
+with a bounded, read-only observer while retaining the installed revision-90
+media path. Only if those calls do not block should an audio-off receiver A/B
+become the next diagnostic candidate.
