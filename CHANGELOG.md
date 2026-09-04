@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.1.6 — 2026-09-04
+
+- Require companion revision 91, engine API 3, and guard API 17. Existing users
+  must upgrade the companion package before the v0.1.6 plugin will enable
+  casting; incompatible older helpers fail closed in readiness.
+- Allow one event-driven receiver scan to run for 16 seconds while publishing
+  displays as they arrive, so late WFD advertisements no longer require a
+  second scan.
+- Bound VAAPI H.264 access units and mark Miracast RTP/RTCP with DSCP AF41 to
+  reduce shared-radio pacing stalls without adding a media buffer, relay, or
+  session time limit. Short installed Fire TV and Samsung runs accepted the
+  revision-91 path; the deferred long-soak gate remains open.
+- End connection attempts promptly when the selected receiver drops its P2P
+  group, with an actionable error and the existing owned cleanup path.
+- Complete the privileged-service separation tracked in issue #9: the user
+  service owns no root process, and guard readiness and final cleanup cross a
+  bounded, descriptor-safe status protocol.
+
 - Include the verified sink and local source addresses in the SETUP transport
   selection for receivers that require explicit unicast endpoints. Companion
   revision 88 carries the compatibility change without changing engine API 3.

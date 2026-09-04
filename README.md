@@ -30,11 +30,12 @@ Super+Alt+C  →  choose a TV  →  Enter
 - A Wi-Fi adapter with Wi-Fi Direct/P2P support.
 - A Miracast receiver. Fire TV Stick is the currently validated target; other
   correctly advertising WFD sinks are discoverable but not yet broadly
-  hardware-validated.
+  hardware-validated. The current release has also completed a direct cast to
+  one older Samsung WFD sink, but broad receiver compatibility is not claimed.
 
 Broad receiver and hardware support is not claimed yet. Omacast currently
 ships desktop mirroring only; window casting and alternate quality modes are
-not part of version 0.1.5.
+not part of version 0.1.6.
 
 ## Install on Omarchy
 
@@ -42,7 +43,7 @@ Omacast has two parts: the bar plugin and an Arch companion package containing
 the pinned FluxCast engine and guarded networking helper.
 
 Download the package and `SHA256SUMS` from the
-[v0.1.5 release](https://github.com/hardiepiennar/omacast/releases/tag/v0.1.5),
+[v0.1.6 release](https://github.com/hardiepiennar/omacast/releases/tag/v0.1.6),
 then verify and install it:
 
 ```bash
@@ -50,6 +51,10 @@ sha256sum --check SHA256SUMS
 gh attestation verify fluxcast-omarchy-cast-*.pkg.tar.zst --repo hardiepiennar/omacast
 sudo pacman -U ./fluxcast-omarchy-cast-*.pkg.tar.zst
 ```
+
+Existing Omacast users must upgrade this companion package before updating the
+plugin. Version 0.1.6 requires engine API 3 and guard API 17 and deliberately
+rejects the older v0.1.5 companion.
 
 Install and enable the plugin:
 

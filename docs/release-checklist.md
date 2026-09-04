@@ -1,5 +1,33 @@
 # Omacast release checklist
 
+## Version 0.1.6 candidate
+
+- [x] Companion revision 91 reconstructs all 55 production patches and exposes
+      the closed engine API 3 and guard API 17 contracts. The plugin rejects the
+      published v0.1.5 companion until the user installs the coordinated v0.1.6
+      release package.
+- [x] Exact installed revision-91 Direct sessions reached 1280x720p60 on the
+      validated Fire TV and an older Samsung WFD sink. Both completed normal
+      Stop and restored owned media, service, P2P, runtime, and infrastructure
+      Wi-Fi state.
+- [x] The Fire TV run independently confirmed DSCP AF41 on live RTP and RTCP
+      sockets. Its observed steady window stayed near 60 fps with no reported
+      FFmpeg drops, duplicates, or radio retry/failure deltas.
+- [x] The privileged user-service cgroup defect tracked in issue #9 has exact
+      installed forced-owner-loss acceptance at revision 84. Later revisions do
+      not change that privileged ownership architecture.
+- [ ] PIN-requiring receiver acceptance and affected-adapter NetworkManager
+      compatibility acceptance remain tracked in issues #10 and #8. Neither is
+      claimed as broadly hardware-validated in the README.
+- [ ] Three consecutive 30-minute sessions and broader failure injection remain
+      explicitly deferred by the maintainer to a later reliability release.
+      The short exact-candidate regressions and normal cleanup tests are not
+      reported as satisfying those gates.
+
+This release intentionally has a coordinated companion compatibility boundary:
+users must install the v0.1.6 companion package before the plugin update. It is
+not a silent in-place upgrade of the v0.1.5 helper APIs.
+
 ## Release candidate complete
 
 - [x] Stable plugin ID and semantic version in `manifest.json`.

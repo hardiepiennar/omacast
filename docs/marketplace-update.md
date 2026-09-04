@@ -1,17 +1,15 @@
 # Marketplace update handoff
 
 Omacast is already published. Its current verified marketplace snapshot is
-commit `ca5646f8d36ea7111c788b8408bf99aaa8e694d7`, plugin version 0.1.3.
+commit `c5861fcb043b9f90e5854bfddea7934d8445478e`, plugin version 0.1.5.
 
 Do not edit or reopen the closed initial submission to publish a newer commit.
 Verification issue
 [`#3770`](https://github.com/omacom/omarchy-plugin-marketplace/issues/3770)
-currently targets the superseded version-0.1.4 commit. Before review, retarget
-that open issue to the full version-0.1.5 release SHA after its exact-candidate
-gates and companion release complete. If that issue closes first, use the
-marketplace
+is closed and published the current snapshot. For version 0.1.6, use the
+marketplace's
 [Plugin verification form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=verify-plugin.yml)
-instead of reopening it.
+after the exact-candidate gates and companion release complete.
 
 Select **Verify and publish a newer upstream commit** and provide:
 
@@ -24,7 +22,5 @@ a usable companion release. Preserve the old verified snapshot while the
 update is pending. If the automated baseline requests capability review, wait
 for a marketplace maintainer's exact-commit `approved-and-verified` decision.
 
-Add one short human comment after the target SHA is final. Summarize the
-user-visible and security-boundary changes, link the project issues resolved by
-the release, name the exact commit, and ask for review. Do not include a test
-recital or promotional release prose.
+Keep the verification issue itself terse. Do not add a separate release-summary
+comment unless a reviewer asks for one.
