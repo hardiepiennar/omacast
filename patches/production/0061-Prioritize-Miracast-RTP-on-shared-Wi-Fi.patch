@@ -1,0 +1,61 @@
+From 02e42fb4ec192804a6ac7cfc100c9e55953292fc Mon Sep 17 00:00:00 2001
+From: Omacast maintainers <packaging@localhost>
+Date: Fri, 4 Sep 2026 19:47:52 +1200
+Subject: [PATCH] Prioritize Miracast RTP on shared Wi-Fi
+
+
+diff --git a/src/wfd/media/pipeline.py b/src/wfd/media/pipeline.py
+index 84c17d5..61b51fd 100644
+--- a/src/wfd/media/pipeline.py
++++ b/src/wfd/media/pipeline.py
+@@ -79,6 +79,9 @@ class WFDMediaPipeline(WlrootsMixin):
+             self.local_ip,
+             bitrate=wire_rate,
+             burst_bits=4 * 1328 * 8,
++            # AF41 maps to the Wi-Fi video access class. Keep Miracast RTP
++            # responsive when infrastructure downloads share one radio.
++            dscp=34,
+         )
+ 
+     def _common_output_args(self) -> list[str]:
+diff --git a/src/wfd/net.py b/src/wfd/net.py
+index fbd0838..981657b 100644
+--- a/src/wfd/net.py
++++ b/src/wfd/net.py
+@@ -27,6 +27,7 @@ def _rtp_url(
+     *,
+     bitrate: int | None = None,
+     burst_bits: int | None = None,
++    dscp: int | None = None,
+ ) -> str:
+     # Bind both RTP and RTCP to the ports advertised in the RTSP SETUP reply.
+     # ffmpeg's pkt_size is the whole UDP payload, including the 12-byte RTP
+@@ -37,6 +38,8 @@ def _rtp_url(
+         pacing += f"&bitrate={bitrate}"
+     if burst_bits is not None:
+         pacing += f"&burst_bits={burst_bits}"
++    if dscp is not None:
++        pacing += f"&dscp={dscp}"
+     return (
+         f"rtp://{tv_ip}:{sink_port}"
+         f"?localaddr={local_ip}"
+diff --git a/tests/test_wfd_media_vaapi.py b/tests/test_wfd_media_vaapi.py
+index d591376..89cafef 100644
+--- a/tests/test_wfd_media_vaapi.py
++++ b/tests/test_wfd_media_vaapi.py
+@@ -60,6 +60,12 @@ class WlrootsVAAPITest(unittest.TestCase):
+         self.assertEqual(ffmpeg[ffmpeg.index("-c:v") + 1], "copy")
+         self.assertNotIn("-vf", ffmpeg)
+         self.assertNotIn("-vaapi_device", ffmpeg)
++        self.assertEqual(
++            ffmpeg[-1],
++            "rtp://192.168.49.2:19000?localaddr=192.168.49.1"
++            "&local_rtpport=19002&local_rtcpport=19003&pkt_size=1328"
++            "&bitrate=9000000&burst_bits=42496&dscp=34",
++        )
+ 
+ 
+ if __name__ == "__main__":
+-- 
+2.55.0
+
