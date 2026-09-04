@@ -3551,3 +3551,37 @@ production patches and passes 132 engine tests plus the repository's 305 tests,
 plugin validation, and shell lint. It is not yet installed and has no receiver
 acceptance evidence. The revision-90 session ended after an explicit controller
 Stop request and completed owned cleanup; it did not crash.
+
+The subsequent exact revision-91 artifact at commit `758f600` passed checksum
+verification and the package audit, then replaced revision 90 through a visible
+authorization flow. The installed plugin was refreshed to the same commit and
+readiness accepted engine API 3 and guard API 17. Its 16-second incremental scan
+found the known Fire TV after the initial empty snapshot, confirming the late-
+advertisement fix through the installed controller path.
+
+The Fire TV negotiated 1280x720p60. After its startup sample, approximately one
+minute of observed output stayed between 59.48 and 61 fps with realtime ratios
+between 0.992 and 1.024, zero FFmpeg drops or duplicates, and zero radio retry
+or failure deltas. Queue occupancy still reached the observed 34,560-byte high
+water mark briefly, but it cleared without the previous prolonged cadence
+collapse or catch-up burst. `ss --tos` independently showed TOS `0x88` on both
+live FFmpeg RTP and RTCP sockets. The maintainer reported that playback looked
+good. Stop returned idle with complete owned cleanup in roughly two seconds.
+
+The installed scan also identified the 2016 Samsung television as a primary
+sink with RTSP port 7236. Its first direct connection was ended by the receiver
+during P2P negotiation after 34 seconds; media and the new RTP marking were not
+reached, and owned cleanup completed. After documented recovery of the visible
+terminal error state, one fresh retry negotiated 1280x720p60. The stabilized
+window was almost entirely 59.49--60.51 fps with realtime ratios near 1.00,
+zero FFmpeg drops or duplicates, and zero radio retry or failure deltas. One
+sample reached 52 fps and recovered on the next sample without a persistent
+queue. The maintainer reported that the Samsung looked great and subjectively
+better than the Fire TV. Its Stop completed in roughly 1.4 seconds; the service,
+media, guard, and broker processes were absent, the P2P device was disconnected,
+and infrastructure Wi-Fi reconnected on the next bounded readiness check.
+
+These short two-receiver runs accept compatibility and the targeted pacing
+candidate. They do not replace the deferred long soak and repeated failure-
+injection gates required for a later reliability release, nor do they prove
+that every possible shared-radio traffic pattern is eliminated.
