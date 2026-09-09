@@ -35,7 +35,7 @@ Super+Alt+C  →  choose a TV  →  Enter
 
 Broad receiver and hardware support is not claimed yet. Omacast currently
 ships desktop mirroring only; window casting and alternate quality modes are
-not part of version 0.1.6.
+not part of version 0.1.7.
 
 ## Install on Omarchy
 
@@ -43,7 +43,7 @@ Omacast has two parts: the bar plugin and an Arch companion package containing
 the pinned FluxCast engine and guarded networking helper.
 
 Download the package and `SHA256SUMS` from the
-[v0.1.6 release](https://github.com/hardiepiennar/omacast/releases/tag/v0.1.6),
+[v0.1.7 release](https://github.com/hardiepiennar/omacast/releases/tag/v0.1.7),
 then verify and install it:
 
 ```bash
@@ -52,9 +52,8 @@ gh attestation verify fluxcast-omarchy-cast-*.pkg.tar.zst --repo hardiepiennar/o
 sudo pacman -U ./fluxcast-omarchy-cast-*.pkg.tar.zst
 ```
 
-Existing Omacast users must upgrade this companion package before updating the
-plugin. Version 0.1.6 requires engine API 3 and guard API 17 and deliberately
-rejects the older v0.1.5 companion.
+Version 0.1.7 keeps engine API 3, guard API 17, and companion revision 91.
+Existing users with the v0.1.6 companion package do not need to reinstall it.
 
 Install and enable the plugin:
 

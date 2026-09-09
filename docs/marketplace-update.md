@@ -1,12 +1,12 @@
 # Marketplace update handoff
 
 Omacast is already published. Its current verified marketplace snapshot is
-commit `c5861fcb043b9f90e5854bfddea7934d8445478e`, plugin version 0.1.5.
+commit `8f9658846c7250435769a4f49bd45832b32ebe98`, plugin version 0.1.6.
 
 Do not edit or reopen the closed initial submission to publish a newer commit.
 Verification issue
-[`#3770`](https://github.com/omacom/omarchy-plugin-marketplace/issues/3770)
-is closed and published the current snapshot. For version 0.1.6, use the
+[`#4799`](https://github.com/omacom/omarchy-plugin-marketplace/issues/4799)
+is closed and published the current snapshot. For version 0.1.7, use the
 marketplace's
 [Plugin verification form](https://github.com/omacom/omarchy-plugin-marketplace/issues/new?template=verify-plugin.yml)
 after the exact-candidate gates and companion release complete.

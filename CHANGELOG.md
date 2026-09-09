@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.7 — 2026-09-09
+
+- Render the five button shortcut labels as plain text so Omarchy 4.0.2 and
+  newer display them correctly instead of showing literal markup. This fixes
+  issue #11 without changing casting or companion behavior.
+
 ## 0.1.6 — 2026-09-04
 
 - Require companion revision 91, engine API 3, and guard API 17. Existing users

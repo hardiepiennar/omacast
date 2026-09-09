@@ -1,5 +1,15 @@
 # Omacast release checklist
 
+## Version 0.1.7 candidate
+
+- [x] Omarchy 4.0.3 reproduces issue #11 against the published v0.1.6 plugin.
+- [x] All five shared button labels now use plain text, and a regression rejects
+      rich-text tags in the panel.
+- [x] Casting, networking, engine, guard, and packaging behavior are unchanged;
+      companion revision 91, engine API 3, and guard API 17 remain compatible.
+- [ ] The exact v0.1.7 release commit passes the final source, artifact,
+      lifecycle, installed-panel, and marketplace gates.
+
 ## Version 0.1.6 candidate
 
 - [x] Companion revision 91 reconstructs all 55 production patches and exposes
