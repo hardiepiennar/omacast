@@ -42,7 +42,7 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("The cast did not enter a session. Cancelling it safely", panel)
         self.assertIn("root.requestStop()", panel)
         self.assertIn('visible: root.sessionBusy', panel)
-        self.assertIn('"Cancel connection <span style=\\"color:" + root.muted + "\\">(Q)</span>"', panel)
+        self.assertIn('"Cancel connection (Q)"', panel)
         self.assertIn("function open() { showPanel() }", panel)
         self.assertIn("onPressed: function(buttonCode) { root.toggle() }", panel)
         self.assertNotIn("function castActiveWindow(): void", panel)
@@ -92,15 +92,16 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("function restorePanelFocus()", panel)
         self.assertIn("if (phase !== previousPhase) restorePanelFocus()", panel)
         self.assertIn('root.nerdMode ? "Hide Nerd Mode" : "Show Nerd Mode"', panel)
-        self.assertIn('"Stop casting <span style=\\"color:" + root.muted + "\\">(Q)</span>"', panel)
+        self.assertIn('"Stop casting (Q)"', panel)
         self.assertNotIn("Enter stop", panel)
         self.assertIn('root.message = "Stopping the cast safely…"', panel)
         self.assertIn('root.message = "Connection cancelled"', panel)
         self.assertIn("property bool doctorComplete: false", panel)
         self.assertIn("interval: 3000; running: !root.opened && !root.sessionBusy", panel)
         self.assertIn("property bool nerdMode: false", panel)
-        self.assertIn('"\\">(N)</span>"', panel)
-        self.assertIn('"Rescan <span style=\\"color:" + root.muted + "\\">(R)</span>"', panel)
+        self.assertIn('+ " (B)"', panel)
+        self.assertIn('+ " (N)"', panel)
+        self.assertIn('"Rescan (R)"', panel)
         self.assertIn('text: "NERD MODE"', panel)
         self.assertIn('return "Off · stream-safe"', panel)
         self.assertIn('component NerdMetric: BorderSurface', panel)
@@ -164,6 +165,13 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("root.nerdMode && root.sessionActive ? 650 : 570", panel)
         self.assertIn('text: root.doctorComplete && root.setupRequired() ? "Open setup terminal"', panel)
         self.assertIn('return "cd " + Util.shellQuote(packagePath) + " && makepkg -si"', panel)
+
+    def test_panel_does_not_pass_rich_text_to_shared_controls(self) -> None:
+        panel = (REPO_ROOT / "ui" / "Panel.qml").read_text(encoding="utf-8")
+        self.assertNotRegex(
+            panel,
+            r"<(?:a|b|br|font|i|img|p|span|strong|u)(?:\s|/?>)",
+        )
 
     def test_marketplace_root_has_preview_license_and_removal_instructions(self) -> None:
         self.assertTrue((REPO_ROOT / "LICENSE").is_file())

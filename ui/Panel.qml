@@ -1188,7 +1188,7 @@ Panel {
             Button {
               width: parent.width
               text: (root.networkBackend === "direct" ? "󰖩 Direct" : "󰌷 Compatibility")
-                + " <span style=\"color:" + root.muted + "\">(B)</span>"
+                + " (B)"
               tooltipText: root.networkBackend === "direct"
                 ? "Default · the display is group owner and supplies DHCP"
                 : "Compatibility · this computer is group owner; use only when Direct fails"
@@ -1211,7 +1211,7 @@ Panel {
               Item { width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[2].implicitWidth - parent.spacing * 2); height: 1 }
               Button {
                 text: root.scanRunning ? "Scanning…"
-                  : "Rescan <span style=\"color:" + root.muted + "\">(R)</span>"
+                  : "Rescan (R)"
               enabled: !root.scanRunning && !root.sessionBusy
                 bordered: true
                 foreground: root.foreground
@@ -1285,7 +1285,7 @@ Panel {
             Button {
               width: parent.width
               visible: root.sessionBusy
-              text: "Cancel connection <span style=\"color:" + root.muted + "\">(Q)</span>"
+              text: "Cancel connection (Q)"
               enabled: root.sessionBusy
               bordered: true
               selected: root.receiverId !== ""
@@ -1382,7 +1382,7 @@ Panel {
             Button {
               width: parent.width
               text: (root.nerdMode ? "Hide Nerd Mode" : "Show Nerd Mode")
-                + " <span style=\"color:" + root.muted + "\">(N)</span>"
+                + " (N)"
               tooltipText: "Advanced live stats · no extra packet tracing"
               bordered: true
               selected: root.nerdMode
@@ -1417,7 +1417,7 @@ Panel {
             Button {
               width: parent.width
               text: root.phase === "stopping" ? "Stopping…"
-                : "Stop casting <span style=\"color:" + root.muted + "\">(Q)</span>"
+                : "Stop casting (Q)"
               enabled: root.phase !== "stopping"
               bordered: true
               foreground: root.foreground
