@@ -53,6 +53,7 @@ Panel {
   property bool pairingLaunch: false
   property bool retryPairingAfterRecovery: false
   property string networkBackend: "direct"
+  property string quality: "safe"
 
   readonly property string phase: String(session.phase || "idle")
   readonly property bool sessionActive: ["checking", "discovering", "preparing", "connecting", "streaming", "stopping", "recovering"].indexOf(phase) >= 0
@@ -373,7 +374,7 @@ Panel {
   function sourceSummary() {
     var output = monitor()
     if (!output) return "Desktop source unavailable"
-    return output.name + " · mirror · 720p60 with audio"
+    return output.name + " · mirror · " + (quality === "hd" ? "1080p60" : "720p60") + " with audio"
   }
 
   function heroTitle() {
@@ -517,6 +518,15 @@ Panel {
     message = networkBackend === "direct"
       ? "Direct mode selected · the display owns the Wi-Fi Direct group."
       : "Compatibility mode selected · NetworkManager makes this computer the group owner."
+    requestPlan()
+  }
+
+  function toggleQuality() {
+    if (sessionBusy || needsRecovery) return
+    quality = quality === "safe" ? "hd" : "safe"
+    message = quality === "safe"
+      ? "Safe quality selected · 720p60 at 7 Mbps."
+      : "HD quality selected · 1080p60 at 15 Mbps; needs a strong link."
     requestPlan()
   }
 
@@ -921,7 +931,7 @@ Panel {
   }
   Process {
     id: planProc
-    command: [root.controllerPath, "plan", "--peer", root.receiverId, "--mode", "mirror", "--profile", "safe", "--backend", root.networkBackend]
+    command: [root.controllerPath, "plan", "--peer", root.receiverId, "--mode", "mirror", "--profile", root.quality, "--backend", root.networkBackend]
     stdout: BoundedCollector { id: planOutput }
     stderr: DiscardCollector {}
     onRunningChanged: if (running) planOutput.reset()
@@ -975,7 +985,7 @@ Panel {
   }
   Process {
     id: connectProc
-    command: [root.controllerPath, "start", "--peer", root.pendingReceiverId, "--mode", "mirror", "--profile", "safe", "--backend", root.networkBackend]
+    command: [root.controllerPath, "start", "--peer", root.pendingReceiverId, "--mode", "mirror", "--profile", root.quality, "--backend", root.networkBackend]
       .concat(root.pairingLaunch ? ["--pairing-pin-stdin"] : [])
     stdinEnabled: root.pairingLaunch
     stdout: BoundedCollector { id: connectOutput }
@@ -1132,6 +1142,8 @@ Panel {
           root.systemReady() ? root.startScan() : root.refresh()
         if ((text === "b" || text === "B") && !root.sessionBusy && !root.needsRecovery)
           root.toggleNetworkBackend()
+        if ((text === "h" || text === "H") && !root.sessionBusy && !root.needsRecovery)
+          root.toggleQuality()
       }
 
       Flickable {
@@ -1198,6 +1210,21 @@ Panel {
               foreground: root.foreground
               fontFamily: root.fontFamily
               onClicked: root.toggleNetworkBackend()
+            }
+
+            Button {
+              width: parent.width
+              text: (root.quality === "safe" ? "󰍹 Safe" : "󰍺 HD")
+                + " (H)"
+              tooltipText: root.quality === "safe"
+                ? "Default · 720p60 at 7 Mbps"
+                : "HD · 1080p60 at 15 Mbps; needs a strong link"
+              enabled: !root.sessionBusy
+              bordered: true
+              selected: root.quality === "hd"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.toggleQuality()
             }
 
             Row {

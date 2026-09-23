@@ -17,6 +17,7 @@ import time
 from typing import Any, Callable, Mapping, Protocol
 
 from .guard import GuardError, GuardRequest, prepare_command, read_guard_status, validate_helper_result
+from .engine import PROFILES
 from .identity import receiver_address
 from .pairing import validate_pairing_pin
 from .telemetry import MAX_PROCESS_DESCRIPTORS, MAX_PROC_NETWORK_BYTES, MAX_SYSFS_INTERFACE_ENTRIES, BoundedOutputCollector, TelemetrySampler, TelemetryWorkspace, _bounded_read, _bounded_stream_read, cleanup_live_telemetry
@@ -325,11 +326,17 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
         raise TransportError("transport plan has an unexpected execution permission")
     profile = plan.get("profile")
     selection = plan.get("selection")
-    expected_profile = {"label": "Safe", "width": 1280, "height": 720, "fps": 60, "bitrateMbps": 7}
-    if not isinstance(profile, Mapping) or set(profile) != set(expected_profile) or any(
-        type(profile.get(key)) is not type(value) or profile.get(key) != value
-        for key, value in expected_profile.items()
-    ):
+    def _matches(expected: Mapping[str, object]) -> bool:
+        return isinstance(profile, Mapping) and set(profile) == set(expected) and not any(
+            type(profile.get(key)) is not type(value) or profile.get(key) != value
+            for key, value in expected.items()
+        )
+
+    # A plan must reproduce one published profile exactly; an arbitrary
+    # resolution or bitrate never crosses the guarded boundary. The matched
+    # entry, not the plan's own values, then fixes the expected command.
+    reviewed_profile = next((expected for expected in PROFILES.values() if _matches(expected)), None)
+    if reviewed_profile is None:
         raise TransportError("transport plan has an unsupported profile")
     expected_selection = {"peer", "mode", "source", "networkBackend", "wifiInterface", "wifiFrequencyMhz", "p2pFrequencyMhz", "monitor", "audioSource", "videoEncoder"}
     if not isinstance(selection, Mapping) or set(selection) != expected_selection:
@@ -363,8 +370,10 @@ def validate_transport_plan(plan: Mapping[str, Any], *, executable: bool = False
     if type(p2p_frequency) is not int or p2p_frequency != expected_p2p_frequency:
         raise TransportError("transport plan P2P frequency does not match its Wi-Fi selection")
     expected_command = [
-        "fluxcast", "--protocol", "wfd", "--output-res", "1280x720",
-        "--fps", "60", "--bitrate", "7M", "--wfd-video-encoder", encoder,
+        "fluxcast", "--protocol", "wfd",
+        "--output-res", f"{reviewed_profile['width']}x{reviewed_profile['height']}",
+        "--fps", str(reviewed_profile["fps"]),
+        "--bitrate", f"{reviewed_profile['bitrateMbps']}M", "--wfd-video-encoder", encoder,
         "--wfd-p2p-backend", "supplicant", "--wfd-supplicant-mode", "connect",
         "--wfd-peer", peer, "--wfd-interface", interface, "--wfd-timeout", "15",
         "--wfd-supplicant-frequency", str(p2p_frequency), "--wfd-no-firewall",

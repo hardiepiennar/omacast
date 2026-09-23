@@ -93,6 +93,26 @@ class TransportTest(unittest.TestCase):
             self.assertTrue(result.cleanup_complete)
             self.assertNotIn("streaming", stages)
 
+    def test_published_profiles_cross_the_boundary_and_invented_ones_do_not(self) -> None:
+        def plan_for(profile: dict[str, object]) -> dict[str, object]:
+            candidate = plan()
+            candidate["profile"] = profile
+            command = list(candidate["command"])
+            command[command.index("--output-res") + 1] = f"{profile['width']}x{profile['height']}"
+            command[command.index("--fps") + 1] = str(profile["fps"])
+            command[command.index("--bitrate") + 1] = f"{profile['bitrateMbps']}M"
+            candidate["command"] = command
+            return candidate
+
+        validate_transport_plan(plan_for({"label": "HD", "width": 1920, "height": 1080, "fps": 60, "bitrateMbps": 15}))
+        for invented in (
+            {"label": "HD", "width": 3840, "height": 2160, "fps": 60, "bitrateMbps": 15},
+            {"label": "HD", "width": 1920, "height": 1080, "fps": 60, "bitrateMbps": 80},
+            {"label": "Safe", "width": 1920, "height": 1080, "fps": 60, "bitrateMbps": 15},
+        ):
+            with self.assertRaisesRegex(TransportError, "unsupported profile"):
+                validate_transport_plan(plan_for(invented))
+
     def test_production_adapter_and_shell_like_arguments_are_refused(self) -> None:
         with self.assertRaises(TransportDisabled):
             DisabledTransportAdapter().run(plan(), timeout_seconds=30, cancelled=lambda: False, stage=lambda _: None)

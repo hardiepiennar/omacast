@@ -21,7 +21,7 @@ from .telemetry import cleanup_live_telemetry, remove_archived_telemetry
 from .transport import TransportAdapter, TransportError, TransportResult, result_payload, validate_test_transport_plan, validate_transport_plan
 
 
-PROFILES = frozenset({"safe"})
+PROFILES = frozenset({"safe", "hd"})
 MODES = frozenset({"mirror"})
 SOURCES = frozenset({"display"})
 _PEER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
