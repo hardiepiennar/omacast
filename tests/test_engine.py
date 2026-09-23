@@ -17,6 +17,20 @@ def snapshot() -> dict[str, object]:
 
 
 class EngineTest(unittest.TestCase):
+    def test_hd_profile_is_opt_in_and_raises_resolution_and_bitrate(self) -> None:
+        safe = build_launch_plan(snapshot(), peer="AA:BB:CC:DD:EE:FF", mode="mirror", profile="safe")
+        hd = build_launch_plan(snapshot(), peer="AA:BB:CC:DD:EE:FF", mode="mirror", profile="hd")
+        self.assertEqual(safe["profile"]["width"], 1280)
+        self.assertEqual(safe["profile"]["height"], 720)
+        self.assertEqual(hd["profile"]["width"], 1920)
+        self.assertEqual(hd["profile"]["height"], 1080)
+        self.assertEqual(hd["profile"]["fps"], 60)
+        self.assertEqual(hd["profile"]["bitrateMbps"], 15)
+        self.assertIn("1920x1080", hd["command"])
+        bitrate_flag = hd["command"].index("--bitrate")
+        self.assertEqual(hd["command"][bitrate_flag + 1], "15M")
+        self.assertEqual(hd["warnings"], safe["warnings"])
+
     def test_plan_selects_focused_monitor_and_vaapi(self) -> None:
         plan = build_launch_plan(snapshot(), peer="aa:bb:cc:dd:ee:ff", mode="mirror", profile="safe")
         self.assertTrue(plan["readOnly"])
